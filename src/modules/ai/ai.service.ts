@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+ï»¿import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -40,7 +40,7 @@ export class AiService {
 
     if (user.plan === 'FREE' && monthlyCount >= 5) {
       throw new ForbiddenException(
-        'Limite mensal atingido. Faça upgrade para PRO.',
+        'Limite mensal atingido. FaÃ§a upgrade para PRO.',
       );
     }
 
@@ -49,25 +49,31 @@ export class AiService {
     }
 
     const model = this.genAI.getGenerativeModel({
-      model: 'gemini-1.5-flash',
+      model: 'gemini-2.5-flash',
     });
 
     const prompt = `
-Você é um consultor estratégico de vendas SaaS.
+VocÃª Ã© um consultor estratÃ©gico de vendas SaaS.
 
 Analise os dados abaixo e gere:
 
-1. Padrões de crescimento
+1. PadrÃµes de crescimento
 2. Riscos
 3. Oportunidades
-4. Recomendações práticas
+4. RecomendaÃ§Ãµes prÃ¡ticas
 
 Dados:
 ${JSON.stringify(data)}
 `;
 
-    const result = await model.generateContent(prompt);
-    const aiResponse = result.response.text();
+    let aiResponse: string;
+    try {
+      const result = await model.generateContent(prompt);
+      aiResponse = result.response.text();
+    } catch (error) {
+      console.error('AI ERROR:', error);
+      return 'Erro ao gerar analise.';
+    }
 
     await this.prisma.analysis.create({
       data: {
@@ -92,11 +98,15 @@ ${JSON.stringify(data)}
     }
 
     const model = this.genAI.getGenerativeModel({
-      model: 'gemini-1.5-flash',
+      model: 'gemini-2.5-flash',
     });
 
-    const result = await model.generateContent(message);
-
-    return result.response.text();
+    try {
+      const result = await model.generateContent(message);
+      return result.response.text();
+    } catch (error) {
+      console.error('AI ERROR:', error);
+      return 'Erro ao gerar analise.';
+    }
   }
 }
