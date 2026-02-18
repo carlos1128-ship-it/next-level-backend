@@ -1,0 +1,97 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Plan {
+  FREE
+  PRO
+  ENTERPRISE
+}
+
+model Company {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  currency    String   @default("BRL")
+  timezone    String   @default("America/Sao_Paulo")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users    User[]
+  sales    Sale[]
+  adSpends AdSpend[]
+}
+
+model AdSpend {
+  id        String   @id @default(cuid())
+  companyId String
+  amount    Decimal  @db.Decimal(12, 2)
+  spentAt   DateTime
+  source    String   @default("meta")
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([companyId, spentAt])
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  plan      Plan     @default(FREE)
+  name      String?
+  companyId String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company  Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  sales    Sale[]
+  analyses Analysis[]
+}
+
+// Canal de origem da venda. manual = criada pelo usuário; shopify/meta = futuros webhooks.
+enum SaleChannel {
+  manual
+  shopify
+  meta
+}
+
+model Sale {
+  id          String      @id @default(cuid())
+  userId      String?
+  companyId   String
+  amount      Decimal     @db.Decimal(12, 2)
+  productName String?     // Nome do produto (ou use category para agrupamento)
+  category    String?     // Categoria opcional para agrupamento no dashboard
+  channel     SaleChannel @default(manual) // manual | shopify | meta
+  occurredAt  DateTime    // Timestamp real da venda (não o created_at)
+  createdAt   DateTime    @default(now())
+
+  user    User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, occurredAt])
+  @@index([companyId])
+  @@index([companyId, occurredAt])
+}
+
+model Analysis {
+  id        String   @id @default(uuid())
+  content   String
+  userId    String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, createdAt])
+}
