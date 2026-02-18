@@ -2,14 +2,13 @@ import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
-import { ConfigService } from '@nestjs/config';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
-  const configService = app.get(ConfigService);
   app.setGlobalPrefix('api');
   app.enableCors({
-    origin: ['http://localhost:3000', 'https://seudominio.com'],
+    origin: ['http://localhost:5173', 'https://next-level-front.vercel.app'],
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
     credentials: true,
   });
   app.useGlobalPipes(
@@ -22,7 +21,7 @@ async function bootstrap(): Promise<void> {
   );
   app.useGlobalFilters(new AllExceptionsFilter());
 
-  const port = Number(configService.get<string>('PORT') ?? '3333');
+  const port = process.env.PORT || 3333;
   await app.listen(port);
   console.log(`NEXT LEVEL BACKEND rodando em http://localhost:${port}/api`);
 }
