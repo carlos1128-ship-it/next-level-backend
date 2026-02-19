@@ -1,22 +1,22 @@
-import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
-import { Public } from '../../common/decorators/public.decorator';
+import { Body, Controller, Get, Post } from '@nestjs/common';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { AnalyzeSalesDto } from './dto/analyze-sales.dto';
 import { AiService } from './ai.service';
 
 @Controller('ai')
 export class AiAnalyzeController {
   constructor(private readonly aiService: AiService) {}
 
-  @Public()
-  @UseGuards(AuthGuard('jwt'))
   @Post('analyze')
-  async analyze(@Body() body: any, @Req() req: any) {
-    return this.aiService.analyzeSales(body.data, req.user.id);
+  async analyze(
+    @Body() body: AnalyzeSalesDto,
+    @CurrentUser('sub') userId: string,
+  ) {
+    return this.aiService.analyzeSales(body.data, userId);
   }
 
-  @UseGuards(AuthGuard('jwt'))
   @Get('history')
-  getHistory(@Req() req: any) {
-    return this.aiService.getAnalysisHistory(req.user.id);
+  getHistory(@CurrentUser('sub') userId: string) {
+    return this.aiService.getAnalysisHistory(userId);
   }
 }

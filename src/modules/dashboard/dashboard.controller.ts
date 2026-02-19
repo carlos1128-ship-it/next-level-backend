@@ -6,8 +6,13 @@ import { DashboardService } from './dashboard.service';
 export class DashboardController {
   constructor(private readonly dashboardService: DashboardService) {}
 
+  @Get('summary')
+  async getSummary(@CurrentUser('sub') userId: string) {
+    return this.dashboardService.getSummary(userId);
+  }
+
   @Get('metrics')
   async getMetrics(@CurrentUser('sub') userId: string) {
-    return this.dashboardService.getMetrics(userId);
+    return this.dashboardService.getSummary(userId);
   }
 }

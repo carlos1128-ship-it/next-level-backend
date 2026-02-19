@@ -1,7 +1,22 @@
-﻿import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  InternalServerErrorException,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { AiChatRole } from '@prisma/client';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { PrismaService } from '../../prisma/prisma.service';
+
+type DetailLevel = 'low' | 'medium' | 'high';
+
+export interface ChatResponseDto {
+  success: true;
+  message: string;
+  tokensUsed?: number;
+}
 
 @Injectable()
 export class AiService {
@@ -11,13 +26,13 @@ export class AiService {
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
   ) {
-    const geminiApiKey = process.env.GEMINI_API_KEY;
+    const geminiApiKey = this.configService.get<string>('GEMINI_API_KEY');
     if (geminiApiKey) {
       this.genAI = new GoogleGenerativeAI(geminiApiKey);
     }
   }
 
-  async analyzeSales(data: any, userId: string) {
+  async analyzeSales(data: Record<string, unknown>, userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       include: { analyses: true },
@@ -40,49 +55,28 @@ export class AiService {
 
     if (user.plan === 'FREE' && monthlyCount >= 5) {
       throw new ForbiddenException(
-        'Limite mensal atingido. Faça upgrade para PRO.',
+        'Limite mensal atingido. Faca upgrade para PRO.',
       );
     }
 
     if (!this.genAI) {
-      return 'IA nao configurada. Defina GEMINI_API_KEY no .env para usar analise.';
+      throw new ServiceUnavailableException(
+        'Servico de IA indisponivel no momento',
+      );
     }
 
-    const model = this.genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash',
-    });
-
-    const prompt = `
-Você é um consultor estratégico de vendas SaaS.
-
-Analise os dados abaixo e gere:
-
-1. Padrões de crescimento
-2. Riscos
-3. Oportunidades
-4. Recomendações práticas
-
-Dados:
-${JSON.stringify(data)}
-`;
-
-    let aiResponse: string;
-    try {
-      const result = await model.generateContent(prompt);
-      aiResponse = result.response.text();
-    } catch (error) {
-      console.error('AI ERROR:', error);
-      return 'Erro ao gerar analise.';
-    }
+    const detailLevel = this.normalizeDetailLevel(user.detailLevel);
+    const prompt = this.buildAnalysisPrompt(data, detailLevel);
+    const { text } = await this.generateText(prompt);
 
     await this.prisma.analysis.create({
       data: {
-        content: aiResponse,
+        content: text,
         userId,
       },
     });
 
-    return aiResponse;
+    return text;
   }
 
   async getAnalysisHistory(userId: string) {
@@ -92,21 +86,123 @@ ${JSON.stringify(data)}
     });
   }
 
-  async chat(message: string, userId: string) {
-    if (!this.genAI) {
-      return 'IA nao configurada. Defina GEMINI_API_KEY no .env para usar chat.';
+  async chat(message: string, userId: string): Promise<ChatResponseDto> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, companyId: true, detailLevel: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Usuario nao encontrado');
     }
 
-    const model = this.genAI.getGenerativeModel({
+    if (!this.genAI) {
+      throw new ServiceUnavailableException(
+        'Servico de IA indisponivel no momento',
+      );
+    }
+
+    const detailLevel = this.normalizeDetailLevel(user.detailLevel);
+    const prompt = this.buildChatPrompt(message, detailLevel);
+    const { text, tokensUsed } = await this.generateText(prompt);
+
+    await this.prisma.$transaction([
+      this.prisma.aiChatMessage.create({
+        data: {
+          userId: user.id,
+          companyId: user.companyId,
+          role: AiChatRole.USER,
+          content: message,
+        },
+      }),
+      this.prisma.aiChatMessage.create({
+        data: {
+          userId: user.id,
+          companyId: user.companyId,
+          role: AiChatRole.ASSISTANT,
+          content: text,
+          tokensUsed,
+        },
+      }),
+    ]);
+
+    return {
+      success: true,
+      message: text,
+      ...(tokensUsed ? { tokensUsed } : {}),
+    };
+  }
+
+  private async generateText(
+    prompt: string,
+  ): Promise<{ text: string; tokensUsed?: number }> {
+    const model = this.genAI?.getGenerativeModel({
       model: 'gemini-2.5-flash',
     });
 
-    try {
-      const result = await model.generateContent(message);
-      return result.response.text();
-    } catch (error) {
-      console.error('AI ERROR:', error);
-      return 'Erro ao gerar analise.';
+    if (!model) {
+      throw new ServiceUnavailableException('Modelo de IA indisponivel');
     }
+
+    try {
+      const result = await model.generateContent(prompt);
+      const text = result.response.text()?.trim();
+      if (!text) {
+        throw new InternalServerErrorException(
+          'IA retornou resposta vazia para a solicitacao',
+        );
+      }
+      const tokensUsed = result.response.usageMetadata?.totalTokenCount;
+      return { text, tokensUsed };
+    } catch (error) {
+      if (error instanceof InternalServerErrorException) {
+        throw error;
+      }
+      throw new InternalServerErrorException('Falha ao gerar resposta da IA');
+    }
+  }
+
+  private normalizeDetailLevel(value: string | null | undefined): DetailLevel {
+    if (value === 'low' || value === 'high') {
+      return value;
+    }
+    return 'medium';
+  }
+
+  private buildAnalysisPrompt(
+    data: Record<string, unknown>,
+    detailLevel: DetailLevel,
+  ): string {
+    const style = this.detailStyle(detailLevel);
+
+    return [
+      'Voce e um consultor estrategico de vendas SaaS.',
+      'Nao repita os mesmos argumentos. Evite respostas longas e redundantes.',
+      style,
+      'Gere exatamente 4 secoes: padroes, riscos, oportunidades, recomendacoes.',
+      'Use linguagem clara, objetiva e orientada a acao.',
+      `Dados: ${JSON.stringify(data)}`,
+    ].join('\n');
+  }
+
+  private buildChatPrompt(message: string, detailLevel: DetailLevel): string {
+    const style = this.detailStyle(detailLevel);
+    return [
+      'Voce e um assistente de negocios para SaaS B2B.',
+      'Responda sem repeticao e sem textos prolixos.',
+      style,
+      'Se a pergunta estiver incompleta, diga qual dado falta em no maximo 2 frases.',
+      `Pergunta do usuario: ${message}`,
+    ].join('\n');
+  }
+
+  private detailStyle(detailLevel: DetailLevel): string {
+    if (detailLevel === 'low') {
+      return 'Nivel de detalhe: baixo. Responda em ate 5 linhas.';
+    }
+    if (detailLevel === 'high') {
+      return 'Nivel de detalhe: alto. Responda em ate 220 palavras e use no maximo 6 bullets.';
+    }
+    return 'Nivel de detalhe: medio. Responda em ate 120 palavras e use no maximo 4 bullets.';
   }
 }

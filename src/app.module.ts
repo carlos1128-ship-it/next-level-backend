@@ -11,6 +11,9 @@ import { InsightsModule } from './modules/insights/insights.module';
 import { AiModule } from './modules/ai/ai.module';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { FinanceModule } from './modules/finance/finance.module';
+import { UserModule } from './modules/user/user.module';
+import { ExportModule } from './modules/export/export.module';
 
 @Module({
   imports: [
@@ -23,6 +26,9 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
     AiModule,
     WebhooksModule,
     DashboardModule,
+    FinanceModule,
+    UserModule,
+    ExportModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },

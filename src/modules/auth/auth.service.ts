@@ -47,8 +47,9 @@ export class AuthService {
         id: user.id,
         email: user.email,
         name: user.name,
+        detailLevel: user.detailLevel,
         companyId: user.companyId,
-        companyName: user.company.name,
+        companyName: user.company?.name ?? '',
       },
     };
   }
@@ -104,6 +105,7 @@ export class AuthService {
         id: created.user.id,
         email: created.user.email,
         name: created.user.name,
+        detailLevel: created.user.detailLevel,
         companyId: created.company.id,
         companyName: created.company.name,
       },
@@ -120,6 +122,7 @@ export class AuthService {
       id: user.id,
       email: user.email,
       companyId: user.companyId,
+      detailLevel: user.detailLevel,
     };
   }
 

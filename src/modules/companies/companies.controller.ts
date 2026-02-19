@@ -1,24 +1,22 @@
-import { Controller, Get, Patch, Body, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post } from '@nestjs/common';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { CreateCompanyDto } from './dto/create-company.dto';
 import { CompaniesService } from './companies.service';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { CompanyGuard } from '../../common/guards/company.guard';
-import { CompanyId } from '../../common/decorators/company-id.decorator';
 
-@Controller('companies')
-@UseGuards(JwtAuthGuard, CompanyGuard)
+@Controller('company')
 export class CompaniesController {
   constructor(private readonly companiesService: CompaniesService) {}
 
-  @Get('me')
-  async getMyCompany(@CompanyId() companyId: string) {
-    return this.companiesService.findById(companyId);
+  @Get()
+  async getMyCompany(@CurrentUser('sub') userId: string) {
+    return this.companiesService.getCurrentCompany(userId);
   }
 
-  @Patch('me')
-  async updateMyCompany(
-    @CompanyId() companyId: string,
-    @Body() body: { currency?: string; timezone?: string; name?: string },
+  @Post()
+  async createCompany(
+    @CurrentUser('sub') userId: string,
+    @Body() dto: CreateCompanyDto,
   ) {
-    return this.companiesService.updateSettings(companyId, body);
+    return this.companiesService.createCompany(userId, dto);
   }
 }
