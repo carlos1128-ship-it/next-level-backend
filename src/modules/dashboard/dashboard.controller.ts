@@ -1,4 +1,4 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Param } from '@nestjs/common';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { DashboardService } from './dashboard.service';
 
@@ -14,5 +14,10 @@ export class DashboardController {
   @Get('metrics')
   async getMetrics(@CurrentUser('sub') userId: string) {
     return this.dashboardService.getSummary(userId);
+  }
+
+  @Get('company/:companyId')
+  async getDashboardByCompany(@Param('companyId') companyId: string) {
+    return this.dashboardService.getDashboard(companyId);
   }
 }

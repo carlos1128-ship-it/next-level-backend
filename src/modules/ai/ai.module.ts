@@ -5,11 +5,14 @@ import { AiService } from './ai.service';
 import { RagService } from './rag.service';
 import { SalesModule } from '../sales/sales.module';
 import { InsightsModule } from '../insights/insights.module';
+import { DashboardModule } from '../dashboard/dashboard.module';
+import { ChatController } from './chat.controller';
+import { ChatService } from './chat.service';
 
 @Module({
-  imports: [SalesModule, InsightsModule],
-  controllers: [AiController, AiAnalyzeController],
-  providers: [AiService, RagService],
-  exports: [AiService, RagService],
+  imports: [SalesModule, InsightsModule, DashboardModule],
+  controllers: [AiController, AiAnalyzeController, ChatController],
+  providers: [AiService, RagService, ChatService],
+  exports: [AiService, RagService, ChatService],
 })
 export class AiModule {}

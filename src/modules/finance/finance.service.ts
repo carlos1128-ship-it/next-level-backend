@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma, FinancialTransactionType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
@@ -39,25 +39,88 @@ export class FinanceService {
       select: { companyId: true },
     });
 
-    if (!user?.companyId) {
-      throw new NotFoundException('Empresa nao encontrada para o usuario');
+    if (!user) {
+      throw new BadRequestException('Usuario nao encontrado');
+    }
+
+    if (!dto.companyId?.trim()) {
+      throw new BadRequestException('companyId e obrigatorio');
+    }
+
+    if (user.companyId && dto.companyId !== user.companyId) {
+      throw new BadRequestException(
+        'companyId nao corresponde ao usuario autenticado',
+      );
+    }
+
+    const company = await this.prisma.company.findUnique({
+      where: { id: dto.companyId },
+      select: { id: true },
+    });
+    if (!company) {
+      throw new BadRequestException('Empresa nao encontrada para o companyId informado');
+    }
+
+    const lowerType = dto.type?.toLowerCase();
+    if (lowerType !== 'income' && lowerType !== 'expense') {
+      throw new BadRequestException('type deve ser income ou expense');
     }
 
     const normalizedType =
-      dto.type === FinancialTransactionType.INCOME
+      lowerType === 'income'
         ? FinancialTransactionType.INCOME
         : FinancialTransactionType.EXPENSE;
 
-    return this.prisma.financialTransaction.create({
+    const createdTransaction = await this.prisma.financialTransaction.create({
       data: {
-        companyId: user.companyId,
+        companyId: dto.companyId,
         userId,
         type: normalizedType,
         amount: new Prisma.Decimal(dto.amount),
         description: dto.description.trim(),
         category: dto.category?.trim() || null,
-        occurredAt: new Date(dto.occurredAt),
+        occurredAt: dto.occurredAt ? new Date(dto.occurredAt) : new Date(),
       },
     });
+
+    const [incomeAggregate, expenseAggregate, transactionsCount] = await Promise.all([
+      this.prisma.financialTransaction.aggregate({
+        where: {
+          companyId: dto.companyId,
+          type: FinancialTransactionType.INCOME,
+        },
+        _sum: { amount: true },
+      }),
+      this.prisma.financialTransaction.aggregate({
+        where: {
+          companyId: dto.companyId,
+          type: FinancialTransactionType.EXPENSE,
+        },
+        _sum: { amount: true },
+      }),
+      this.prisma.financialTransaction.count({
+        where: { companyId: dto.companyId },
+      }),
+    ]);
+
+    const totalIncome = this.toNumber(incomeAggregate._sum.amount);
+    const totalExpense = this.toNumber(expenseAggregate._sum.amount);
+    const balance = totalIncome - totalExpense;
+
+    return {
+      transaction: createdTransaction,
+      totalIncome: this.round(totalIncome),
+      totalExpense: this.round(totalExpense),
+      balance: this.round(balance),
+      transactionsCount,
+    };
+  }
+
+  private toNumber(value: Prisma.Decimal | number | null | undefined): number {
+    return Number(value ?? 0);
+  }
+
+  private round(value: number): number {
+    return Math.round((value + Number.EPSILON) * 100) / 100;
   }
 }

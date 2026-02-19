@@ -20,15 +20,19 @@ export class CompaniesService {
       select: { companyId: true },
     });
 
-    if (!user?.companyId) {
+    if (!user) {
       return this.defaultCompany();
+    }
+
+    if (!user.companyId) {
+      return this.createAndAttachInitialCompany(userId);
     }
 
     const company = await this.prisma.company.findUnique({
       where: { id: user.companyId },
     });
     if (!company) {
-      return this.defaultCompany();
+      return this.createAndAttachInitialCompany(userId);
     }
 
     return company;
@@ -58,6 +62,27 @@ export class CompaniesService {
         slug,
         currency: dto.currency?.trim() || 'BRL',
         timezone: dto.timezone?.trim() || 'America/Sao_Paulo',
+      },
+    });
+
+    if (user) {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: { companyId: company.id },
+      });
+    }
+
+    return company;
+  }
+
+  private async createAndAttachInitialCompany(userId: string) {
+    const slug = await this.ensureUniqueSlug('empresa-inicial');
+    const company = await this.prisma.company.create({
+      data: {
+        name: 'Empresa Inicial',
+        slug,
+        currency: 'BRL',
+        timezone: 'America/Sao_Paulo',
       },
     });
 

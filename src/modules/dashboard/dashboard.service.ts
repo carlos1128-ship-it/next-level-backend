@@ -10,9 +10,57 @@ export interface DashboardSummaryDto {
   companyCount: number;
 }
 
+export interface DashboardFinancialDto {
+  totalIncome: number;
+  totalExpense: number;
+  balance: number;
+  transactionsCount: number;
+}
+
 @Injectable()
 export class DashboardService {
   constructor(private readonly prisma: PrismaService) {}
+
+  async getDashboard(companyId: string): Promise<DashboardFinancialDto> {
+    if (!companyId?.trim()) {
+      return this.zeroFinancialSummary();
+    }
+
+    const companyExists = await this.prisma.company.count({
+      where: { id: companyId },
+    });
+    if (companyExists === 0) {
+      return this.zeroFinancialSummary();
+    }
+
+    const transactions = await this.prisma.financialTransaction.findMany({
+      where: { companyId },
+      select: { type: true, amount: true },
+    });
+
+    const reduced = transactions.reduce(
+      (acc, transaction) => {
+        const amount = this.toNumber(transaction.amount);
+        if (transaction.type === FinancialTransactionType.INCOME) {
+          acc.totalIncome += amount;
+        } else if (transaction.type === FinancialTransactionType.EXPENSE) {
+          acc.totalExpense += amount;
+        }
+        acc.transactionsCount += 1;
+        return acc;
+      },
+      { totalIncome: 0, totalExpense: 0, transactionsCount: 0 },
+    );
+
+    const balance = reduced.totalIncome - reduced.totalExpense;
+
+    return {
+      totalIncome: this.round(reduced.totalIncome),
+      totalExpense: this.round(reduced.totalExpense),
+      balance: this.round(balance),
+      transactionsCount: reduced.transactionsCount,
+    };
+  }
 
   async getSummary(userId: string): Promise<DashboardSummaryDto> {
     const user = await this.prisma.user.findUnique({
@@ -83,6 +131,15 @@ export class DashboardService {
       profit: 0,
       cashflow: 0,
       companyCount,
+    };
+  }
+
+  private zeroFinancialSummary(): DashboardFinancialDto {
+    return {
+      totalIncome: 0,
+      totalExpense: 0,
+      balance: 0,
+      transactionsCount: 0,
     };
   }
 
