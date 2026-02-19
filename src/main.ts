@@ -3,16 +3,16 @@ import { AppModule } from './app.module';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
-  app.setGlobalPrefix('api');
 
   app.enableCors({
     origin: [
-      'https://next-level-front-cy7560ry7-carlos1128-ship-its-projects.vercel.app',
+      'https://next-level-front-6rn4hgy9e-carlos1128-ship-its-projects.vercel.app',
       'http://localhost:3000',
     ],
-    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
     credentials: true,
   });
+
+  app.setGlobalPrefix('api');
 
   await app.listen(process.env.PORT || 3000);
 }
