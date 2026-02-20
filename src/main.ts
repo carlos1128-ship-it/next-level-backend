@@ -4,6 +4,8 @@ import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 
 const logger = new Logger('Bootstrap');
+const vercelPreviewRegex =
+  /^https:\/\/next-level-front(?:-[a-z0-9-]+)?(?:-carlos1128-ship-its-projects)?\.vercel\.app$/i;
 
 function logRegisteredRoutes(app: any): void {
   const instance = app.getHttpAdapter().getInstance();
@@ -48,10 +50,16 @@ async function bootstrap(): Promise<void> {
   }
 
   app.setGlobalPrefix('api');
+
+  app.getHttpAdapter().get('/', (_req, res) => {
+    res.status(200).json({ status: 'ok', service: 'next-level-backend' });
+  });
+
   app.enableCors({
     origin: [
       'http://localhost:3000',
       'https://next-level-front.vercel.app',
+      vercelPreviewRegex,
     ],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
