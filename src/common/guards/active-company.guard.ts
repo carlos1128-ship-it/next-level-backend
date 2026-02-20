@@ -13,8 +13,6 @@ export class ActiveCompanyGuard implements CanActivate {
     const user = request.user as { companyId?: string | null } | undefined;
     const companyId = user?.companyId?.trim();
 
-    console.log('companyId recebido:', companyId);
-
     if (!companyId) {
       throw new BadRequestException('companyId nao informado');
     }

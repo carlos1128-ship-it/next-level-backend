@@ -17,7 +17,6 @@ export class FinanceService {
     if (!user?.companyId) {
       return [];
     }
-    console.log('companyId recebido:', user.companyId);
 
     const where: Prisma.FinancialTransactionWhereInput = {
       companyId: user.companyId,
@@ -47,7 +46,6 @@ export class FinanceService {
       throw new BadRequestException('User has no company');
     }
     const companyId = dto.companyId?.trim() || user.companyId || undefined;
-    console.log('companyId recebido:', companyId);
     if (!companyId) {
       throw new BadRequestException('companyId nao informado');
     }

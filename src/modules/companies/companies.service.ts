@@ -23,7 +23,6 @@ export class CompaniesService {
     if (!user) {
       return this.defaultCompany();
     }
-    console.log('companyId recebido:', user.companyId);
 
     const companyId = user.companyId?.trim() || undefined;
     if (!companyId) {
@@ -47,7 +46,6 @@ export class CompaniesService {
     });
 
     const companyId = user?.companyId?.trim() || undefined;
-    console.log('companyId recebido:', companyId);
 
     if (companyId) {
       const existing = await this.prisma.company.findUnique({

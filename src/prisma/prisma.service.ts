@@ -9,7 +9,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     try {
       await this.$connect();
       await this.$queryRaw`SELECT 1`;
-      console.log('Banco conectado com sucesso');
       this.logger.log('Conexao com banco validada no startup');
     } catch (error) {
       this.logger.error('Falha ao conectar no banco de dados', error as Error);
