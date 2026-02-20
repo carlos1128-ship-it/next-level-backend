@@ -6,14 +6,6 @@ import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 
 const logger = new Logger('Bootstrap');
 
-function parseAllowedOrigins(): string[] {
-  const raw = process.env.CORS_ORIGINS ?? process.env.FRONTEND_URL ?? '';
-  return raw
-    .split(',')
-    .map((value) => value.trim())
-    .filter(Boolean);
-}
-
 function logRegisteredRoutes(app: any): void {
   const instance = app.getHttpAdapter().getInstance();
   const routes: string[] = [];
@@ -51,7 +43,6 @@ function logRegisteredRoutes(app: any): void {
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
-  const allowedOrigins = parseAllowedOrigins();
 
   if (!process.env.DATABASE_URL) {
     logger.error('DATABASE_URL nao configurada. Defina no Render para o backend iniciar corretamente.');
@@ -66,14 +57,14 @@ async function bootstrap(): Promise<void> {
   });
 
   app.enableCors({
-    origin: (origin, callback) => {
-      if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-      logger.warn(`CORS bloqueado para origem: ${origin}`);
-      return callback(new Error('Not allowed by CORS'));
-    },
+    origin: [
+      'http://localhost:3000',
+      'https://next-level-front.vercel.app',
+    ],
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    optionsSuccessStatus: 204,
   });
 
   app.useGlobalFilters(new AllExceptionsFilter());
