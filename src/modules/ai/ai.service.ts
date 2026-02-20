@@ -1,7 +1,9 @@
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   InternalServerErrorException,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -20,6 +22,7 @@ export interface ChatResponseDto {
 
 @Injectable()
 export class AiService {
+  private readonly logger = new Logger(AiService.name);
   private genAI: GoogleGenerativeAI | null = null;
 
   constructor(
@@ -101,6 +104,9 @@ export class AiService {
         'Servico de IA indisponivel no momento',
       );
     }
+    if (!user.companyId) {
+      throw new BadRequestException('User has no company');
+    }
 
     const detailLevel = this.normalizeDetailLevel(user.detailLevel);
     const prompt = this.buildChatPrompt(message, detailLevel);
@@ -158,6 +164,9 @@ export class AiService {
       if (error instanceof InternalServerErrorException) {
         throw error;
       }
+      this.logger.error(
+        `Falha ao gerar resposta da IA: ${error instanceof Error ? error.message : 'erro desconhecido'}`,
+      );
       throw new InternalServerErrorException('Falha ao gerar resposta da IA');
     }
   }

@@ -8,18 +8,40 @@ import * as bcrypt from 'bcrypt';
 export class UserService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async updateProfile(userId: string, dto: UpdateProfileDto) {
+  async getProfile(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: {
         id: true,
         email: true,
+        name: true,
+        detailLevel: true,
+        companyId: true,
       },
     });
 
     if (!user) {
       throw new NotFoundException('Usuario nao encontrado');
     }
+    console.log('companyId recebido:', user.companyId);
+
+    return user;
+  }
+
+  async updateProfile(userId: string, dto: UpdateProfileDto) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        companyId: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Usuario nao encontrado');
+    }
+    console.log('companyId recebido:', user.companyId);
 
     const updated = await this.prisma.user.update({
       where: { id: userId },

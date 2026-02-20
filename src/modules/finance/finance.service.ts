@@ -17,6 +17,7 @@ export class FinanceService {
     if (!user?.companyId) {
       return [];
     }
+    console.log('companyId recebido:', user.companyId);
 
     const where: Prisma.FinancialTransactionWhereInput = {
       companyId: user.companyId,
@@ -42,19 +43,23 @@ export class FinanceService {
     if (!user) {
       throw new BadRequestException('Usuario nao encontrado');
     }
-
-    if (!dto.companyId?.trim()) {
-      throw new BadRequestException('companyId e obrigatorio');
+    if (!user.companyId) {
+      throw new BadRequestException('User has no company');
+    }
+    const companyId = dto.companyId?.trim() || user.companyId || undefined;
+    console.log('companyId recebido:', companyId);
+    if (!companyId) {
+      throw new BadRequestException('companyId nao informado');
     }
 
-    if (user.companyId && dto.companyId !== user.companyId) {
+    if (user.companyId && companyId !== user.companyId) {
       throw new BadRequestException(
         'companyId nao corresponde ao usuario autenticado',
       );
     }
 
     const company = await this.prisma.company.findUnique({
-      where: { id: dto.companyId },
+      where: { id: companyId },
       select: { id: true },
     });
     if (!company) {
@@ -73,7 +78,7 @@ export class FinanceService {
 
     const createdTransaction = await this.prisma.financialTransaction.create({
       data: {
-        companyId: dto.companyId,
+        companyId,
         userId,
         type: normalizedType,
         amount: new Prisma.Decimal(dto.amount),
@@ -86,20 +91,20 @@ export class FinanceService {
     const [incomeAggregate, expenseAggregate, transactionsCount] = await Promise.all([
       this.prisma.financialTransaction.aggregate({
         where: {
-          companyId: dto.companyId,
+          companyId,
           type: FinancialTransactionType.INCOME,
         },
         _sum: { amount: true },
       }),
       this.prisma.financialTransaction.aggregate({
         where: {
-          companyId: dto.companyId,
+          companyId,
           type: FinancialTransactionType.EXPENSE,
         },
         _sum: { amount: true },
       }),
       this.prisma.financialTransaction.count({
-        where: { companyId: dto.companyId },
+        where: { companyId },
       }),
     ]);
 

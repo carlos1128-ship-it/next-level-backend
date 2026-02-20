@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SalesService } from '../sales/sales.service';
 import { InsightsService } from '../insights/insights.service';
@@ -16,14 +16,20 @@ export class RagService {
   ) {}
 
   async buildContext(companyId: string, query: string): Promise<string> {
+    const normalizedCompanyId = companyId?.trim();
+    console.log('companyId recebido:', normalizedCompanyId);
+    if (!normalizedCompanyId) {
+      throw new BadRequestException('companyId nao informado');
+    }
+
     const end = new Date();
     const start = new Date();
     start.setMonth(start.getMonth() - 3);
 
     const [company, aggregates, insights] = await Promise.all([
-      this.prisma.company.findUnique({ where: { id: companyId } }),
-      this.salesService.getAggregatesByCompanyAndPeriod(companyId, start, end),
-      this.insightsService.getInsights(companyId, start, end),
+      this.prisma.company.findUnique({ where: { id: normalizedCompanyId } }),
+      this.salesService.getAggregatesByCompanyAndPeriod(normalizedCompanyId, start, end),
+      this.insightsService.getInsights(normalizedCompanyId, start, end),
     ]);
 
     const parts: string[] = [];

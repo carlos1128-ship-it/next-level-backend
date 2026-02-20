@@ -1,10 +1,12 @@
-import { Body, Controller, Get, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { ListTransactionsDto } from './dto/list-transactions.dto';
 import { FinanceService } from './finance.service';
+import { ActiveCompanyGuard } from '../../common/guards/active-company.guard';
 
 @Controller('transactions')
+@UseGuards(ActiveCompanyGuard)
 export class TransactionsController {
   constructor(private readonly financeService: FinanceService) {}
 

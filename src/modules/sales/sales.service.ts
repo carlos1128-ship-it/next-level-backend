@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, SaleChannel } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateSaleDto } from './dto/create-sale.dto';
@@ -35,6 +35,9 @@ export class SalesService {
 
     if (!user) {
       throw new NotFoundException('Usuario nao encontrado');
+    }
+    if (!user.companyId) {
+      throw new BadRequestException('User has no company');
     }
 
     return this.prisma.sale.create({

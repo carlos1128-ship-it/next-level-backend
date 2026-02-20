@@ -23,13 +23,15 @@ export class CompaniesService {
     if (!user) {
       return this.defaultCompany();
     }
+    console.log('companyId recebido:', user.companyId);
 
-    if (!user.companyId) {
+    const companyId = user.companyId?.trim() || undefined;
+    if (!companyId) {
       return this.createAndAttachInitialCompany(userId);
     }
 
     const company = await this.prisma.company.findUnique({
-      where: { id: user.companyId },
+      where: { id: companyId },
     });
     if (!company) {
       return this.createAndAttachInitialCompany(userId);
@@ -44,9 +46,12 @@ export class CompaniesService {
       select: { companyId: true },
     });
 
-    if (user?.companyId) {
+    const companyId = user?.companyId?.trim() || undefined;
+    console.log('companyId recebido:', companyId);
+
+    if (companyId) {
       const existing = await this.prisma.company.findUnique({
-        where: { id: user.companyId },
+        where: { id: companyId },
       });
       if (existing) {
         return existing;

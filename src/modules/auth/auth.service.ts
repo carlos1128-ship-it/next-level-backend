@@ -8,7 +8,7 @@ import { RegisterDto } from './dto/register.dto';
 export interface JwtPayload {
   sub: string;
   email: string;
-  companyId: string;
+  companyId?: string;
 }
 
 @Injectable()
@@ -36,7 +36,7 @@ export class AuthService {
     const payload: JwtPayload = {
       sub: user.id,
       email: user.email,
-      companyId: user.companyId,
+      companyId: user.companyId ?? undefined,
     };
 
     const accessToken = this.jwtService.sign(payload);
@@ -121,7 +121,7 @@ export class AuthService {
     return {
       id: user.id,
       email: user.email,
-      companyId: user.companyId,
+      companyId: user.companyId ?? undefined,
       detailLevel: user.detailLevel,
     };
   }

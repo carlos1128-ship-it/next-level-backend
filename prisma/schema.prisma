@@ -61,11 +61,11 @@ model User {
   plan      Plan     @default(FREE)
   detailLevel String @default("medium")
   name      String?
-  companyId String
+  companyId String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  company              Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company              Company?               @relation(fields: [companyId], references: [id], onDelete: Cascade)
   sales                Sale[]
   analyses             Analysis[]
   financialTransactions FinancialTransaction[]

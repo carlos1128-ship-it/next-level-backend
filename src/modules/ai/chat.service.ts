@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Injectable,
   InternalServerErrorException,
+  Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AiChatRole } from '@prisma/client';
@@ -17,6 +18,7 @@ export interface ChatReply {
 
 @Injectable()
 export class ChatService {
+  private readonly logger = new Logger(ChatService.name);
   private readonly openai: OpenAI | null;
   private readonly model: string;
 
@@ -38,23 +40,31 @@ export class ChatService {
     if (!user) {
       throw new BadRequestException('Usuario nao encontrado');
     }
+    if (!user.companyId) {
+      throw new BadRequestException('User has no company');
+    }
+    const companyId = dto.companyId?.trim() || user.companyId || undefined;
+    console.log('companyId recebido:', companyId);
+    if (!companyId) {
+      throw new BadRequestException('companyId nao informado');
+    }
 
     const company = await this.prisma.company.findUnique({
-      where: { id: dto.companyId },
+      where: { id: companyId },
       select: { id: true, name: true, currency: true },
     });
     if (!company) {
       throw new BadRequestException('Empresa nao encontrada para o companyId informado');
     }
 
-    if (user.companyId && user.companyId !== dto.companyId) {
+    if (user.companyId && user.companyId !== companyId) {
       throw new BadRequestException('companyId nao corresponde ao usuario autenticado');
     }
 
     const [dashboard, recentTransactions] = await Promise.all([
-      this.dashboardService.getDashboard(dto.companyId),
+      this.dashboardService.getDashboard(companyId),
       this.prisma.financialTransaction.findMany({
-        where: { companyId: dto.companyId },
+        where: { companyId },
         orderBy: { occurredAt: 'desc' },
         take: 5,
         select: { type: true, amount: true, description: true, occurredAt: true },
@@ -77,7 +87,7 @@ export class ChatService {
       this.prisma.aiChatMessage.create({
         data: {
           userId: user.id,
-          companyId: dto.companyId,
+          companyId,
           role: AiChatRole.USER,
           content: dto.message.trim(),
         },
@@ -85,7 +95,7 @@ export class ChatService {
       this.prisma.aiChatMessage.create({
         data: {
           userId: user.id,
-          companyId: dto.companyId,
+          companyId,
           role: AiChatRole.ASSISTANT,
           content: reply.message,
         },
@@ -131,7 +141,12 @@ export class ChatService {
       }
 
       return { message: text, source: 'openai' };
-    } catch {
+    } catch (error) {
+      this.logger.warn(
+        `Falha ao consultar OpenAI; usando fallback local. Erro: ${
+          error instanceof Error ? error.message : 'desconhecido'
+        }`,
+      );
       return { message: this.buildLocalFallback(userMessage, dashboard), source: 'local' };
     }
   }
