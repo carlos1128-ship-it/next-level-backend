@@ -54,6 +54,9 @@ async function bootstrap(): Promise<void> {
   app.getHttpAdapter().get('/', (_req, res) => {
     res.status(200).json({ status: 'ok', service: 'next-level-backend' });
   });
+  app.getHttpAdapter().get('/favicon.ico', (_req, res) => {
+    res.status(204).send();
+  });
 
   app.enableCors({
     origin: [
@@ -63,7 +66,7 @@ async function bootstrap(): Promise<void> {
     ],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Company-Id'],
     optionsSuccessStatus: 204,
   });
 
