@@ -17,7 +17,6 @@ export class RagService {
 
   async buildContext(companyId: string, query: string): Promise<string> {
     const normalizedCompanyId = companyId?.trim();
-    console.log('companyId recebido:', normalizedCompanyId);
     if (!normalizedCompanyId) {
       throw new BadRequestException('companyId nao informado');
     }

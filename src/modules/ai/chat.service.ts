@@ -44,7 +44,6 @@ export class ChatService {
       throw new BadRequestException('User has no company');
     }
     const companyId = dto.companyId?.trim() || user.companyId || undefined;
-    console.log('companyId recebido:', companyId);
     if (!companyId) {
       throw new BadRequestException('companyId nao informado');
     }

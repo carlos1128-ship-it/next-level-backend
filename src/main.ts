@@ -1,6 +1,5 @@
 import { NestFactory } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
-import { NextFunction, Request, Response } from 'express';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 
@@ -48,14 +47,7 @@ async function bootstrap(): Promise<void> {
     logger.error('DATABASE_URL nao configurada. Defina no Render para o backend iniciar corretamente.');
   }
 
-  app.use((req: Request, _res: Response, next: NextFunction) => {
-    if (req.url.startsWith('/api/api/')) {
-      req.url = req.url.replace('/api/api/', '/api/');
-    }
-    console.log('Rota acessada:', req.method, req.originalUrl);
-    next();
-  });
-
+  app.setGlobalPrefix('api');
   app.enableCors({
     origin: [
       'http://localhost:3000',
@@ -68,7 +60,6 @@ async function bootstrap(): Promise<void> {
   });
 
   app.useGlobalFilters(new AllExceptionsFilter());
-  app.setGlobalPrefix('api');
   await app.init();
   logRegisteredRoutes(app);
 

@@ -23,7 +23,6 @@ export class UserService {
     if (!user) {
       throw new NotFoundException('Usuario nao encontrado');
     }
-    console.log('companyId recebido:', user.companyId);
 
     return user;
   }
@@ -41,7 +40,6 @@ export class UserService {
     if (!user) {
       throw new NotFoundException('Usuario nao encontrado');
     }
-    console.log('companyId recebido:', user.companyId);
 
     const updated = await this.prisma.user.update({
       where: { id: userId },
