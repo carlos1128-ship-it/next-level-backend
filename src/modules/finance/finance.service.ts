@@ -58,8 +58,11 @@ export class FinanceService {
       );
     }
 
-    const company = await this.prisma.company.findUnique({
-      where: { id: normalizedCompanyId },
+    const company = await this.prisma.company.findFirst({
+      where: {
+        id: normalizedCompanyId,
+        users: { some: { id: userId } },
+      },
       select: { id: true },
     });
     if (!company) {
@@ -104,8 +107,11 @@ export class FinanceService {
       );
     }
 
-    const company = await this.prisma.company.findUnique({
-      where: { id: companyId },
+    const company = await this.prisma.company.findFirst({
+      where: {
+        id: companyId,
+        users: { some: { id: userId } },
+      },
       select: { id: true },
     });
     if (!company) {
