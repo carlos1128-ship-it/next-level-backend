@@ -1,5 +1,5 @@
 import { NestFactory } from '@nestjs/core';
-import { Logger } from '@nestjs/common';
+import { Logger, ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 
@@ -50,6 +50,13 @@ async function bootstrap(): Promise<void> {
   }
 
   app.setGlobalPrefix('api');
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true,
+      forbidNonWhitelisted: true,
+    }),
+  );
 
   app.getHttpAdapter().get('/', (_req, res) => {
     res.status(200).json({ status: 'ok', service: 'next-level-backend' });
@@ -61,6 +68,7 @@ async function bootstrap(): Promise<void> {
   app.enableCors({
     origin: [
       'http://localhost:3000',
+      'http://localhost:5173',
       'https://next-level-front.vercel.app',
       vercelPreviewRegex,
     ],

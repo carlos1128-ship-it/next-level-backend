@@ -33,6 +33,54 @@ export class FinanceService {
     });
   }
 
+  async listTransactionsByCompany(
+    userId: string,
+    companyId: string,
+    query: ListTransactionsDto,
+  ) {
+    const normalizedCompanyId = companyId?.trim();
+    if (!normalizedCompanyId) {
+      throw new BadRequestException('companyId nao informado');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { companyId: true },
+    });
+
+    if (!user) {
+      throw new BadRequestException('Usuario nao encontrado');
+    }
+
+    if (!user.companyId || user.companyId !== normalizedCompanyId) {
+      throw new BadRequestException(
+        'companyId nao corresponde ao usuario autenticado',
+      );
+    }
+
+    const company = await this.prisma.company.findUnique({
+      where: { id: normalizedCompanyId },
+      select: { id: true },
+    });
+    if (!company) {
+      throw new BadRequestException('Empresa nao encontrada para o companyId informado');
+    }
+
+    const where: Prisma.FinancialTransactionWhereInput = {
+      companyId: normalizedCompanyId,
+      type: query.type,
+      occurredAt: {
+        gte: query.start ? new Date(query.start) : undefined,
+        lte: query.end ? new Date(query.end) : undefined,
+      },
+    };
+
+    return this.prisma.financialTransaction.findMany({
+      where,
+      orderBy: { occurredAt: 'desc' },
+    });
+  }
+
   async createTransaction(userId: string, dto: CreateTransactionDto) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
