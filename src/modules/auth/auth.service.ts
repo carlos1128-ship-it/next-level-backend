@@ -76,20 +76,25 @@ export class AuthService {
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
     const created = await this.prisma.$transaction(async (tx) => {
-      const company = await tx.company.create({
-        data: {
-          name: dto.companyName.trim(),
-          slug: companySlug,
-        },
-      });
-
       const user = await tx.user.create({
         data: {
           email: dto.email.toLowerCase().trim(),
           password: passwordHash,
           name: dto.name?.trim() || 'Administrador',
-          companyId: company.id,
         },
+      });
+
+      const company = await tx.company.create({
+        data: {
+          name: dto.companyName.trim(),
+          slug: companySlug,
+          userId: user.id,
+        },
+      });
+
+      await tx.user.update({
+        where: { id: user.id },
+        data: { companyId: company.id },
       });
 
       return { company, user };

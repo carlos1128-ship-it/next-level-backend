@@ -25,8 +25,9 @@ enum AiChatRole {
 
 model Company {
   id          String   @id @default(cuid())
+  userId      String?
   name        String
-  slug        String   @unique
+  slug        String   @unique @default(cuid())
   currency    String   @default("BRL")
   timezone    String   @default("America/Sao_Paulo")
   createdAt   DateTime @default(now())
@@ -119,6 +120,7 @@ model FinancialTransaction {
   amount      Decimal                  @db.Decimal(12, 2)
   description String
   category    String?
+  date        DateTime                 @default(now())
   occurredAt  DateTime
   createdAt   DateTime                 @default(now())
 

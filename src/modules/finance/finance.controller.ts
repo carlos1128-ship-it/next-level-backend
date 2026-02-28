@@ -32,6 +32,11 @@ export class FinanceController {
     return this.financeService.findAll(companyId, req.user.id);
   }
 
+  @Get('report')
+  getReport(@Query('companyId') companyId: string, @Req() req: { user: { id: string } }) {
+    return this.financeService.getReport(companyId, req.user.id);
+  }
+
   @Post('transactions')
   create(@Body() dto: CreateTransactionDto, @Req() req: { user: { id: string } }) {
     return this.financeService.createTransaction(dto, req.user.id);

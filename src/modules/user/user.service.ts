@@ -9,22 +9,32 @@ export class UserService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getProfile(userId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        detailLevel: true,
-        companyId: true,
-      },
-    });
+    const [user, companyCount] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          detailLevel: true,
+          companyId: true,
+        },
+      }),
+      this.prisma.company.count({
+        where: {
+          OR: [{ userId }, { users: { some: { id: userId } } }],
+        },
+      }),
+    ]);
 
     if (!user) {
       throw new NotFoundException('Usuario nao encontrado');
     }
 
-    return user;
+    return {
+      ...user,
+      companyCount,
+    };
   }
 
   async updateProfile(userId: string, dto: UpdateProfileDto) {
@@ -85,6 +95,29 @@ export class UserService {
       where: { id: userId },
       data: { password: newHash },
     });
+
+    return { success: true };
+  }
+
+  async deleteAccount(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Usuario nao encontrado');
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.company.updateMany({
+        where: { userId },
+        data: { userId: null },
+      }),
+      this.prisma.user.delete({
+        where: { id: userId },
+      }),
+    ]);
 
     return { success: true };
   }
