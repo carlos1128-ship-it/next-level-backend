@@ -136,7 +136,11 @@ export class FinanceService {
         amount: new Prisma.Decimal(dto.amount),
         description: dto.description.trim(),
         category: dto.category?.trim() || null,
-        occurredAt: dto.occurredAt ? new Date(dto.occurredAt) : new Date(),
+        occurredAt: dto.occurredAt
+          ? new Date(dto.occurredAt)
+          : dto.date
+            ? new Date(dto.date)
+            : new Date(),
       },
     });
 
