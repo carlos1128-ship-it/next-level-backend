@@ -15,16 +15,16 @@ export class CreateCompanyDto {
   name: string;
 
   @IsString()
-  @IsNotEmpty()
+  @IsOptional()
   @MinLength(2)
   @MaxLength(80)
-  sector: string;
+  sector?: string;
 
   @IsString()
-  @IsNotEmpty()
+  @IsOptional()
   @MinLength(3)
   @MaxLength(500)
-  description: string;
+  description?: string;
 
   @IsOptional()
   @IsString()

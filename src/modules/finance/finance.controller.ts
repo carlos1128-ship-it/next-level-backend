@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { ListTransactionsDto } from './dto/list-transactions.dto';
@@ -25,6 +25,15 @@ export class FinanceController {
     @Query() query: ListTransactionsDto,
   ) {
     return this.financeService.listTransactions(userId, query);
+  }
+
+  @Get(':companyId')
+  async listTransactionsByCompany(
+    @CurrentUser('sub') userId: string,
+    @Param('companyId') companyId: string,
+    @Query() query: ListTransactionsDto,
+  ) {
+    return this.financeService.listTransactionsByCompany(userId, companyId, query);
   }
 
   @Get('transactions')

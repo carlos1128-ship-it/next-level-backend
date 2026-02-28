@@ -19,8 +19,9 @@ export class AuthService {
   ) {}
 
   async login(dto: LoginDto) {
+    const normalizedEmail = dto.email.toLowerCase().trim();
     const user = await this.prisma.user.findUnique({
-      where: { email: dto.email },
+      where: { email: normalizedEmail },
       include: { company: true },
     });
 
@@ -28,7 +29,7 @@ export class AuthService {
       throw new UnauthorizedException('Credenciais inválidas');
     }
 
-    const isPasswordValid = await bcrypt.compare(dto.password, user.password);
+    const isPasswordValid = await bcrypt.compare(dto.password, user.password || '');
     if (!isPasswordValid) {
       throw new UnauthorizedException('Credenciais inválidas');
     }

@@ -1,4 +1,4 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateCompanyDto } from './dto/create-company.dto';
 
@@ -40,10 +40,18 @@ export class CompaniesService {
   }
 
   async createCompany(userId: string, dto: CreateCompanyDto) {
+    if (!userId?.trim()) {
+      throw new BadRequestException('userId nao informado');
+    }
+
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { companyId: true },
     });
+
+    if (!user) {
+      throw new BadRequestException('Usuario nao encontrado');
+    }
 
     const companyId = user?.companyId?.trim() || undefined;
 
