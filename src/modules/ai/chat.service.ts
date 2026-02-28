@@ -35,7 +35,7 @@ export class ChatService {
   async chat(userId: string, dto: ChatRequestDto): Promise<ChatReply> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true },
+      select: { id: true, companyId: true },
     });
     if (!user) {
       throw new BadRequestException('Usuario nao encontrado');
@@ -46,21 +46,45 @@ export class ChatService {
       throw new BadRequestException('companyId nao informado');
     }
 
-    const company = await this.prisma.company.findFirst({
+    let company = await this.prisma.company.findFirst({
       where: {
         id: companyId,
         OR: [{ userId: user.id }, { users: { some: { id: user.id } } }],
       },
       select: { id: true, name: true, currency: true },
     });
+
+    // Fallback for stale companyId in client state.
+    if (!company && user.companyId) {
+      company = await this.prisma.company.findFirst({
+        where: {
+          id: user.companyId,
+          OR: [{ userId: user.id }, { users: { some: { id: user.id } } }],
+        },
+        select: { id: true, name: true, currency: true },
+      });
+    }
+
     if (!company) {
-      throw new BadRequestException('Empresa nao encontrada para o companyId informado');
+      company = await this.prisma.company.findFirst({
+        where: {
+          OR: [{ userId: user.id }, { users: { some: { id: user.id } } }],
+        },
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, name: true, currency: true },
+      });
+    }
+
+    if (!company?.id) {
+      throw new BadRequestException(
+        'Empresa nao encontrada para o companyId informado',
+      );
     }
 
     const [dashboard, recentTransactions] = await Promise.all([
-      this.dashboardService.getDashboard(companyId),
+      this.dashboardService.getDashboard(company.id),
       this.prisma.financialTransaction.findMany({
-        where: { companyId },
+        where: { companyId: company.id },
         orderBy: { date: 'desc' },
         take: 5,
         select: { type: true, amount: true, description: true, category: true, date: true },
@@ -83,7 +107,7 @@ export class ChatService {
       this.prisma.aiChatMessage.create({
         data: {
           userId: user.id,
-          companyId,
+          companyId: company.id,
           role: AiChatRole.USER,
           content: dto.message.trim(),
         },
@@ -91,7 +115,7 @@ export class ChatService {
       this.prisma.aiChatMessage.create({
         data: {
           userId: user.id,
-          companyId,
+          companyId: company.id,
           role: AiChatRole.ASSISTANT,
           content: reply.response,
         },
