@@ -12,7 +12,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { ChatRequestDto } from './dto/chat-request.dto';
 
 export interface ChatReply {
-  message: string;
+  response: string;
   source: 'openai' | 'local';
 }
 
@@ -40,33 +40,54 @@ export class ChatService {
     if (!user) {
       throw new BadRequestException('Usuario nao encontrado');
     }
-    if (!user.companyId) {
-      throw new BadRequestException('User has no company');
-    }
-    const companyId = dto.companyId?.trim() || user.companyId || undefined;
+
+    const companyId = dto.companyId?.trim();
     if (!companyId) {
       throw new BadRequestException('companyId nao informado');
     }
 
-    const company = await this.prisma.company.findUnique({
-      where: { id: companyId },
+    let company = await this.prisma.company.findFirst({
+      where: {
+        id: companyId,
+        OR: [{ userId: user.id }, { users: { some: { id: user.id } } }],
+      },
       select: { id: true, name: true, currency: true },
     });
-    if (!company) {
-      throw new BadRequestException('Empresa nao encontrada para o companyId informado');
+
+    // Fallback for stale companyId in client state.
+    if (!company && user.companyId) {
+      company = await this.prisma.company.findFirst({
+        where: {
+          id: user.companyId,
+          OR: [{ userId: user.id }, { users: { some: { id: user.id } } }],
+        },
+        select: { id: true, name: true, currency: true },
+      });
     }
 
-    if (user.companyId && user.companyId !== companyId) {
-      throw new BadRequestException('companyId nao corresponde ao usuario autenticado');
+    if (!company) {
+      company = await this.prisma.company.findFirst({
+        where: {
+          OR: [{ userId: user.id }, { users: { some: { id: user.id } } }],
+        },
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, name: true, currency: true },
+      });
+    }
+
+    if (!company?.id) {
+      throw new BadRequestException(
+        'Empresa nao encontrada para o companyId informado',
+      );
     }
 
     const [dashboard, recentTransactions] = await Promise.all([
-      this.dashboardService.getDashboard(companyId),
+      this.dashboardService.getDashboard(company.id),
       this.prisma.financialTransaction.findMany({
-        where: { companyId },
-        orderBy: { occurredAt: 'desc' },
+        where: { companyId: company.id },
+        orderBy: { date: 'desc' },
         take: 5,
-        select: { type: true, amount: true, description: true, occurredAt: true },
+        select: { type: true, amount: true, description: true, category: true, date: true },
       }),
     ]);
 
@@ -86,7 +107,7 @@ export class ChatService {
       this.prisma.aiChatMessage.create({
         data: {
           userId: user.id,
-          companyId,
+          companyId: company.id,
           role: AiChatRole.USER,
           content: dto.message.trim(),
         },
@@ -94,9 +115,9 @@ export class ChatService {
       this.prisma.aiChatMessage.create({
         data: {
           userId: user.id,
-          companyId,
+          companyId: company.id,
           role: AiChatRole.ASSISTANT,
-          content: reply.message,
+          content: reply.response,
         },
       }),
     ]);
@@ -115,7 +136,7 @@ export class ChatService {
     },
   ): Promise<ChatReply> {
     if (!this.openai) {
-      return { message: this.buildLocalFallback(userMessage, dashboard), source: 'local' };
+      return { response: this.buildLocalFallback(userMessage, dashboard), source: 'local' };
     }
 
     try {
@@ -136,17 +157,17 @@ export class ChatService {
 
       const text = response.output_text?.trim();
       if (!text) {
-        return { message: this.buildLocalFallback(userMessage, dashboard), source: 'local' };
+        return { response: this.buildLocalFallback(userMessage, dashboard), source: 'local' };
       }
 
-      return { message: text, source: 'openai' };
+      return { response: text, source: 'openai' };
     } catch (error) {
       this.logger.warn(
         `Falha ao consultar OpenAI; usando fallback local. Erro: ${
           error instanceof Error ? error.message : 'desconhecido'
         }`,
       );
-      return { message: this.buildLocalFallback(userMessage, dashboard), source: 'local' };
+      return { response: this.buildLocalFallback(userMessage, dashboard), source: 'local' };
     }
   }
 

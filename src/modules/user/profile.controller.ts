@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Patch } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Patch } from '@nestjs/common';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -27,5 +27,10 @@ export class ProfileController {
     @Body() dto: ChangePasswordDto,
   ) {
     return this.userService.changePassword(userId, dto);
+  }
+
+  @Delete()
+  async deleteAccount(@CurrentUser('sub') userId: string) {
+    return this.userService.deleteAccount(userId);
   }
 }

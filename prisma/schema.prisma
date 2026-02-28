@@ -25,8 +25,9 @@ enum AiChatRole {
 
 model Company {
   id          String   @id @default(cuid())
+  userId      String?
   name        String
-  slug        String   @unique
+  slug        String   @unique @default(cuid())
   currency    String   @default("BRL")
   timezone    String   @default("America/Sao_Paulo")
   createdAt   DateTime @default(now())
@@ -70,6 +71,22 @@ model User {
   analyses             Analysis[]
   financialTransactions FinancialTransaction[]
   aiChatMessages       AiChatMessage[]
+  refreshTokens        RefreshToken[]
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@index([revokedAt])
 }
 
 // Canal de origem da venda. manual = criada pelo usuário; shopify/meta = futuros webhooks.
@@ -119,6 +136,7 @@ model FinancialTransaction {
   amount      Decimal                  @db.Decimal(12, 2)
   description String
   category    String?
+  date        DateTime                 @default(now())
   occurredAt  DateTime
   createdAt   DateTime                 @default(now())
 

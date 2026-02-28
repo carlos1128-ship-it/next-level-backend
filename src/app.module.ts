@@ -3,7 +3,6 @@ import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { PrismaModule } from './prisma/prisma.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
-import { CompanyGuard } from './common/guards/company.guard';
 import { AuthModule } from './modules/auth/auth.module';
 import { CompaniesModule } from './modules/companies/companies.module';
 import { SalesModule } from './modules/sales/sales.module';
@@ -32,7 +31,6 @@ import { ExportModule } from './modules/export/export.module';
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
-    { provide: APP_GUARD, useClass: CompanyGuard },
   ],
 })
 export class AppModule {}
