@@ -42,10 +42,11 @@ export class AuthController {
     return this.authService.refresh(refreshToken);
   }
 
+  @Public()
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   async logout(
-    @CurrentUser('sub') userId: string,
+    @CurrentUser('sub') userId: string | undefined,
     @Body() body: { refresh_token?: string; refreshToken?: string },
   ) {
     const refreshToken = body.refresh_token || body.refreshToken || '';

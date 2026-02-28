@@ -1,6 +1,8 @@
 import {
   BadRequestException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Injectable,
   InternalServerErrorException,
   Logger,
@@ -164,11 +166,39 @@ export class AiService {
       if (error instanceof InternalServerErrorException) {
         throw error;
       }
+      if (this.isQuotaExceededError(error)) {
+        this.logger.warn(
+          `Quota Gemini excedida: ${error instanceof Error ? error.message : 'erro desconhecido'}`,
+        );
+        throw new HttpException(
+          'Limite da IA excedido no momento. Tente novamente em alguns minutos.',
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
       this.logger.error(
         `Falha ao gerar resposta da IA: ${error instanceof Error ? error.message : 'erro desconhecido'}`,
       );
       throw new InternalServerErrorException('Falha ao gerar resposta da IA');
     }
+  }
+
+  private isQuotaExceededError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message.toLowerCase() : '';
+    if (
+      message.includes('429') ||
+      message.includes('quota') ||
+      message.includes('too many requests') ||
+      message.includes('rate limit')
+    ) {
+      return true;
+    }
+
+    if (error && typeof error === 'object') {
+      const maybeStatus = (error as { status?: unknown }).status;
+      if (maybeStatus === 429) return true;
+    }
+
+    return false;
   }
 
   private normalizeDetailLevel(value: string | null | undefined): DetailLevel {

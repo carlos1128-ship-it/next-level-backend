@@ -193,8 +193,11 @@ export class AuthService {
     };
   }
 
-  async logout(userId: string, refreshToken?: string) {
+  async logout(userId?: string, refreshToken?: string) {
     if (!refreshToken?.trim()) {
+      if (!userId) {
+        return { success: true };
+      }
       await this.prisma.refreshToken.updateMany({
         where: { userId, revokedAt: null },
         data: { revokedAt: new Date() },
@@ -204,7 +207,7 @@ export class AuthService {
 
     await this.prisma.refreshToken.updateMany({
       where: {
-        userId,
+        ...(userId ? { userId } : {}),
         tokenHash: this.hashToken(refreshToken),
         revokedAt: null,
       },
