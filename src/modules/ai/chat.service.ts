@@ -6,20 +6,22 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AiChatRole } from '@prisma/client';
-import OpenAI from 'openai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { DashboardService } from '../dashboard/dashboard.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ChatRequestDto } from './dto/chat-request.dto';
 
 export interface ChatReply {
   response: string;
-  source: 'openai' | 'local';
+  source: 'gemini' | 'local';
 }
+
+type DetailLevel = 'low' | 'medium' | 'high';
 
 @Injectable()
 export class ChatService {
   private readonly logger = new Logger(ChatService.name);
-  private readonly openai: OpenAI | null;
+  private readonly genAI: GoogleGenerativeAI | null;
   private readonly model: string;
 
   constructor(
@@ -27,15 +29,15 @@ export class ChatService {
     private readonly prisma: PrismaService,
     private readonly dashboardService: DashboardService,
   ) {
-    const apiKey = this.configService.get<string>('OPENAI_API_KEY');
-    this.openai = apiKey ? new OpenAI({ apiKey }) : null;
-    this.model = this.configService.get<string>('OPENAI_MODEL') || 'gpt-4o-mini';
+    const apiKey = this.configService.get<string>('GEMINI_API_KEY');
+    this.genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
+    this.model = this.configService.get<string>('GEMINI_MODEL') || 'gemini-2.5-flash';
   }
 
   async chat(userId: string, dto: ChatRequestDto): Promise<ChatReply> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, companyId: true },
+      select: { id: true, companyId: true, detailLevel: true },
     });
     if (!user) {
       throw new BadRequestException('Usuario nao encontrado');
@@ -81,6 +83,8 @@ export class ChatService {
       );
     }
 
+    const detailLevel = this.normalizeDetailLevel(user.detailLevel);
+
     const [dashboard, recentTransactions] = await Promise.all([
       this.dashboardService.getDashboard(company.id),
       this.prisma.financialTransaction.findMany({
@@ -101,7 +105,7 @@ export class ChatService {
       `Ultimas transacoes: ${JSON.stringify(recentTransactions)}`,
     ].join('\n');
 
-    const reply = await this.buildReply(dto.message, context, dashboard);
+    const reply = await this.buildReply(dto.message, context, detailLevel, dashboard);
 
     await this.prisma.$transaction([
       this.prisma.aiChatMessage.create({
@@ -128,6 +132,7 @@ export class ChatService {
   private async buildReply(
     userMessage: string,
     context: string,
+    detailLevel: DetailLevel,
     dashboard: {
       totalIncome: number;
       totalExpense: number;
@@ -135,40 +140,50 @@ export class ChatService {
       transactionsCount: number;
     },
   ): Promise<ChatReply> {
-    if (!this.openai) {
+    if (!this.genAI) {
       return { response: this.buildLocalFallback(userMessage, dashboard), source: 'local' };
     }
 
     try {
-      const response = await this.openai.responses.create({
-        model: this.model,
-        input: [
-          {
-            role: 'system',
-            content:
-              'Voce e um assistente financeiro para um SaaS. Responda com objetividade e foco em acao.',
-          },
-          {
-            role: 'user',
-            content: `Contexto financeiro:\n${context}\n\nPergunta:\n${userMessage}`,
-          },
-        ],
-      });
+      const model = this.genAI.getGenerativeModel({ model: this.model });
+      const prompt = [
+        'Voce e um assistente financeiro para uma operacao SaaS.',
+        'Responda em portugues do Brasil, com objetividade, sem repeticao e com foco em acao.',
+        this.detailStyle(detailLevel),
+        'Quando fizer recomendacoes, inclua no maximo 3 passos praticos.',
+        `Contexto financeiro:\n${context}`,
+        `Pergunta do usuario:\n${userMessage}`,
+      ].join('\n\n');
 
-      const text = response.output_text?.trim();
+      const response = await model.generateContent(prompt);
+      const text = response.response.text()?.trim();
+
       if (!text) {
         return { response: this.buildLocalFallback(userMessage, dashboard), source: 'local' };
       }
 
-      return { response: text, source: 'openai' };
+      return { response: text, source: 'gemini' };
     } catch (error) {
-      this.logger.warn(
-        `Falha ao consultar OpenAI; usando fallback local. Erro: ${
-          error instanceof Error ? error.message : 'desconhecido'
-        }`,
-      );
+      this.logger.warn(`Falha ao consultar Gemini; usando fallback local. Erro: ${
+        error instanceof Error ? error.message : 'desconhecido'
+      }`);
       return { response: this.buildLocalFallback(userMessage, dashboard), source: 'local' };
     }
+  }
+
+  private normalizeDetailLevel(value: string | null | undefined): DetailLevel {
+    if (value === 'low' || value === 'high') return value;
+    return 'medium';
+  }
+
+  private detailStyle(detailLevel: DetailLevel): string {
+    if (detailLevel === 'low') {
+      return 'Nivel de detalhe: baixo. Responda em ate 5 linhas curtas.';
+    }
+    if (detailLevel === 'high') {
+      return 'Nivel de detalhe: alto. Responda em ate 220 palavras, com no maximo 6 bullets.';
+    }
+    return 'Nivel de detalhe: medio. Responda em ate 120 palavras, com no maximo 4 bullets.';
   }
 
   private buildLocalFallback(

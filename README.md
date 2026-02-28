@@ -7,7 +7,7 @@ Backend da plataforma NEXT LEVEL AI para analise de vendas, insights operacionai
 - Node.js + NestJS + TypeScript
 - PostgreSQL + Prisma ORM
 - JWT para autenticacao
-- OpenAI (opcional) para respostas inteligentes
+- Gemini 2.5 Flash (opcional) para respostas inteligentes
 
 ## Estrutura de pastas
 
@@ -52,7 +52,7 @@ cp .env.example .env
 Variaveis obrigatorias no `.env`:
 - `DATABASE_URL`
 - `JWT_SECRET`
-- `OPENAI_API_KEY`
+- `GEMINI_API_KEY`
 
 Gere um `JWT_SECRET` forte:
 
@@ -107,7 +107,7 @@ Smoke test automatizado:
 - Todas as rotas privadas exigem JWT.
 - Isolamento por empresa via `companyId` no token e `CompanyGuard`.
 - CORS configurado por ambiente com `CORS_ORIGINS`.
-- Fallback de IA: se `OPENAI_API_KEY` nao estiver definido, o endpoint de chat responde com mensagem informativa.
+- Fallback de IA: se `GEMINI_API_KEY` nao estiver definido, o endpoint de chat responde com mensagem informativa.
 - Webhooks de Shopify/Meta preparados para expansao.
 
 ## Proximos passos sugeridos
