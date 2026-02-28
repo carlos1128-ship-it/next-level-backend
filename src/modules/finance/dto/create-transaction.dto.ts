@@ -43,6 +43,7 @@ export class CreateTransactionDto {
   @IsDateString({}, { message: 'Data da transacao invalida' })
   occurredAt?: string;
 
+  @IsOptional()
   @IsDateString({}, { message: 'Data da transacao invalida' })
   date: string;
 }

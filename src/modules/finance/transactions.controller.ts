@@ -23,6 +23,6 @@ export class TransactionsController {
     @CurrentUser('sub') userId: string,
     @Body() dto: CreateTransactionDto,
   ) {
-    return this.financeService.createTransaction(userId, dto);
+    return this.financeService.createTransaction(dto, userId);
   }
 }

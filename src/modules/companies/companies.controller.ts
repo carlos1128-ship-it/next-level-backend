@@ -1,22 +1,19 @@
-import { Body, Controller, Get, Post } from '@nestjs/common';
-import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { CreateCompanyDto } from './dto/create-company.dto';
+import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CompaniesService } from './companies.service';
 
-@Controller(['company', 'companies'])
+@UseGuards(JwtAuthGuard)
+@Controller('company')
 export class CompaniesController {
   constructor(private readonly companiesService: CompaniesService) {}
 
   @Get()
-  async getMyCompany(@CurrentUser('sub') userId: string) {
-    return this.companiesService.getCurrentCompany(userId);
+  findAll(@Req() req: { user: { id: string } }) {
+    return this.companiesService.findAll(req.user.id);
   }
 
   @Post()
-  async createCompany(
-    @CurrentUser('sub') userId: string,
-    @Body() dto: CreateCompanyDto,
-  ) {
-    return this.companiesService.createCompany(userId, dto);
+  create(@Body() body: { name: string }, @Req() req: { user: { id: string } }) {
+    return this.companiesService.create(body.name, req.user.id);
   }
 }

@@ -1,47 +1,16 @@
 import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { CreateCompanyDto } from './dto/create-company.dto';
-
-export interface CompanyDefaults {
-  id: string;
-  name: string;
-  slug: string;
-  currency: string;
-  timezone: string;
-}
 
 @Injectable()
 export class CompaniesService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async getCurrentCompany(userId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { companyId: true },
-    });
-
-    if (!user) {
-      return this.defaultCompany();
-    }
-
-    const companyId = user.companyId?.trim() || undefined;
-    if (!companyId) {
-      return this.createAndAttachInitialCompany(userId);
-    }
-
-    const company = await this.prisma.company.findUnique({
-      where: { id: companyId },
-    });
-    if (!company) {
-      return this.createAndAttachInitialCompany(userId);
-    }
-
-    return company;
-  }
-
-  async createCompany(userId: string, dto: CreateCompanyDto) {
+  async create(name: string, userId: string) {
     if (!userId?.trim()) {
       throw new BadRequestException('userId nao informado');
+    }
+    if (!name?.trim()) {
+      throw new BadRequestException('Nome da empresa e obrigatorio');
     }
 
     const user = await this.prisma.user.findUnique({
@@ -52,45 +21,12 @@ export class CompaniesService {
     if (!user) {
       throw new BadRequestException('Usuario nao encontrado');
     }
-
-    const companyId = user?.companyId?.trim() || undefined;
-
-    if (companyId) {
-      const existing = await this.prisma.company.findUnique({
-        where: { id: companyId },
-      });
-      if (existing) {
-        return existing;
-      }
-    }
-
-    const slugBase = dto.slug?.trim() || this.slugify(dto.name);
+    const slugBase = this.slugify(name.trim());
     const slug = await this.ensureUniqueSlug(slugBase);
 
     const company = await this.prisma.company.create({
       data: {
-        name: dto.name.trim(),
-        slug,
-        currency: dto.currency?.trim() || 'BRL',
-        timezone: dto.timezone?.trim() || 'America/Sao_Paulo',
-      },
-    });
-
-    if (user) {
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: { companyId: company.id },
-      });
-    }
-
-    return company;
-  }
-
-  private async createAndAttachInitialCompany(userId: string) {
-    const slug = await this.ensureUniqueSlug('empresa-inicial');
-    const company = await this.prisma.company.create({
-      data: {
-        name: 'Empresa Inicial',
+        name: name.trim(),
         slug,
         currency: 'BRL',
         timezone: 'America/Sao_Paulo',
@@ -105,14 +41,15 @@ export class CompaniesService {
     return company;
   }
 
-  private defaultCompany(): CompanyDefaults {
-    return {
-      id: '',
-      name: '',
-      slug: '',
-      currency: 'BRL',
-      timezone: 'America/Sao_Paulo',
-    };
+  async findAll(userId: string) {
+    return this.prisma.company.findMany({
+      where: {
+        users: {
+          some: { id: userId },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
   }
 
   private slugify(value: string): string {

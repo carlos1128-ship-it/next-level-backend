@@ -43,6 +43,7 @@ export class AuthService {
     const accessToken = this.jwtService.sign(payload);
 
     return {
+      access_token: accessToken,
       accessToken,
       user: {
         id: user.id,
@@ -99,9 +100,11 @@ export class AuthService {
       email: created.user.email,
       companyId: created.company.id,
     };
+    const registerAccessToken = this.jwtService.sign(payload);
 
     return {
-      accessToken: this.jwtService.sign(payload),
+      access_token: registerAccessToken,
+      accessToken: registerAccessToken,
       user: {
         id: created.user.id,
         email: created.user.email,

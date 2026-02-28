@@ -8,6 +8,17 @@ import { ListTransactionsDto } from './dto/list-transactions.dto';
 export class FinanceService {
   constructor(private readonly prisma: PrismaService) {}
 
+  private normalizeTransactionType(type: FinancialTransactionType) {
+    return type === FinancialTransactionType.INCOME ? 'income' : 'expense';
+  }
+
+  private normalizeTransaction<T extends { type: FinancialTransactionType }>(transaction: T) {
+    return {
+      ...transaction,
+      type: this.normalizeTransactionType(transaction.type),
+    };
+  }
+
   async listTransactions(userId: string, query: ListTransactionsDto) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -27,10 +38,12 @@ export class FinanceService {
       },
     };
 
-    return this.prisma.financialTransaction.findMany({
+    const transactions = await this.prisma.financialTransaction.findMany({
       where,
       orderBy: { occurredAt: 'desc' },
     });
+
+    return transactions.map((transaction) => this.normalizeTransaction(transaction));
   }
 
   async listTransactionsByCompany(
@@ -78,44 +91,28 @@ export class FinanceService {
       },
     };
 
-    return this.prisma.financialTransaction.findMany({
+    const transactions = await this.prisma.financialTransaction.findMany({
       where,
       orderBy: { occurredAt: 'desc' },
     });
+
+    return transactions.map((transaction) => this.normalizeTransaction(transaction));
   }
 
-  async createTransaction(userId: string, dto: CreateTransactionDto) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { companyId: true },
-    });
-
-    if (!user) {
-      throw new BadRequestException('Usuario nao encontrado');
+  async createTransaction(dto: CreateTransactionDto, userId: string) {
+    const normalizedCompanyId = dto.companyId?.trim();
+    if (!normalizedCompanyId) {
+      throw new BadRequestException('Empresa invalida');
     }
-    if (!user.companyId) {
-      throw new BadRequestException('User has no company');
-    }
-    const companyId = dto.companyId?.trim() || user.companyId || undefined;
-    if (!companyId) {
-      throw new BadRequestException('companyId nao informado');
-    }
-
-    if (user.companyId && companyId !== user.companyId) {
-      throw new BadRequestException(
-        'companyId nao corresponde ao usuario autenticado',
-      );
-    }
-
     const company = await this.prisma.company.findFirst({
       where: {
-        id: companyId,
+        id: normalizedCompanyId,
         users: { some: { id: userId } },
       },
       select: { id: true },
     });
     if (!company) {
-      throw new BadRequestException('Empresa nao encontrada para o companyId informado');
+      throw new BadRequestException('Empresa invalida');
     }
 
     const lowerType = dto.type?.toLowerCase();
@@ -130,7 +127,7 @@ export class FinanceService {
 
     const createdTransaction = await this.prisma.financialTransaction.create({
       data: {
-        companyId,
+        companyId: normalizedCompanyId,
         userId,
         type: normalizedType,
         amount: new Prisma.Decimal(dto.amount),
@@ -147,20 +144,20 @@ export class FinanceService {
     const [incomeAggregate, expenseAggregate, transactionsCount] = await Promise.all([
       this.prisma.financialTransaction.aggregate({
         where: {
-          companyId,
+          companyId: normalizedCompanyId,
           type: FinancialTransactionType.INCOME,
         },
         _sum: { amount: true },
       }),
       this.prisma.financialTransaction.aggregate({
         where: {
-          companyId,
+          companyId: normalizedCompanyId,
           type: FinancialTransactionType.EXPENSE,
         },
         _sum: { amount: true },
       }),
       this.prisma.financialTransaction.count({
-        where: { companyId },
+        where: { companyId: normalizedCompanyId },
       }),
     ]);
 
@@ -169,12 +166,26 @@ export class FinanceService {
     const balance = totalIncome - totalExpense;
 
     return {
-      transaction: createdTransaction,
+      transaction: this.normalizeTransaction(createdTransaction),
       totalIncome: this.round(totalIncome),
       totalExpense: this.round(totalExpense),
       balance: this.round(balance),
       transactionsCount,
     };
+  }
+
+  async findAll(companyId: string, userId: string) {
+    const normalizedCompanyId = companyId?.trim();
+    if (!normalizedCompanyId) {
+      throw new BadRequestException('companyId nao informado');
+    }
+
+    const transactions = await this.prisma.financialTransaction.findMany({
+      where: { companyId: normalizedCompanyId, userId },
+      orderBy: { occurredAt: 'desc' },
+    });
+
+    return transactions.map((transaction) => this.normalizeTransaction(transaction));
   }
 
   private toNumber(value: Prisma.Decimal | number | null | undefined): number {
