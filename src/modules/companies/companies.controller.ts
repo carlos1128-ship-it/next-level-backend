@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CompaniesService } from './companies.service';
+import { CreateCompanyDto } from './dto/create-company.dto';
 
 @UseGuards(JwtAuthGuard)
 @Controller('company')
@@ -13,7 +14,7 @@ export class CompaniesController {
   }
 
   @Post()
-  create(@Body() body: { name: string }, @Req() req: { user: { id: string } }) {
-    return this.companiesService.create(body.name, req.user.id);
+  create(@Body() dto: CreateCompanyDto, @Req() req: { user: { id: string } }) {
+    return this.companiesService.create(dto, req.user.id);
   }
 }

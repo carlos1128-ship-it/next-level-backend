@@ -24,14 +24,19 @@ enum AiChatRole {
 }
 
 model Company {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   userId      String?
   name        String
-  slug        String   @unique @default(cuid())
-  currency    String   @default("BRL")
-  timezone    String   @default("America/Sao_Paulo")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  sector      String?
+  segment     String?
+  document    String?
+  description String?
+  openedAt    DateTime?
+  slug        String    @unique @default(cuid())
+  currency    String    @default("BRL")
+  timezone    String    @default("America/Sao_Paulo")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   users    User[]
   sales    Sale[]

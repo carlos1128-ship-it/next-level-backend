@@ -1,4 +1,5 @@
 import {
+  IsDateString,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -22,9 +23,25 @@ export class CreateCompanyDto {
 
   @IsString()
   @IsOptional()
+  @MinLength(2)
+  @MaxLength(80)
+  segment?: string;
+
+  @IsString()
+  @IsOptional()
+  @MinLength(11)
+  @MaxLength(18)
+  document?: string;
+
+  @IsString()
+  @IsOptional()
   @MinLength(3)
   @MaxLength(500)
   description?: string;
+
+  @IsOptional()
+  @IsDateString()
+  openedAt?: string;
 
   @IsOptional()
   @IsString()

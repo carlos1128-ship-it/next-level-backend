@@ -17,12 +17,8 @@ export class ExportService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getFinancialCsv(userId: string, query: ExportFinancialQueryDto): Promise<string> {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { companyId: true },
-    });
-
-    if (!user?.companyId) {
+    const companyId = await this.resolveCompanyId(userId, query.companyId);
+    if (!companyId) {
       return this.toCsv([]);
     }
 
@@ -36,19 +32,19 @@ export class ExportService {
     const [transactions, sales, adSpends] = await Promise.all([
       this.prisma.financialTransaction.findMany({
         where: {
-          companyId: user.companyId,
+          companyId,
           occurredAt: dateFilter,
         },
       }),
       this.prisma.sale.findMany({
         where: {
-          companyId: user.companyId,
+          companyId,
           occurredAt: dateFilter,
         },
       }),
       this.prisma.adSpend.findMany({
         where: {
-          companyId: user.companyId,
+          companyId,
           spentAt: dateFilter,
         },
       }),
@@ -91,6 +87,27 @@ export class ExportService {
 
     rows.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
     return this.toCsv(rows);
+  }
+
+  private async resolveCompanyId(userId: string, requestedCompanyId?: string): Promise<string | null> {
+    if (requestedCompanyId?.trim()) {
+      const company = await this.prisma.company.findFirst({
+        where: {
+          id: requestedCompanyId.trim(),
+          OR: [{ userId }, { users: { some: { id: userId } } }],
+        },
+        select: { id: true },
+      });
+
+      return company?.id || null;
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { companyId: true },
+    });
+
+    return user?.companyId || null;
   }
 
   private toCsv(rows: ExportRow[]): string {
