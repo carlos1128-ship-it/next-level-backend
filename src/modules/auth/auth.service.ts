@@ -1,6 +1,7 @@
-import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import * as bcrypt from 'bcrypt';
 import { createHash, randomUUID } from 'crypto';
@@ -16,6 +17,8 @@ export interface JwtPayload {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
@@ -254,21 +257,66 @@ export class AuthService {
       Date.now() + this.parseDurationMs(this.refreshTokenExpiresIn),
     );
 
-    await this.prisma.refreshToken.create({
-      data: {
-        userId: payload.sub,
-        tokenHash: this.hashToken(refreshToken),
-        expiresAt: refreshExpiresAt,
-      },
-    });
+    const refreshTokenStored = await this.persistRefreshToken(
+      payload.sub,
+      refreshToken,
+      refreshExpiresAt,
+    );
 
     return {
       access_token: accessToken,
       accessToken,
-      refresh_token: refreshToken,
-      refreshToken,
+      refresh_token: refreshTokenStored ? refreshToken : undefined,
+      refreshToken: refreshTokenStored ? refreshToken : undefined,
       expires_in: this.accessTokenExpiresIn,
     };
+  }
+
+  private async persistRefreshToken(
+    userId: string,
+    refreshToken: string,
+    refreshExpiresAt: Date,
+  ): Promise<boolean> {
+    try {
+      await this.prisma.refreshToken.create({
+        data: {
+          userId,
+          tokenHash: this.hashToken(refreshToken),
+          expiresAt: refreshExpiresAt,
+        },
+      });
+      return true;
+    } catch (error) {
+      if (this.isRecoverableRefreshTokenStorageError(error)) {
+        this.logger.warn(
+          'Refresh token storage unavailable. Login will continue with access token only.',
+        );
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  private isRecoverableRefreshTokenStorageError(error: unknown): boolean {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      return error.code === 'P2021' || error.code === 'P2022';
+    }
+
+    if (error instanceof Prisma.PrismaClientInitializationError) {
+      return true;
+    }
+
+    if (error instanceof Error) {
+      const message = error.message.toLowerCase();
+      return (
+        message.includes('refreshtoken') &&
+        (message.includes('does not exist') ||
+          message.includes('column') ||
+          message.includes('relation'))
+      );
+    }
+
+    return false;
   }
 
   private hashToken(value: string) {
