@@ -7,6 +7,7 @@ import { CreateCompanyDto } from './dto/create-company.dto';
 export class CompaniesService {
   private readonly logger = new Logger(CompaniesService.name);
   private companyProfileAvailable: boolean | null = null;
+  private companyProfileWarned = false;
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -46,16 +47,18 @@ export class CompaniesService {
         },
       });
       this.companyProfileAvailable = true;
+      this.companyProfileWarned = false;
       return created;
     } catch (error) {
       if (!this.isMissingCompanyProfileColumn(error)) {
         throw error;
       }
 
-      if (this.companyProfileAvailable !== false) {
+      if (!this.companyProfileWarned) {
         this.logger.warn(
           'Company profile columns are missing in the current database. Falling back to legacy company creation.',
         );
+        this.companyProfileWarned = true;
       }
       this.companyProfileAvailable = false;
 
@@ -99,16 +102,18 @@ export class CompaniesService {
         orderBy: { createdAt: 'desc' },
       });
       this.companyProfileAvailable = true;
+      this.companyProfileWarned = false;
       return companies;
     } catch (error) {
       if (!this.isMissingCompanyProfileColumn(error)) {
         throw error;
       }
 
-      if (this.companyProfileAvailable !== false) {
+      if (!this.companyProfileWarned) {
         this.logger.warn(
           'Company profile columns are missing in the current database. Falling back to legacy company listing.',
         );
+        this.companyProfileWarned = true;
       }
       this.companyProfileAvailable = false;
 
