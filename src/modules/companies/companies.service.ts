@@ -6,6 +6,7 @@ import { CreateCompanyDto } from './dto/create-company.dto';
 @Injectable()
 export class CompaniesService {
   private readonly logger = new Logger(CompaniesService.name);
+  private companyProfileAvailable: boolean | null = null;
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -17,8 +18,20 @@ export class CompaniesService {
       throw new BadRequestException('Nome da empresa e obrigatorio');
     }
 
+    if (this.companyProfileAvailable === false) {
+      return this.prisma.company.create({
+        data: {
+          name: dto.name.trim(),
+          slug: dto.slug?.trim() || undefined,
+          currency: dto.currency?.trim() || undefined,
+          timezone: dto.timezone?.trim() || undefined,
+          userId: userId.trim(),
+        },
+      });
+    }
+
     try {
-      return await this.prisma.company.create({
+      const created = await this.prisma.company.create({
         data: {
           name: dto.name.trim(),
           sector: dto.sector?.trim() || null,
@@ -32,14 +45,19 @@ export class CompaniesService {
           userId: userId.trim(),
         },
       });
+      this.companyProfileAvailable = true;
+      return created;
     } catch (error) {
       if (!this.isMissingCompanyProfileColumn(error)) {
         throw error;
       }
 
-      this.logger.warn(
-        'Company profile columns are missing in the current database. Falling back to legacy company creation.',
-      );
+      if (this.companyProfileAvailable !== false) {
+        this.logger.warn(
+          'Company profile columns are missing in the current database. Falling back to legacy company creation.',
+        );
+      }
+      this.companyProfileAvailable = false;
 
       return this.prisma.company.create({
         data: {
@@ -58,19 +76,41 @@ export class CompaniesService {
       OR: [{ userId }, { users: { some: { id: userId } } }],
     };
 
+    if (this.companyProfileAvailable === false) {
+      return this.prisma.company.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          userId: true,
+          name: true,
+          slug: true,
+          currency: true,
+          timezone: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+    }
+
     try {
-      return await this.prisma.company.findMany({
+      const companies = await this.prisma.company.findMany({
         where,
         orderBy: { createdAt: 'desc' },
       });
+      this.companyProfileAvailable = true;
+      return companies;
     } catch (error) {
       if (!this.isMissingCompanyProfileColumn(error)) {
         throw error;
       }
 
-      this.logger.warn(
-        'Company profile columns are missing in the current database. Falling back to legacy company listing.',
-      );
+      if (this.companyProfileAvailable !== false) {
+        this.logger.warn(
+          'Company profile columns are missing in the current database. Falling back to legacy company listing.',
+        );
+      }
+      this.companyProfileAvailable = false;
 
       return this.prisma.company.findMany({
         where,

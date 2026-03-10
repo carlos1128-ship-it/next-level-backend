@@ -72,7 +72,16 @@ export class AiService {
 
     const detailLevel = this.normalizeDetailLevel(user.detailLevel);
     const prompt = this.buildAnalysisPrompt(data, detailLevel);
-    const { text } = await this.generateText(prompt);
+    let text: string;
+    try {
+      ({ text } = await this.generateText(prompt));
+    } catch (error) {
+      if (this.isRecoverableAiError(error)) {
+        text = this.buildLocalAnalysisFallback(data);
+      } else {
+        throw error;
+      }
+    }
 
     await this.prisma.analysis.create({
       data: {
@@ -237,6 +246,34 @@ export class AiService {
     }
 
     return false;
+  }
+
+  private isRecoverableAiError(error: unknown): boolean {
+    if (error instanceof ServiceUnavailableException) {
+      return true;
+    }
+    if (error instanceof HttpException && error.getStatus() === HttpStatus.TOO_MANY_REQUESTS) {
+      return true;
+    }
+    return this.isServiceUnavailableError(error) || this.isQuotaExceededError(error);
+  }
+
+  private buildLocalAnalysisFallback(data: Record<string, unknown>): string {
+    const payload = JSON.stringify(data);
+    return [
+      'padroes:',
+      `Resumo automatico dos dados recebidos (fallback local).`,
+      `Dados: ${payload}`,
+      '',
+      'riscos:',
+      'Possivel indisponibilidade da IA no momento. Valide margens e volume antes de tomar decisoes.',
+      '',
+      'oportunidades:',
+      'Revisar mix de produtos, canais e horarios de pico para otimizar faturamento.',
+      '',
+      'recomendacoes:',
+      'Priorize revisar custos recorrentes, precificacao e campanhas com maior ROI.',
+    ].join('\n');
   }
 
   private sleep(ms: number) {
