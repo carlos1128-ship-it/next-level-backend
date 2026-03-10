@@ -30,10 +30,23 @@ function isAllowedVercelPreview(origin: string): boolean {
   }
 }
 
+function parseTrustProxy(raw: string | undefined): boolean | number {
+  if (!raw) return false;
+  const normalized = raw.trim().toLowerCase();
+  if (['true', 'yes', 'on'].includes(normalized)) return true;
+  const numeric = Number(normalized);
+  if (Number.isFinite(numeric) && numeric >= 0) return numeric;
+  return false;
+}
+
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   const allowedOrigins = parseAllowedOrigins(process.env.CORS_ORIGINS);
   const expressApp = app.getHttpAdapter().getInstance();
+  const trustProxy = parseTrustProxy(
+    process.env.TRUST_PROXY ??
+      (process.env.NODE_ENV === 'production' ? '1' : 'false'),
+  );
 
   expressApp.get('/', (_req: Request, res: Response) => {
     res.status(200).json({
@@ -49,6 +62,7 @@ async function bootstrap() {
 
   app.setGlobalPrefix('api');
   app.use(helmet());
+  expressApp.set('trust proxy', trustProxy);
   app.use(
     rateLimit({
       windowMs: 15 * 60 * 1000,
