@@ -87,6 +87,7 @@ export class AuthService {
     const companySlug = dto.companySlug?.trim() || this.slugify(dto.companyName);
     const existingCompany = await this.prisma.company.findUnique({
       where: { slug: companySlug },
+      select: { id: true },
     });
 
     if (existingCompany) {

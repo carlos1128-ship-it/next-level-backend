@@ -26,7 +26,15 @@ export class RagService {
     start.setMonth(start.getMonth() - 3);
 
     const [company, aggregates, insights] = await Promise.all([
-      this.prisma.company.findUnique({ where: { id: normalizedCompanyId } }),
+      this.prisma.company.findUnique({
+        where: { id: normalizedCompanyId },
+        select: {
+          id: true,
+          name: true,
+          currency: true,
+          timezone: true,
+        },
+      }),
       this.salesService.getAggregatesByCompanyAndPeriod(normalizedCompanyId, start, end),
       this.insightsService.getInsights(normalizedCompanyId, start, end),
     ]);

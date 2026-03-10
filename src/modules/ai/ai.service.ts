@@ -152,34 +152,52 @@ export class AiService {
       throw new ServiceUnavailableException('Modelo de IA indisponivel');
     }
 
-    try {
-      const result = await model.generateContent(prompt);
-      const text = result.response.text()?.trim();
-      if (!text) {
-        throw new InternalServerErrorException(
-          'IA retornou resposta vazia para a solicitacao',
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const result = await model.generateContent(prompt);
+        const text = result.response.text()?.trim();
+        if (!text) {
+          throw new InternalServerErrorException(
+            'IA retornou resposta vazia para a solicitacao',
+          );
+        }
+        const tokensUsed = result.response.usageMetadata?.totalTokenCount;
+        return { text, tokensUsed };
+      } catch (error) {
+        if (error instanceof InternalServerErrorException) {
+          throw error;
+        }
+        if (this.isQuotaExceededError(error)) {
+          this.logger.warn(
+            `Quota Gemini excedida: ${error instanceof Error ? error.message : 'erro desconhecido'}`,
+          );
+          throw new HttpException(
+            'Limite da IA excedido no momento. Tente novamente em alguns minutos.',
+            HttpStatus.TOO_MANY_REQUESTS,
+          );
+        }
+        if (this.isServiceUnavailableError(error)) {
+          if (attempt < maxAttempts) {
+            const delayMs = 400 * Math.pow(2, attempt - 1);
+            await this.sleep(delayMs);
+            continue;
+          }
+          this.logger.warn(
+            `IA indisponivel apos ${maxAttempts} tentativas: ${error instanceof Error ? error.message : 'erro desconhecido'}`,
+          );
+          throw new ServiceUnavailableException(
+            'IA temporariamente indisponivel. Tente novamente em alguns minutos.',
+          );
+        }
+        this.logger.error(
+          `Falha ao gerar resposta da IA: ${error instanceof Error ? error.message : 'erro desconhecido'}`,
         );
+        throw new InternalServerErrorException('Falha ao gerar resposta da IA');
       }
-      const tokensUsed = result.response.usageMetadata?.totalTokenCount;
-      return { text, tokensUsed };
-    } catch (error) {
-      if (error instanceof InternalServerErrorException) {
-        throw error;
-      }
-      if (this.isQuotaExceededError(error)) {
-        this.logger.warn(
-          `Quota Gemini excedida: ${error instanceof Error ? error.message : 'erro desconhecido'}`,
-        );
-        throw new HttpException(
-          'Limite da IA excedido no momento. Tente novamente em alguns minutos.',
-          HttpStatus.TOO_MANY_REQUESTS,
-        );
-      }
-      this.logger.error(
-        `Falha ao gerar resposta da IA: ${error instanceof Error ? error.message : 'erro desconhecido'}`,
-      );
-      throw new InternalServerErrorException('Falha ao gerar resposta da IA');
     }
+
+    throw new InternalServerErrorException('Falha ao gerar resposta da IA');
   }
 
   private isQuotaExceededError(error: unknown): boolean {
@@ -199,6 +217,30 @@ export class AiService {
     }
 
     return false;
+  }
+
+  private isServiceUnavailableError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message.toLowerCase() : '';
+    if (
+      message.includes('503') ||
+      message.includes('service unavailable') ||
+      message.includes('temporarily unavailable') ||
+      message.includes('high demand')
+    ) {
+      return true;
+    }
+
+    if (error && typeof error === 'object') {
+      const maybeStatus = (error as { status?: unknown }).status;
+      const responseStatus = (error as { response?: { status?: unknown } }).response?.status;
+      if (maybeStatus === 503 || responseStatus === 503) return true;
+    }
+
+    return false;
+  }
+
+  private sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private normalizeDetailLevel(value: string | null | undefined): DetailLevel {
