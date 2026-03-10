@@ -184,7 +184,13 @@ export class ChatService {
       recentTransactions,
     );
 
-    const reply = await this.buildReply(dto.message, context, dashboard, company.id);
+    const reply = await this.buildReply(
+      dto.message,
+      context,
+      dashboard,
+      company.id,
+      company.currency ?? 'BRL',
+    );
 
     await this.prisma.$transaction([
       this.prisma.aiChatMessage.create({
@@ -218,9 +224,13 @@ export class ChatService {
       transactionsCount: number;
     },
     companyId: string,
+    currency: string | null | undefined,
   ): Promise<ChatReply> {
     if (!this.genAI) {
-      return { response: this.buildLocalFallback(userMessage, dashboard), source: 'local' };
+      return {
+        response: this.buildLocalFallback(userMessage, dashboard, currency),
+        source: 'local',
+      };
     }
 
     try {
@@ -242,7 +252,10 @@ export class ChatService {
       const text = response.response.text()?.trim();
 
       if (!text) {
-        return { response: this.buildLocalFallback(userMessage, dashboard), source: 'local' };
+        return {
+          response: this.buildLocalFallback(userMessage, dashboard, currency),
+          source: 'local',
+        };
       }
 
       return { response: text, source: 'gemini' };
@@ -250,7 +263,10 @@ export class ChatService {
       this.logger.warn(`Falha ao consultar Gemini; usando fallback local. Erro: ${
         error instanceof Error ? error.message : 'desconhecido'
       }`);
-      return { response: this.buildLocalFallback(userMessage, dashboard), source: 'local' };
+      return {
+        response: this.buildLocalFallback(userMessage, dashboard, currency),
+        source: 'local',
+      };
     }
   }
 
@@ -479,6 +495,7 @@ export class ChatService {
       balance: number;
       transactionsCount: number;
     },
+    currency: string | null | undefined,
   ): string {
     if (!userMessage?.trim()) {
       throw new InternalServerErrorException('Mensagem invalida para gerar resposta');
@@ -486,10 +503,18 @@ export class ChatService {
 
     if (dashboard.transactionsCount === 0) {
       return [
+        '[Modo offline] IA principal indisponivel; usando heuristicas locais.',
         'Ainda nao existem transacoes cadastradas para esta empresa.',
         'Cadastre receitas e despesas para gerar insights mais completos.',
       ].join(' ');
     }
+
+    const formatter = new Intl.NumberFormat('pt-BR', {
+      style: 'currency',
+      currency: currency || 'BRL',
+      maximumFractionDigits: 2,
+    });
+    const fmt = (value: number) => formatter.format(value || 0);
 
     const trend =
       dashboard.balance >= 0
@@ -497,7 +522,8 @@ export class ChatService {
         : 'Saldo negativo. Priorize corte de despesas e revisao de precificacao.';
 
     return [
-      `1. Diagnostico: receitas ${dashboard.totalIncome}, despesas ${dashboard.totalExpense}, saldo ${dashboard.balance}.`,
+      '[Modo offline] IA principal indisponivel; gerando resposta local.',
+      `1. Diagnostico: receitas ${fmt(dashboard.totalIncome)}, despesas ${fmt(dashboard.totalExpense)}, saldo ${fmt(dashboard.balance)}.`,
       `2. Analise: ${trend}`,
       '3. Recomendacoes praticas: revise os 3 maiores custos e valide precificacao por margem alvo.',
       '4. Proximos passos: compartilhe metas de faturamento e despesas para montar um plano de 30 dias.',

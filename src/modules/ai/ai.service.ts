@@ -261,8 +261,9 @@ export class AiService {
   private buildLocalAnalysisFallback(data: Record<string, unknown>): string {
     const payload = JSON.stringify(data);
     return [
+      '[Modo offline] IA principal indisponivel; usando heuristicas locais.',
       'padroes:',
-      `Resumo automatico dos dados recebidos (fallback local).`,
+      `Resumo automatico dos dados recebidos.`,
       `Dados: ${payload}`,
       '',
       'riscos:',
