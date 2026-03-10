@@ -1,4 +1,5 @@
 import { NestFactory } from '@nestjs/core';
+import { Request, Response } from 'express';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { AppModule } from './app.module';
@@ -32,6 +33,19 @@ function isAllowedVercelPreview(origin: string): boolean {
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   const allowedOrigins = parseAllowedOrigins(process.env.CORS_ORIGINS);
+  const expressApp = app.getHttpAdapter().getInstance();
+
+  expressApp.get('/', (_req: Request, res: Response) => {
+    res.status(200).json({
+      ok: true,
+      service: 'next-level-backend',
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  expressApp.head('/', (_req: Request, res: Response) => {
+    res.status(200).end();
+  });
 
   app.setGlobalPrefix('api');
   app.use(helmet());
