@@ -29,7 +29,20 @@ export class AuthService {
     const normalizedEmail = dto.email.toLowerCase().trim();
     const user = await this.prisma.user.findUnique({
       where: { email: normalizedEmail },
-      include: { company: true },
+      select: {
+        id: true,
+        email: true,
+        password: true,
+        name: true,
+        detailLevel: true,
+        companyId: true,
+        company: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
     });
 
     if (!user) {
@@ -163,7 +176,20 @@ export class AuthService {
 
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
-      include: { company: true },
+      select: {
+        id: true,
+        email: true,
+        password: true,
+        name: true,
+        detailLevel: true,
+        companyId: true,
+        company: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
     });
 
     if (!user) {
@@ -223,7 +249,12 @@ export class AuthService {
   async validateUser(payload: JwtPayload) {
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
-      include: { company: true },
+      select: {
+        id: true,
+        email: true,
+        companyId: true,
+        detailLevel: true,
+      },
     });
     if (!user) return null;
     return {
