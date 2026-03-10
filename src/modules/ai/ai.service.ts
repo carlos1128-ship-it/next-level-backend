@@ -259,21 +259,21 @@ export class AiService {
   }
 
   private buildLocalAnalysisFallback(data: Record<string, unknown>): string {
-    const payload = JSON.stringify(data);
+    const metrics = [
+      `receita=${data.revenue ?? 'n/d'}`,
+      `perdas=${data.losses ?? 'n/d'}`,
+      `lucro=${data.profit ?? 'n/d'}`,
+      `caixa=${data.cashflow ?? 'n/d'}`,
+    ]
+      .map(String)
+      .join(' | ');
+
     return [
-      '[Modo offline] IA principal indisponivel; usando heuristicas locais.',
-      'padroes:',
-      `Resumo automatico dos dados recebidos.`,
-      `Dados: ${payload}`,
-      '',
-      'riscos:',
-      'Possivel indisponibilidade da IA no momento. Valide margens e volume antes de tomar decisoes.',
-      '',
-      'oportunidades:',
-      'Revisar mix de produtos, canais e horarios de pico para otimizar faturamento.',
-      '',
-      'recomendacoes:',
-      'Priorize revisar custos recorrentes, precificacao e campanhas com maior ROI.',
+      '[Modo offline] IA principal indisponivel; heuristica rapida.',
+      `Resumo: ${metrics}`,
+      'Riscos: validar dados e limites antes de agir.',
+      'Oportunidades: rever mix, canais e horarios de pico.',
+      'Recomendacao: priorize custos recorrentes e precificacao alvo.',
     ].join('\n');
   }
 
