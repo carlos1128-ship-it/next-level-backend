@@ -15,6 +15,9 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { FinanceModule } from './modules/finance/finance.module';
 import { UserModule } from './modules/user/user.module';
 import { ExportModule } from './modules/export/export.module';
+import { ProductsModule } from './modules/products/products.module';
+import { CustomersModule } from './modules/customers/customers.module';
+import { CostsModule } from './modules/costs/costs.module';
 
 @Module({
   controllers: [AppController],
@@ -31,6 +34,9 @@ import { ExportModule } from './modules/export/export.module';
     FinanceModule,
     UserModule,
     ExportModule,
+    ProductsModule,
+    CustomersModule,
+    CostsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
