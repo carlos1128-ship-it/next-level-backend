@@ -2,7 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 
-interface ProfitRow {
+export interface ProfitRow {
   revenue: number;
   cost: number;
   profit: number;

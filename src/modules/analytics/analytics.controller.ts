@@ -1,5 +1,5 @@
 import { Controller, Get, Query, Req, UseGuards } from '@nestjs/common';
-import { AnalyticsService } from './analytics.service';
+import { AnalyticsService, ProfitRow } from './analytics.service';
 import { ActiveCompanyGuard } from '../../common/guards/active-company.guard';
 
 @Controller('analytics')
@@ -11,7 +11,7 @@ export class AnalyticsController {
   profitByProduct(
     @Req() req: { user: { id: string; companyId?: string | null } },
     @Query('companyId') companyId?: string,
-  ) {
+  ): Promise<Record<string, ProfitRow>> {
     const resolvedCompanyId = companyId ?? req.user.companyId ?? undefined;
     return this.analyticsService.profitByProduct(req.user.id, resolvedCompanyId);
   }
