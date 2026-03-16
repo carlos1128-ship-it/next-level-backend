@@ -18,6 +18,7 @@ import { ExportModule } from './modules/export/export.module';
 import { ProductsModule } from './modules/products/products.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { CostsModule } from './modules/costs/costs.module';
+import { AnalyticsModule } from './modules/analytics/analytics.module';
 
 @Module({
   controllers: [AppController],
@@ -37,6 +38,7 @@ import { CostsModule } from './modules/costs/costs.module';
     ProductsModule,
     CustomersModule,
     CostsModule,
+    AnalyticsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
