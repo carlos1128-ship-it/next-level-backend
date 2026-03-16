@@ -12,7 +12,8 @@ export class AnalyticsController {
     @Req() req: { user: { id: string; companyId?: string | null } },
     @Query('companyId') companyId?: string,
   ) {
-    return this.analyticsService.profitByProduct(req.user.id, companyId || req.user.companyId);
+    const resolvedCompanyId = companyId ?? req.user.companyId ?? undefined;
+    return this.analyticsService.profitByProduct(req.user.id, resolvedCompanyId);
   }
 
   @Get('sales-peak')
@@ -20,7 +21,8 @@ export class AnalyticsController {
     @Req() req: { user: { id: string; companyId?: string | null } },
     @Query('companyId') companyId?: string,
   ) {
-    return this.analyticsService.salesPeak(req.user.id, companyId || req.user.companyId);
+    const resolvedCompanyId = companyId ?? req.user.companyId ?? undefined;
+    return this.analyticsService.salesPeak(req.user.id, resolvedCompanyId);
   }
 
   @Get('operational-waste')
@@ -28,7 +30,8 @@ export class AnalyticsController {
     @Req() req: { user: { id: string; companyId?: string | null } },
     @Query('companyId') companyId?: string,
   ) {
-    return this.analyticsService.operationalWaste(req.user.id, companyId || req.user.companyId);
+    const resolvedCompanyId = companyId ?? req.user.companyId ?? undefined;
+    return this.analyticsService.operationalWaste(req.user.id, resolvedCompanyId);
   }
 
   @Get('margin')
@@ -36,6 +39,7 @@ export class AnalyticsController {
     @Req() req: { user: { id: string; companyId?: string | null } },
     @Query('companyId') companyId?: string,
   ) {
-    return this.analyticsService.margin(req.user.id, companyId || req.user.companyId);
+    const resolvedCompanyId = companyId ?? req.user.companyId ?? undefined;
+    return this.analyticsService.margin(req.user.id, resolvedCompanyId);
   }
 }
