@@ -29,6 +29,25 @@ enum IntegrationProvider {
   MERCADOLIVRE
 }
 
+enum ForecastType {
+  SALES
+  DEMAND
+  REVENUE
+}
+
+enum StrategicActionType {
+  MARKETING
+  ESTOQUE
+  FINANCEIRO
+}
+
+enum StrategicActionStatus {
+  SUGGESTED
+  APPROVED
+  EXECUTED
+  REJECTED
+}
+
 model Company {
   id          String    @id @default(cuid())
   userId      String?
@@ -55,6 +74,8 @@ model Company {
   integrations        Integration[]
   webhookEvents       WebhookEvent[]
   alerts              Alert[]
+  forecastSnapshots   ForecastSnapshot[]
+  strategicActions    StrategicAction[]
 }
 
 model AdSpend {
@@ -276,4 +297,35 @@ model Alert {
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   @@index([companyId])
+}
+
+model ForecastSnapshot {
+  id            String        @id @default(cuid())
+  companyId     String
+  type          ForecastType
+  data          Json
+  accuracyScore Float         @default(0)
+  createdAt     DateTime      @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, type])
+  @@index([createdAt])
+}
+
+model StrategicAction {
+  id           String                @id @default(cuid())
+  companyId    String
+  title        String
+  description  String
+  type         StrategicActionType
+  status       StrategicActionStatus @default(SUGGESTED)
+  impactScore  Int                   @default(50)
+  payload      Json
+  createdAt    DateTime              @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, status])
+  @@index([companyId, type])
 }

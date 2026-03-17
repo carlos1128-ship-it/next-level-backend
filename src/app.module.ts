@@ -24,6 +24,7 @@ import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AlertsModule } from './modules/alerts/alerts.module';
 import { AnalysisModule } from './modules/analysis/analysis.module';
 import { IntegrationsModule } from './modules/integrations/integrations.module';
+import { StrategyModule } from './modules/strategy/strategy.module';
 
 @Module({
   controllers: [AppController],
@@ -49,6 +50,7 @@ import { IntegrationsModule } from './modules/integrations/integrations.module';
     AlertsModule,
     AnalysisModule,
     IntegrationsModule,
+    StrategyModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
