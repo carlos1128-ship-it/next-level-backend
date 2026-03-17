@@ -23,6 +23,12 @@ enum AiChatRole {
   ASSISTANT
 }
 
+enum IntegrationProvider {
+  WHATSAPP
+  INSTAGRAM
+  MERCADOLIVRE
+}
+
 model Company {
   id          String    @id @default(cuid())
   userId      String?
@@ -46,6 +52,8 @@ model Company {
   products            Product[]
   customers           Customer[]
   operationalCosts    OperationalCost[]
+  integrations        Integration[]
+  webhookEvents       WebhookEvent[]
   alerts              Alert[]
 }
 
@@ -224,6 +232,37 @@ model OperationalCost {
   @@index([companyId])
   @@index([companyId, date])
   @@index([companyId, category])
+}
+
+model Integration {
+  id          String               @id @default(cuid())
+  companyId   String
+  provider    IntegrationProvider
+  accessToken String
+  externalId  String
+  status      String               @default("connected")
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, provider])
+  @@unique([companyId, provider])
+  @@unique([provider, externalId])
+}
+
+model WebhookEvent {
+  id        String               @id @default(cuid())
+  companyId String?
+  provider  IntegrationProvider
+  payload   Json
+  processed Boolean              @default(false)
+  createdAt DateTime             @default(now())
+
+  company Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([provider])
+  @@index([companyId])
 }
 
 model Alert {
