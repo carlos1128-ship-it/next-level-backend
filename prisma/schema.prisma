@@ -46,6 +46,7 @@ model Company {
   products            Product[]
   customers           Customer[]
   operationalCosts    OperationalCost[]
+  alerts              Alert[]
 }
 
 model AdSpend {
@@ -223,4 +224,17 @@ model OperationalCost {
   @@index([companyId])
   @@index([companyId, date])
   @@index([companyId, category])
+}
+
+model Alert {
+  id        String   @id @default(cuid())
+  companyId String
+  type      String
+  message   String
+  severity  String
+  createdAt DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
 }

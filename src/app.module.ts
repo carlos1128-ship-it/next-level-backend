@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
+import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { PrismaModule } from './prisma/prisma.module';
@@ -19,11 +20,14 @@ import { ProductsModule } from './modules/products/products.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { CostsModule } from './modules/costs/costs.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
+import { AlertsModule } from './modules/alerts/alerts.module';
+import { AnalysisModule } from './modules/analysis/analysis.module';
 
 @Module({
   controllers: [AppController],
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    ScheduleModule.forRoot(),
     PrismaModule,
     AuthModule,
     CompaniesModule,
@@ -39,6 +43,8 @@ import { AnalyticsModule } from './modules/analytics/analytics.module';
     CustomersModule,
     CostsModule,
     AnalyticsModule,
+    AlertsModule,
+    AnalysisModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
