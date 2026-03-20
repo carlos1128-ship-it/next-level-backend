@@ -48,6 +48,13 @@ enum StrategicActionStatus {
   REJECTED
 }
 
+enum LeadStatus {
+  NEW
+  QUALIFIED
+  CONVERTED
+  LOST
+}
+
 model Company {
   id          String    @id @default(cuid())
   userId      String?
@@ -79,6 +86,8 @@ model Company {
   competitors         Competitor[]
   marketPrices        MarketPrice[]
   marketTrends        MarketTrend[]
+  botConfig           BotConfig?
+  leads               Lead[]
 }
 
 model AdSpend {
@@ -332,6 +341,52 @@ model StrategicAction {
 
   @@index([companyId, status])
   @@index([companyId, type])
+}
+
+model BotConfig {
+  id             String   @id @default(cuid())
+  companyId      String   @unique
+  botName        String   @default("Atendente IA")
+  welcomeMessage String?
+  toneOfVoice    String   @default("amigavel")
+  instructions   String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+}
+
+model Lead {
+  id               String      @id @default(cuid())
+  companyId        String
+  externalId       String
+  name             String?
+  status           LeadStatus  @default(NEW)
+  score            Int         @default(0)
+  lastInteraction  DateTime?
+  botPausedUntil   DateTime?
+  lastQuotedValue  Decimal?    @db.Decimal(12, 2)
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  company       Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversations ChatConversation[]
+
+  @@unique([companyId, externalId])
+  @@index([companyId, status])
+}
+
+model ChatConversation {
+  id        String    @id @default(cuid())
+  leadId    String
+  role      AiChatRole
+  content   String
+  createdAt DateTime  @default(now())
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId, createdAt])
 }
 
 model Competitor {

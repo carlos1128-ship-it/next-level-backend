@@ -26,6 +26,7 @@ import { AnalysisModule } from './modules/analysis/analysis.module';
 import { IntegrationsModule } from './modules/integrations/integrations.module';
 import { StrategyModule } from './modules/strategy/strategy.module';
 import { MarketIntelligenceModule } from './modules/market-intel/market-intelligence.module';
+import { AttendantModule } from './modules/attendant/attendant.module';
 
 @Module({
   controllers: [AppController],
@@ -53,6 +54,7 @@ import { MarketIntelligenceModule } from './modules/market-intel/market-intellig
     IntegrationsModule,
     StrategyModule,
     MarketIntelligenceModule,
+    AttendantModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
