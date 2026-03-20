@@ -15,6 +15,11 @@ type ActionPayload = {
   product?: { id: string; name: string; price: number; cost: number; maxDiscountPct: number };
 };
 
+type MarketOpportunityPayload = ActionPayload & {
+  competitor?: { id: string; name: string; price: number };
+  note?: string;
+};
+
 @Injectable()
 export class StrategyService {
   private readonly logger = new Logger(StrategyService.name);
@@ -133,6 +138,54 @@ export class StrategyService {
     return this.prisma.strategicAction.update({
       where: { id: action.id },
       data: { status: StrategicActionStatus.EXECUTED },
+    });
+  }
+
+  async suggestMarketOpportunity(
+    companyId: string,
+    data: {
+      product: { id: string; name: string; price: number };
+      competitor: { id: string; name: string; price: number };
+      reason: string;
+    },
+  ) {
+    const recent = await this.prisma.strategicAction.findFirst({
+      where: {
+        companyId,
+        type: StrategicActionType.ESTOQUE,
+        createdAt: { gte: this.addHours(new Date(), -24) },
+        title: { contains: data.competitor.name },
+      },
+    });
+    if (recent) return recent;
+
+    const payload: MarketOpportunityPayload = {
+      message:
+        'Oportunidade: Concorrente estÃ¡ sem estoque ou aumentou o preÃ§o. Podemos manter nosso preÃ§o e destacar entrega rÃ¡pida no WhatsApp.',
+      customers: [],
+      competitor: data.competitor,
+      product: {
+        id: data.product.id,
+        name: data.product.name,
+        price: data.product.price,
+        cost: data.product.price,
+        maxDiscountPct: 0,
+      },
+      note: data.reason,
+    };
+
+    return this.prisma.strategicAction.create({
+      data: {
+        companyId,
+        title: `Oportunidade: ${data.competitor.name} subiu o preÃ§o`,
+        description: `${data.reason}\nProduto: ${data.product.name}\nConcorrente: ${data.competitor.name} (R$ ${data.competitor.price.toFixed(
+          2,
+        )})`,
+        type: StrategicActionType.ESTOQUE,
+        status: StrategicActionStatus.SUGGESTED,
+        impactScore: 70,
+        payload,
+      },
     });
   }
 

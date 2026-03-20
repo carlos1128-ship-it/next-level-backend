@@ -76,6 +76,9 @@ model Company {
   alerts              Alert[]
   forecastSnapshots   ForecastSnapshot[]
   strategicActions    StrategicAction[]
+  competitors         Competitor[]
+  marketPrices        MarketPrice[]
+  marketTrends        MarketTrend[]
 }
 
 model AdSpend {
@@ -216,6 +219,7 @@ model Product {
   updatedAt DateTime @updatedAt
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  marketPrices MarketPrice[]
 
   @@index([companyId])
   @@index([companyId, name])
@@ -328,4 +332,52 @@ model StrategicAction {
 
   @@index([companyId, status])
   @@index([companyId, type])
+}
+
+model Competitor {
+  id        String   @id @default(cuid())
+  companyId String
+  name      String
+  url       String
+  category  String?
+  createdAt DateTime @default(now())
+
+  company      Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  marketPrices MarketPrice[]
+
+  @@index([companyId, category])
+  @@unique([companyId, name])
+}
+
+model MarketPrice {
+  id           String   @id @default(cuid())
+  companyId    String
+  productId    String
+  competitorId String
+  price        Decimal  @db.Decimal(12, 2)
+  url          String?
+  createdAt    DateTime @default(now())
+
+  company    Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  product    Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  competitor Competitor @relation(fields: [competitorId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, productId])
+  @@index([productId])
+  @@index([competitorId, createdAt])
+  @@index([companyId, createdAt])
+}
+
+model MarketTrend {
+  id                String   @id @default(cuid())
+  companyId         String
+  term              String
+  volume            Int      @default(0)
+  growthPercentage  Float    @default(0)
+  createdAt         DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, createdAt])
+  @@unique([companyId, term, createdAt])
 }
