@@ -5,11 +5,20 @@ import { WebhooksShopifyService } from './webhooks-shopify.service';
 import { WebhooksMetaService } from './webhooks-meta.service';
 import { WebhookIngestService } from './webhook-ingest.service';
 import { IntegrationsModule } from '../integrations/integrations.module';
+import { QueueModule } from '../queue/queue.module';
+import { WebhookProcessor } from './webhook-processor';
+import { WebhookQueueService } from './webhook-queue.service';
 
 @Module({
-  imports: [IntegrationsModule],
+  imports: [IntegrationsModule, QueueModule],
   controllers: [ShopifyController, WebhooksController],
-  providers: [WebhooksShopifyService, WebhooksMetaService, WebhookIngestService],
+  providers: [
+    WebhooksShopifyService,
+    WebhooksMetaService,
+    WebhookIngestService,
+    WebhookProcessor,
+    WebhookQueueService,
+  ],
   exports: [WebhooksShopifyService, WebhooksMetaService],
 })
 export class WebhooksModule {}

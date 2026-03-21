@@ -1,8 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { EventEmitter2 } from '@nestjs/event-emitter';
 import { IntegrationProvider, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { IntegrationsService } from '../integrations/integrations.service';
+import { WebhookQueueService } from './webhook-queue.service';
 
 @Injectable()
 export class WebhookIngestService {
@@ -11,7 +11,7 @@ export class WebhookIngestService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly integrationsService: IntegrationsService,
-    private readonly eventEmitter: EventEmitter2,
+    private readonly webhookQueue: WebhookQueueService,
   ) {}
 
   async registerEvent(
@@ -37,12 +37,7 @@ export class WebhookIngestService {
         },
       });
 
-      this.eventEmitter.emit('webhooks.received', {
-        eventId: event.id,
-        provider,
-        companyId,
-        externalId,
-      });
+      await this.webhookQueue.enqueue({ eventId: event.id, provider, companyId });
 
       return { event, companyId };
     } catch (error) {

@@ -1,6 +1,6 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { APP_FILTER, APP_GUARD } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
@@ -27,6 +27,9 @@ import { IntegrationsModule } from './modules/integrations/integrations.module';
 import { StrategyModule } from './modules/strategy/strategy.module';
 import { MarketIntelligenceModule } from './modules/market-intel/market-intelligence.module';
 import { AttendantModule } from './modules/attendant/attendant.module';
+import { AdminModule } from './modules/admin/admin.module';
+import { LoggingMiddleware } from './common/middleware/logging.middleware';
+import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 
 @Module({
   controllers: [AppController],
@@ -55,10 +58,17 @@ import { AttendantModule } from './modules/attendant/attendant.module';
     StrategyModule,
     MarketIntelligenceModule,
     AttendantModule,
+    AdminModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
+    { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
+    LoggingMiddleware,
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(LoggingMiddleware).forRoutes('*');
+  }
+}

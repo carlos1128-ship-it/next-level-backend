@@ -119,6 +119,7 @@ model User {
   email     String   @unique
   password  String
   plan      Plan     @default(FREE)
+  admin     Boolean  @default(false)
   detailLevel String @default("medium")
   name      String?
   companyId String?
@@ -409,6 +410,9 @@ model UsageQuota {
   updatedAt            DateTime @updatedAt
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@index([updatedAt])
 }
 
 model ApiLog {
@@ -418,23 +422,25 @@ model ApiLog {
   statusCode   Int
   responseTime Int
   companyId    String?
+  payload      Json?
   createdAt    DateTime @default(now())
 
   company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
 
   @@index([companyId, createdAt])
+  @@index([statusCode, createdAt])
 }
 
 model AuditTrail {
   id        String    @id @default(cuid())
-  companyId String
+  companyId String?
   actorType ActorType @default(SYSTEM)
   actorId   String?
   action    String
   details   Json?
   createdAt DateTime  @default(now())
 
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
 
   @@index([companyId, createdAt])
 }

@@ -16,6 +16,7 @@ export class UserService {
           id: true,
           email: true,
           name: true,
+          admin: true,
           detailLevel: true,
           companyId: true,
         },
@@ -43,6 +44,7 @@ export class UserService {
       select: {
         id: true,
         email: true,
+        admin: true,
         companyId: true,
       },
     });
@@ -61,6 +63,7 @@ export class UserService {
         id: true,
         email: true,
         name: true,
+        admin: true,
         detailLevel: true,
         companyId: true,
       },

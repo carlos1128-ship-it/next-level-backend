@@ -347,7 +347,8 @@ export class AttendantService {
       for (const change of changes) {
         const value = (change as { value?: Record<string, unknown> })?.value || {};
         const contacts = (value['contacts'] as Array<Record<string, unknown>>) || [];
-        const contactName = contacts[0]?.['profile']?.['name'] as string | undefined;
+        const profile = contacts[0]?.['profile'] as Record<string, unknown> | undefined;
+        const contactName = typeof profile?.name === 'string' ? profile.name : undefined;
         const msgs = (value['messages'] as Array<Record<string, unknown>>) || [];
         for (const msg of msgs) {
           const from = (msg['from'] as string) || '';

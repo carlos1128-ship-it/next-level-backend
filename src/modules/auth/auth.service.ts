@@ -13,6 +13,7 @@ export interface JwtPayload {
   sub: string;
   email: string;
   companyId?: string;
+  admin?: boolean;
 }
 
 @Injectable()
@@ -34,6 +35,7 @@ export class AuthService {
         email: true,
         password: true,
         name: true,
+        admin: true,
         detailLevel: true,
         companyId: true,
         company: {
@@ -58,6 +60,7 @@ export class AuthService {
       sub: user.id,
       email: user.email,
       companyId: user.companyId ?? undefined,
+      admin: user.admin,
     };
 
     const tokens = await this.issueTokens(payload);
@@ -68,6 +71,7 @@ export class AuthService {
         id: user.id,
         email: user.email,
         name: user.name,
+        admin: user.admin,
         detailLevel: user.detailLevel,
         companyId: user.companyId,
         companyName: user.company?.name ?? '',
@@ -101,6 +105,7 @@ export class AuthService {
           email: dto.email.toLowerCase().trim(),
           password: passwordHash,
           name: dto.name?.trim() || 'Administrador',
+          admin: false,
         },
       });
 
@@ -124,6 +129,7 @@ export class AuthService {
       sub: created.user.id,
       email: created.user.email,
       companyId: created.company.id,
+      admin: created.user.admin,
     };
 
     const tokens = await this.issueTokens(payload);
@@ -134,6 +140,7 @@ export class AuthService {
         id: created.user.id,
         email: created.user.email,
         name: created.user.name,
+        admin: created.user.admin,
         detailLevel: created.user.detailLevel,
         companyId: created.company.id,
         companyName: created.company.name,
@@ -182,6 +189,7 @@ export class AuthService {
         email: true,
         password: true,
         name: true,
+        admin: true,
         detailLevel: true,
         companyId: true,
         company: {
@@ -206,6 +214,7 @@ export class AuthService {
       sub: user.id,
       email: user.email,
       companyId: user.companyId ?? undefined,
+      admin: user.admin,
     };
 
     const tokens = await this.issueTokens(nextPayload);
@@ -216,6 +225,7 @@ export class AuthService {
         id: user.id,
         email: user.email,
         name: user.name,
+        admin: user.admin,
         detailLevel: user.detailLevel,
         companyId: user.companyId,
         companyName: user.company?.name ?? '',
@@ -254,6 +264,7 @@ export class AuthService {
         id: true,
         email: true,
         companyId: true,
+        admin: true,
         detailLevel: true,
       },
     });
@@ -262,6 +273,7 @@ export class AuthService {
       id: user.id,
       email: user.email,
       companyId: user.companyId ?? undefined,
+      admin: user.admin,
       detailLevel: user.detailLevel,
     };
   }

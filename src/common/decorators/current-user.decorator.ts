@@ -4,6 +4,7 @@ export interface JwtPayload {
   sub: string;
   email: string;
   companyId?: string;
+  admin?: boolean;
   detailLevel?: string;
 }
 
