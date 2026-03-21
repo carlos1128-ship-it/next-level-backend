@@ -15,6 +15,18 @@ async function main() {
     },
   });
 
+  await prisma.usageQuota.upsert({
+    where: { companyId: company.id },
+    update: {},
+    create: {
+      companyId: company.id,
+      currentTier: 'FREE',
+      llmTokensUsed: 0,
+      whatsappMessagesSent: 0,
+      billingCycleEnd: new Date(new Date().setMonth(new Date().getMonth() + 1)),
+    },
+  });
+
   const hashedPassword = await bcrypt.hash('senha123', 10);
   const adminUser = await prisma.user.upsert({
     where: { email: 'admin@empresa-demo.com' },

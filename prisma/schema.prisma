@@ -55,6 +55,12 @@ enum LeadStatus {
   LOST
 }
 
+enum ActorType {
+  HUMAN
+  AI
+  SYSTEM
+}
+
 model Company {
   id          String    @id @default(cuid())
   userId      String?
@@ -88,6 +94,9 @@ model Company {
   marketTrends        MarketTrend[]
   botConfig           BotConfig?
   leads               Lead[]
+  usageQuota          UsageQuota?
+  apiLogs             ApiLog[]
+  auditTrails         AuditTrail[]
 }
 
 model AdSpend {
@@ -387,6 +396,47 @@ model ChatConversation {
   lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
 
   @@index([leadId, createdAt])
+}
+
+model UsageQuota {
+  id                   String   @id @default(cuid())
+  companyId            String   @unique
+  llmTokensUsed        Int      @default(0)
+  whatsappMessagesSent Int      @default(0)
+  currentTier          Plan     @default(FREE)
+  billingCycleEnd      DateTime
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+}
+
+model ApiLog {
+  id           String   @id @default(cuid())
+  method       String
+  path         String
+  statusCode   Int
+  responseTime Int
+  companyId    String?
+  createdAt    DateTime @default(now())
+
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt])
+}
+
+model AuditTrail {
+  id        String    @id @default(cuid())
+  companyId String
+  actorType ActorType @default(SYSTEM)
+  actorId   String?
+  action    String
+  details   Json?
+  createdAt DateTime  @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, createdAt])
 }
 
 model Competitor {
