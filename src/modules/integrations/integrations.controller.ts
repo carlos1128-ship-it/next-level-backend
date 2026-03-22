@@ -2,22 +2,15 @@ import {
   Body,
   Controller,
   Get,
+  Param,
   Post,
   Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { IntegrationProvider } from '@prisma/client';
 import { ActiveCompanyGuard } from '../../common/guards/active-company.guard';
+import { ConnectIntegrationDto } from './dto/connect-integration.dto';
 import { IntegrationsService } from './integrations.service';
-
-interface ConnectIntegrationDto {
-  provider: IntegrationProvider;
-  accessToken: string;
-  externalId: string;
-  status?: string;
-  companyId?: string | null;
-}
 
 @Controller('integrations')
 @UseGuards(ActiveCompanyGuard)
@@ -35,6 +28,19 @@ export class IntegrationsController {
     );
 
     return { data: statuses };
+  }
+
+  @Get('status/:provider')
+  async diagnostic(
+    @Req() req: { user: { id: string } },
+    @Param('provider') provider: string,
+    @Query('companyId') companyId?: string,
+  ) {
+    return this.integrationsService.getProviderDiagnostic(
+      req.user.id,
+      provider,
+      companyId,
+    );
   }
 
   @Post('connect')

@@ -9,6 +9,8 @@ import type { StringValue } from 'ms';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 
+const BCRYPT_ROUNDS = Number(process.env.BCRYPT_ROUNDS || 12);
+
 export interface JwtPayload {
   sub: string;
   email: string;
@@ -98,7 +100,7 @@ export class AuthService {
       throw new ConflictException('Slug da empresa ja esta em uso');
     }
 
-    const passwordHash = await bcrypt.hash(dto.password, 10);
+    const passwordHash = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
     const created = await this.prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
         data: {

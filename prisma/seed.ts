@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient();
+const BCRYPT_ROUNDS = Number(process.env.BCRYPT_ROUNDS || 12);
 
 async function main() {
   const company = await prisma.company.upsert({
@@ -27,7 +28,7 @@ async function main() {
     },
   });
 
-  const hashedPassword = await bcrypt.hash('senha123', 10);
+  const hashedPassword = await bcrypt.hash('senha123', BCRYPT_ROUNDS);
   const adminUser = await prisma.user.upsert({
     where: { email: 'admin@empresa-demo.com' },
     update: {

@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { Integration, IntegrationProvider } from '@prisma/client';
+import { Integration, IntegrationProvider, WebhookLogStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { MetaGraphService } from './meta-graph.service';
 
 export interface IntegrationStatus {
   provider: IntegrationProvider;
@@ -10,17 +11,25 @@ export interface IntegrationStatus {
   updatedAt: Date | null;
 }
 
+export interface ProviderDiagnosticStatus {
+  status: 'ACTIVE' | 'INACTIVE' | 'DORMANT';
+  lastEventReceived: string | null;
+}
+
 interface ConnectIntegrationInput {
   provider: IntegrationProvider;
   accessToken: string;
-  externalId: string;
+  externalId?: string;
   status?: string;
   companyId?: string | null;
 }
 
 @Injectable()
 export class IntegrationsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly metaGraphService: MetaGraphService,
+  ) {}
 
   async upsertIntegration(
     userId: string,
@@ -29,6 +38,25 @@ export class IntegrationsService {
   ): Promise<Integration> {
     const company = await this.resolveCompany(userId, companyId || data.companyId);
     const normalizedStatus = (data.status || 'connected').trim().toLowerCase();
+    const trimmedToken = data.accessToken.trim();
+    let externalId = data.externalId?.trim();
+
+    if (data.provider === IntegrationProvider.WHATSAPP) {
+      const discovered = await this.metaGraphService.discoverWhatsappBusiness(trimmedToken);
+      externalId = discovered.phoneNumberId;
+
+      await this.prisma.company.update({
+        where: { id: company.id },
+        data: {
+          metaPhoneNumberId: discovered.phoneNumberId,
+          metaWabaId: discovered.wabaId,
+        },
+      });
+    }
+
+    if (!externalId) {
+      throw new BadRequestException('externalId nao informado');
+    }
 
     return this.prisma.integration.upsert({
       where: {
@@ -38,15 +66,15 @@ export class IntegrationsService {
         },
       },
       update: {
-        accessToken: data.accessToken.trim(),
-        externalId: data.externalId.trim(),
+        accessToken: trimmedToken,
+        externalId,
         status: normalizedStatus,
       },
       create: {
         companyId: company.id,
         provider: data.provider,
-        accessToken: data.accessToken.trim(),
-        externalId: data.externalId.trim(),
+        accessToken: trimmedToken,
+        externalId,
         status: normalizedStatus,
       },
     });
@@ -120,9 +148,54 @@ export class IntegrationsService {
     return integration;
   }
 
+  async getProviderDiagnostic(
+    userId: string,
+    providerInput: string,
+    companyId?: string | null,
+  ): Promise<ProviderDiagnosticStatus> {
+    const company = await this.resolveCompany(userId, companyId);
+    const provider = this.parseProvider(providerInput);
+    const lastSuccess = await this.prisma.webhookLog.findFirst({
+      where: {
+        companyId: company.id,
+        provider,
+        status: WebhookLogStatus.SUCCESS,
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    });
+
+    if (!lastSuccess) {
+      return {
+        status: 'INACTIVE',
+        lastEventReceived: null,
+      };
+    }
+
+    const now = Date.now();
+    const diffMs = now - lastSuccess.createdAt.getTime();
+    const oneHourMs = 60 * 60 * 1000;
+
+    return {
+      status: diffMs > oneHourMs ? 'DORMANT' : 'ACTIVE',
+      lastEventReceived: lastSuccess.createdAt.toISOString(),
+    };
+  }
+
   sanitize(integration: Integration) {
     const { accessToken: _accessToken, ...safe } = integration;
     return safe;
+  }
+
+  private parseProvider(raw: string) {
+    const normalized = raw.trim().toLowerCase();
+    if (['meta', 'whatsapp'].includes(normalized)) return IntegrationProvider.WHATSAPP;
+    if (['instagram'].includes(normalized)) return IntegrationProvider.INSTAGRAM;
+    if (['mercadolivre', 'mercado-livre', 'mercado_livre', 'ml'].includes(normalized)) {
+      return IntegrationProvider.MERCADOLIVRE;
+    }
+
+    throw new BadRequestException('Provedor invalido');
   }
 
   private async resolveCompany(

@@ -9,6 +9,21 @@ import { ListProductsDto } from './dto/list-products.dto';
 export class ProductsService {
   constructor(private readonly prisma: PrismaService) {}
 
+  calculateFinancials(product: { price: number; cost?: number | null }) {
+    const price = Number(product.price || 0);
+    const cost = Number(product.cost || 0);
+    const grossProfit = Number((price - cost).toFixed(2));
+    const netMargin = price > 0 ? Number(((grossProfit / price) * 100).toFixed(2)) : 0;
+    const warningLevel =
+      netMargin <= 0 ? 'CRITICAL' : netMargin < 10 ? 'WARNING' : 'HEALTHY';
+
+    return {
+      grossProfit,
+      netMargin,
+      warningLevel,
+    };
+  }
+
   private async resolveCompanyId(
     userId: string,
     requestedCompanyId?: string | null,
@@ -52,10 +67,15 @@ export class ProductsService {
   }
 
   private map(product: Product) {
-    return {
+    const mapped = {
       ...product,
       price: Number(product.price),
       cost: product.cost != null ? Number(product.cost) : null,
+    };
+
+    return {
+      ...mapped,
+      financials: this.calculateFinancials(mapped),
     };
   }
 

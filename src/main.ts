@@ -1,8 +1,10 @@
 import { NestFactory } from '@nestjs/core';
+import { ValidationPipe } from '@nestjs/common';
 import { Request, Response } from 'express';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { AppModule } from './app.module';
+import { ZodValidationPipe } from './common/pipes/zod-validation.pipe';
 
 function parseAllowedOrigins(raw: string | undefined): Set<string> {
   const defaults = [
@@ -61,6 +63,14 @@ async function bootstrap() {
   });
 
   app.setGlobalPrefix('api');
+  app.useGlobalPipes(
+    new ZodValidationPipe(),
+    new ValidationPipe({
+      transform: true,
+      whitelist: true,
+      forbidUnknownValues: false,
+    }),
+  );
   app.use(helmet());
   expressApp.set('trust proxy', trustProxy);
   app.use(

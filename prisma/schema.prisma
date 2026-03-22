@@ -61,6 +61,11 @@ enum ActorType {
   SYSTEM
 }
 
+enum WebhookLogStatus {
+  SUCCESS
+  FAILED
+}
+
 model Company {
   id          String    @id @default(cuid())
   userId      String?
@@ -73,6 +78,8 @@ model Company {
   slug        String    @unique @default(cuid())
   currency    String    @default("BRL")
   timezone    String    @default("America/Sao_Paulo")
+  metaPhoneNumberId String?
+  metaWabaId        String?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -86,6 +93,7 @@ model Company {
   operationalCosts    OperationalCost[]
   integrations        Integration[]
   webhookEvents       WebhookEvent[]
+  webhookLogs         WebhookLog[]
   alerts              Alert[]
   forecastSnapshots   ForecastSnapshot[]
   strategicActions    StrategicAction[]
@@ -309,6 +317,21 @@ model WebhookEvent {
   @@index([companyId])
 }
 
+model WebhookLog {
+  id        String           @id @default(cuid())
+  companyId String?
+  provider  IntegrationProvider
+  status    WebhookLogStatus @default(SUCCESS)
+  message   String?
+  eventId   String?
+  createdAt DateTime         @default(now())
+
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+
+  @@index([provider, status, createdAt])
+  @@index([companyId, provider, createdAt])
+}
+
 model Alert {
   id        String   @id @default(cuid())
   companyId String
@@ -421,6 +444,9 @@ model ApiLog {
   path         String
   statusCode   Int
   responseTime Int
+  status       String?
+  provider     String?
+  errorMessage String?
   companyId    String?
   payload      Json?
   createdAt    DateTime @default(now())

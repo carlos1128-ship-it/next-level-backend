@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { IntegrationProvider, Prisma } from '@prisma/client';
+import { IntegrationProvider, Prisma, WebhookLogStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { IntegrationsService } from '../integrations/integrations.service';
 import { WebhookQueueService } from './webhook-queue.service';
@@ -36,11 +36,30 @@ export class WebhookIngestService {
           companyId: companyId || undefined,
         },
       });
+      await this.prisma.webhookLog.create({
+        data: {
+          companyId: companyId || undefined,
+          provider,
+          status: WebhookLogStatus.SUCCESS,
+          message: 'Webhook recebido com sucesso',
+          eventId: event.id,
+        },
+      });
 
       await this.webhookQueue.enqueue({ eventId: event.id, provider, companyId });
 
       return { event, companyId };
     } catch (error) {
+      await this.prisma.webhookLog
+        .create({
+          data: {
+            companyId: companyIdHint?.trim() || undefined,
+            provider,
+            status: WebhookLogStatus.FAILED,
+            message: (error as Error)?.message || 'Falha ao registrar webhook',
+          },
+        })
+        .catch(() => undefined);
       this.logger.error('Falha ao registrar webhook', error as Error);
       throw error;
     }

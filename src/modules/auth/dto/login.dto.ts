@@ -1,11 +1,17 @@
 import { IsEmail, IsNotEmpty, IsString, MinLength } from 'class-validator';
+import { z } from 'zod';
 
 export class LoginDto {
-  @IsEmail({}, { message: 'E-mail inválido' })
+  static schema = z.object({
+    email: z.string().trim().email('E-mail invalido'),
+    password: z.string().min(6, 'Senha deve ter no minimo 6 caracteres'),
+  });
+
+  @IsEmail({}, { message: 'E-mail invalido' })
   @IsNotEmpty()
-  email: string;
+  email!: string;
 
   @IsString()
-  @MinLength(6, { message: 'Senha deve ter no mínimo 6 caracteres' })
-  password: string;
+  @MinLength(6, { message: 'Senha deve ter no minimo 6 caracteres' })
+  password!: string;
 }

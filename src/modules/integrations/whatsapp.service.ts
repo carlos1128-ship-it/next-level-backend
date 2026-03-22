@@ -1,8 +1,7 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { IntegrationProvider } from '@prisma/client';
-import axios from 'axios';
 import { IntegrationsService } from './integrations.service';
+import { MetaGraphService } from './meta-graph.service';
 
 interface SendTemplateInput {
   to: string;
@@ -13,16 +12,10 @@ interface SendTemplateInput {
 
 @Injectable()
 export class WhatsappService {
-  private readonly logger = new Logger(WhatsappService.name);
-  private readonly graphVersion: string;
-
   constructor(
     private readonly integrationsService: IntegrationsService,
-    private readonly configService: ConfigService,
-  ) {
-    const version = this.configService.get<string>('META_GRAPH_VERSION') || '20.0';
-    this.graphVersion = version.replace(/^v/i, '') || '20.0';
-  }
+    private readonly metaGraphService: MetaGraphService,
+  ) {}
 
   async sendTextMessage(companyId: string, to: string, message: string) {
     const integration = await this.integrationsService.getActiveIntegration(
@@ -30,22 +23,18 @@ export class WhatsappService {
       IntegrationProvider.WHATSAPP,
     );
 
-    const url = `https://graph.facebook.com/v${this.graphVersion}/${integration.externalId}/messages`;
-
-    await axios.post(
-      url,
-      {
+    await this.metaGraphService.requestWithRetry({
+      companyId,
+      method: 'POST',
+      path: `${integration.externalId}/messages`,
+      accessToken: integration.accessToken,
+      data: {
         messaging_product: 'whatsapp',
         to,
         type: 'text',
         text: { body: message },
       },
-      {
-        headers: {
-          Authorization: `Bearer ${integration.accessToken}`,
-        },
-      },
-    );
+    });
 
     return { sent: true };
   }
@@ -63,11 +52,12 @@ export class WhatsappService {
       throw new BadRequestException('template obrigatorio');
     }
 
-    const url = `https://graph.facebook.com/v${this.graphVersion}/${integration.externalId}/messages`;
-
-    await axios.post(
-      url,
-      {
+    await this.metaGraphService.requestWithRetry({
+      companyId,
+      method: 'POST',
+      path: `${integration.externalId}/messages`,
+      accessToken: integration.accessToken,
+      data: {
         messaging_product: 'whatsapp',
         to: payload.to,
         type: 'template',
@@ -77,13 +67,12 @@ export class WhatsappService {
           components: payload.components,
         },
       },
-      {
-        headers: {
-          Authorization: `Bearer ${integration.accessToken}`,
-        },
-      },
-    );
+    });
 
     return { sent: true };
+  }
+
+  async discoverBusinessProfile(accessToken: string) {
+    return this.metaGraphService.discoverWhatsappBusiness(accessToken);
   }
 }
