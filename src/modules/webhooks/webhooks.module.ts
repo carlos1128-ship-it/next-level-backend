@@ -8,16 +8,19 @@ import { IntegrationsModule } from '../integrations/integrations.module';
 import { QueueModule } from '../queue/queue.module';
 import { WebhookProcessor } from './webhook-processor';
 import { WebhookQueueService } from './webhook-queue.service';
+import { isRedisConfigured } from '../queue/queue.constants';
+
+const queueEnabled = isRedisConfigured();
 
 @Module({
-  imports: [IntegrationsModule, QueueModule],
+  imports: [IntegrationsModule, QueueModule.register()],
   controllers: [ShopifyController, WebhooksController],
   providers: [
     WebhooksShopifyService,
     WebhooksMetaService,
     WebhookIngestService,
-    WebhookProcessor,
     WebhookQueueService,
+    ...(queueEnabled ? [WebhookProcessor] : []),
   ],
   exports: [WebhooksShopifyService, WebhooksMetaService],
 })

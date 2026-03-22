@@ -9,17 +9,26 @@ type HealthStatus = 'up' | 'down' | 'unknown';
 
 @Injectable()
 export class AdminService implements OnModuleDestroy {
-  private readonly redis: Redis;
+  private readonly redis?: Redis;
+  private readonly redisEnabled: boolean;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
   ) {
-    const redisUrl = this.configService.get<string>('REDIS_URL') || 'redis://localhost:6379';
-    this.redis = new Redis(redisUrl, {
-      lazyConnect: true,
-      maxRetriesPerRequest: 1,
-    });
+    const redisUrl = this.configService.get<string>('REDIS_URL')?.trim();
+    this.redisEnabled = Boolean(redisUrl);
+
+    if (redisUrl) {
+      this.redis = new Redis(redisUrl, {
+        lazyConnect: true,
+        maxRetriesPerRequest: 1,
+        connectTimeout: 2000,
+        enableOfflineQueue: false,
+        retryStrategy: () => null,
+      });
+      this.redis.on('error', () => undefined);
+    }
   }
 
   async getHealth() {
@@ -263,6 +272,13 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private async checkRedis(): Promise<{ status: HealthStatus; latencyMs: number }> {
+    if (!this.redisEnabled || !this.redis) {
+      return {
+        status: 'unknown',
+        latencyMs: 0,
+      };
+    }
+
     const start = Date.now();
     try {
       if (this.redis.status === 'wait') {
@@ -362,7 +378,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   async onModuleDestroy() {
-    if (this.redis.status !== 'end') {
+    if (this.redis && this.redis.status !== 'end') {
       await this.redis.quit().catch(() => undefined);
     }
   }
