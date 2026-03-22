@@ -1,5 +1,5 @@
-﻿-- CreateEnum
-CREATE TYPE "ActorType" AS ENUM (''HUMAN'', ''AI'', ''SYSTEM'');
+-- CreateEnum
+CREATE TYPE "ActorType" AS ENUM ('HUMAN', 'AI', 'SYSTEM');
 
 -- CreateTable
 CREATE TABLE "UsageQuota" (
@@ -7,7 +7,7 @@ CREATE TABLE "UsageQuota" (
     "companyId" TEXT NOT NULL,
     "llmTokensUsed" INTEGER NOT NULL DEFAULT 0,
     "whatsappMessagesSent" INTEGER NOT NULL DEFAULT 0,
-    "currentTier" "Plan" NOT NULL DEFAULT ''FREE'',
+    "currentTier" "Plan" NOT NULL DEFAULT 'FREE',
     "billingCycleEnd" TIMESTAMP(3) NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
@@ -32,7 +32,7 @@ CREATE TABLE "ApiLog" (
 CREATE TABLE "AuditTrail" (
     "id" TEXT NOT NULL,
     "companyId" TEXT NOT NULL,
-    "actorType" "ActorType" NOT NULL DEFAULT ''SYSTEM'',
+    "actorType" "ActorType" NOT NULL DEFAULT 'SYSTEM',
     "actorId" TEXT,
     "action" TEXT NOT NULL,
     "details" JSONB,
