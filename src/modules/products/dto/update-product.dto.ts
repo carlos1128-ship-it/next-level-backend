@@ -16,6 +16,10 @@ export class UpdateProductDto {
     category: optionalTrimmedText,
     price: z.coerce.number().positive('price deve ser positivo').optional(),
     cost: z.union([z.coerce.number().positive('cost deve ser positivo'), z.null()]).optional(),
+    tax: z.union([z.coerce.number().min(0, 'tax nao pode ser negativo'), z.null()]).optional(),
+    shipping: z
+      .union([z.coerce.number().min(0, 'shipping nao pode ser negativo'), z.null()])
+      .optional(),
     companyId: optionalTrimmedText,
   });
 
@@ -40,6 +44,16 @@ export class UpdateProductDto {
   @IsNumber()
   @Min(0.000001)
   cost?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  tax?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  shipping?: number;
 
   @IsOptional()
   @IsString()

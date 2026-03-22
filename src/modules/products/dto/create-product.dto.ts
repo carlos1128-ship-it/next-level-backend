@@ -16,6 +16,8 @@ export class CreateProductDto {
     category: optionalTrimmedText,
     price: z.coerce.number().positive('price deve ser positivo'),
     cost: z.coerce.number().positive('cost deve ser positivo').optional(),
+    tax: z.coerce.number().min(0, 'tax nao pode ser negativo').optional(),
+    shipping: z.coerce.number().min(0, 'shipping nao pode ser negativo').optional(),
     companyId: optionalTrimmedText,
   });
 
@@ -38,6 +40,16 @@ export class CreateProductDto {
   @IsNumber()
   @Min(0.000001)
   cost?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  tax?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  shipping?: number;
 
   @IsOptional()
   @IsString()

@@ -1,3 +1,4 @@
+import { Type } from 'class-transformer';
 import { IsDateString, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 
 export class ListCostsDto {
@@ -18,11 +19,13 @@ export class ListCostsDto {
   endDate?: string;
 
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   @Min(1)
   page?: number;
 
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   @Min(1)
   limit?: number;

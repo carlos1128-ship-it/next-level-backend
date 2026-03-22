@@ -67,6 +67,7 @@ async function bootstrap() {
     new ZodValidationPipe(),
     new ValidationPipe({
       transform: true,
+      transformOptions: { enableImplicitConversion: true },
       whitelist: true,
       forbidUnknownValues: false,
     }),
