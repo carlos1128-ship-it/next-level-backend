@@ -1,5 +1,9 @@
-import { Type } from 'class-transformer';
 import { IsNumber, IsOptional, IsString, Min } from 'class-validator';
+import {
+  TransformOptionalLimit,
+  TransformOptionalNonNegativeNumber,
+  TransformOptionalPage,
+} from '../../../common/transformers/query-params.transform';
 
 export class ListProductsDto {
   @IsOptional()
@@ -11,24 +15,24 @@ export class ListProductsDto {
   category?: string;
 
   @IsOptional()
-  @Type(() => Number)
+  @TransformOptionalPage()
   @IsNumber()
   @Min(1)
   page?: number;
 
   @IsOptional()
-  @Type(() => Number)
+  @TransformOptionalLimit(100)
   @IsNumber()
   @Min(1)
   limit?: number;
 
   @IsOptional()
-  @Type(() => Number)
+  @TransformOptionalNonNegativeNumber()
   @IsNumber()
   minPrice?: number;
 
   @IsOptional()
-  @Type(() => Number)
+  @TransformOptionalNonNegativeNumber()
   @IsNumber()
   maxPrice?: number;
 

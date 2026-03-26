@@ -1,5 +1,8 @@
-import { Type } from 'class-transformer';
 import { IsNumber, IsOptional, IsString, Min } from 'class-validator';
+import {
+  TransformOptionalLimit,
+  TransformOptionalPage,
+} from '../../../common/transformers/query-params.transform';
 
 export class ListCustomersDto {
   @IsOptional()
@@ -11,13 +14,13 @@ export class ListCustomersDto {
   companyId?: string;
 
   @IsOptional()
-  @Type(() => Number)
+  @TransformOptionalPage()
   @IsNumber()
   @Min(1)
   page?: number;
 
   @IsOptional()
-  @Type(() => Number)
+  @TransformOptionalLimit(100)
   @IsNumber()
   @Min(1)
   limit?: number;

@@ -47,7 +47,7 @@ export class AiService {
   async analyzeSales(data: Record<string, unknown>, userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      include: { analyses: true, company: true },
+      include: { analyses: true },
     });
 
     if (!user) {
