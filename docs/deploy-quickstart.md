@@ -17,10 +17,18 @@
 Opcional:
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
+- `PRISMA_CONNECT_RETRIES`
+- `PRISMA_CONNECT_RETRY_DELAY_MS`
 - `SHOPIFY_WEBHOOK_SECRET`
 - `META_WEBHOOK_VERIFY_TOKEN`
 - `META_APP_SECRET`
 - `META_AD_ACCOUNT_TO_COMPANY`
+
+Para Postgres remoto (Neon, Supabase, Render PostgreSQL), use `DATABASE_URL` com SSL habilitado, por exemplo:
+
+```bash
+DATABASE_URL="postgresql://USER:PASSWORD@HOST/DB?schema=public&sslmode=require"
+```
 
 ## 3) Build e migração
 
