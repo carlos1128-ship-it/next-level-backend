@@ -16,6 +16,7 @@ export interface JwtPayload {
   email: string;
   companyId?: string;
   admin?: boolean;
+  niche?: string;
 }
 
 @Injectable()
@@ -39,6 +40,7 @@ export class AuthService {
         name: true,
         admin: true,
         detailLevel: true,
+        niche: true,
         companyId: true,
         company: {
           select: {
@@ -75,6 +77,7 @@ export class AuthService {
         name: user.name,
         admin: user.admin,
         detailLevel: user.detailLevel,
+        niche: user.niche,
         companyId: user.companyId,
         companyName: user.company?.name ?? '',
       },
@@ -144,6 +147,7 @@ export class AuthService {
         name: created.user.name,
         admin: created.user.admin,
         detailLevel: created.user.detailLevel,
+        niche: created.user.niche,
         companyId: created.company.id,
         companyName: created.company.name,
       },
@@ -193,6 +197,7 @@ export class AuthService {
         name: true,
         admin: true,
         detailLevel: true,
+        niche: true,
         companyId: true,
         company: {
           select: {
@@ -229,6 +234,7 @@ export class AuthService {
         name: user.name,
         admin: user.admin,
         detailLevel: user.detailLevel,
+        niche: user.niche,
         companyId: user.companyId,
         companyName: user.company?.name ?? '',
       },
@@ -268,6 +274,7 @@ export class AuthService {
         companyId: true,
         admin: true,
         detailLevel: true,
+        niche: true,
       },
     });
     if (!user) return null;
@@ -277,6 +284,7 @@ export class AuthService {
       companyId: user.companyId ?? undefined,
       admin: user.admin,
       detailLevel: user.detailLevel,
+      niche: user.niche ?? undefined,
     };
   }
 

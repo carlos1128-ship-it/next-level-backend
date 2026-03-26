@@ -20,6 +20,7 @@ export class UserService {
           name: true,
           admin: true,
           detailLevel: true,
+          niche: true,
           companyId: true,
         },
       }),
@@ -47,6 +48,7 @@ export class UserService {
         id: true,
         email: true,
         admin: true,
+        niche: true,
         companyId: true,
       },
     });
@@ -60,6 +62,7 @@ export class UserService {
       data: {
         name: dto.name?.trim(),
         detailLevel: dto.detailLevel,
+        niche: dto.niche,
       },
       select: {
         id: true,
@@ -67,6 +70,7 @@ export class UserService {
         name: true,
         admin: true,
         detailLevel: true,
+        niche: true,
         companyId: true,
       },
     });

@@ -6,6 +6,14 @@ export enum DetailLevel {
   high = 'high',
 }
 
+export enum UserNiche {
+  ECOMMERCE = 'ECOMMERCE',
+  MEDICINA = 'MEDICINA',
+  SERVICOS = 'SERVICOS',
+  EDUCACAO = 'EDUCACAO',
+  OUTROS = 'OUTROS',
+}
+
 export class UpdateProfileDto {
   @IsOptional()
   @IsString()
@@ -16,4 +24,8 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsEnum(DetailLevel)
   detailLevel?: DetailLevel;
+
+  @IsOptional()
+  @IsEnum(UserNiche)
+  niche?: UserNiche;
 }

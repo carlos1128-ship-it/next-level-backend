@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import axios from 'axios';
 import { Request, Response } from 'express';
 
 interface ErrorBody {
@@ -35,18 +36,19 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       exception instanceof Prisma.PrismaClientInitializationError;
     const isPrismaRustPanic =
       exception instanceof Prisma.PrismaClientRustPanicError;
+    const isAxiosError = axios.isAxiosError(exception);
 
     const originalStatus = isHttpException
       ? exception.getStatus()
       : isPrismaKnown || isPrismaValidation
         ? HttpStatus.BAD_REQUEST
-        : isPrismaInit || isPrismaRustPanic
+        : isPrismaInit || isPrismaRustPanic || isAxiosError
           ? HttpStatus.SERVICE_UNAVAILABLE
           : HttpStatus.INTERNAL_SERVER_ERROR;
 
     const statusCode =
       originalStatus >= 500
-        ? isPrismaInit || isPrismaRustPanic
+        ? isPrismaInit || isPrismaRustPanic || isAxiosError
           ? HttpStatus.FAILED_DEPENDENCY
           : HttpStatus.BAD_REQUEST
         : originalStatus;
@@ -85,11 +87,20 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     const timestamp = new Date().toISOString();
 
     if (exception instanceof HttpException && exception.getStatus() < 500) {
+      const httpStatus = exception.getStatus();
       const response = exception.getResponse();
-      const message = this.extractMessage(response);
+      const message =
+        httpStatus === HttpStatus.NOT_FOUND
+          ? 'A rota solicitada nao foi encontrada. Volte e tente novamente pelo menu principal.'
+          : this.extractMessage(response);
       return {
         statusCode,
-        error: statusCode === HttpStatus.BAD_REQUEST ? 'RequestError' : 'ApplicationError',
+        error:
+          statusCode === HttpStatus.NOT_FOUND
+            ? 'RouteNotFound'
+            : statusCode === HttpStatus.BAD_REQUEST
+              ? 'RequestError'
+              : 'ApplicationError',
         message,
         timestamp,
         path,
@@ -125,6 +136,17 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         error: 'DependencyUnavailable',
         message:
           'Nao conseguimos concluir essa acao agora porque um servico essencial nao respondeu.',
+        timestamp,
+        path,
+      };
+    }
+
+    if (axios.isAxiosError(exception)) {
+      return {
+        statusCode,
+        error: 'DependencyUnavailable',
+        message:
+          'Nao conseguimos concluir essa acao porque um provedor externo nao respondeu como esperado.',
         timestamp,
         path,
       };

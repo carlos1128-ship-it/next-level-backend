@@ -6,6 +6,7 @@ export interface JwtPayload {
   companyId?: string;
   admin?: boolean;
   detailLevel?: string;
+  niche?: string;
 }
 
 export const CurrentUser = createParamDecorator(

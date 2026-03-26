@@ -30,6 +30,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       companyId: user.companyId,
       admin: user.admin,
       detailLevel: user.detailLevel,
+      niche: user.niche,
     };
   }
 }

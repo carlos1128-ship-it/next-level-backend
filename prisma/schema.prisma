@@ -13,6 +13,14 @@ enum Plan {
   ENTERPRISE
 }
 
+enum UserNiche {
+  ECOMMERCE
+  MEDICINA
+  SERVICOS
+  EDUCACAO
+  OUTROS
+}
+
 enum FinancialTransactionType {
   INCOME
   EXPENSE
@@ -129,6 +137,7 @@ model User {
   plan      Plan     @default(FREE)
   admin     Boolean  @default(false)
   detailLevel String @default("medium")
+  niche     UserNiche?
   name      String?
   companyId String?
   createdAt DateTime @default(now())

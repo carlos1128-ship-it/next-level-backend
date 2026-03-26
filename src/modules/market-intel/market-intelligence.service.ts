@@ -11,6 +11,18 @@ type PriceSnapshot = {
   previous?: MarketPrice | null;
 };
 
+const marketIntelProductSelect = {
+  id: true,
+  companyId: true,
+  name: true,
+  price: true,
+  createdAt: true,
+} satisfies Prisma.ProductSelect;
+
+type MarketIntelProduct = Prisma.ProductGetPayload<{
+  select: typeof marketIntelProductSelect;
+}>;
+
 @Injectable()
 export class MarketIntelligenceService {
   private readonly logger = new Logger(MarketIntelligenceService.name);
@@ -44,6 +56,7 @@ export class MarketIntelligenceService {
       where: { companyId: company.id },
       orderBy: { createdAt: 'desc' },
       take: 20,
+      select: marketIntelProductSelect,
     });
 
     const comparison = await Promise.all(
@@ -103,6 +116,7 @@ export class MarketIntelligenceService {
   async analyzePriceGap(productId: string, companyId: string, emitAlert = true) {
     const product = await this.prisma.product.findFirst({
       where: { id: productId, companyId },
+      select: marketIntelProductSelect,
     });
     if (!product) {
       throw new BadRequestException('Produto nao encontrado para a empresa');
@@ -143,11 +157,13 @@ export class MarketIntelligenceService {
       productIds && productIds.length
         ? await this.prisma.product.findMany({
             where: { companyId, id: { in: productIds } },
+            select: marketIntelProductSelect,
           })
         : await this.prisma.product.findMany({
             where: { companyId },
             orderBy: { createdAt: 'desc' },
             take: 10,
+            select: marketIntelProductSelect,
           });
 
     const competitors = await this.ensureDefaultCompetitors(companyId);
@@ -167,7 +183,7 @@ export class MarketIntelligenceService {
 
   private async fetchPriceForProduct(
     companyId: string,
-    product: Product,
+    product: MarketIntelProduct,
     competitor: Competitor,
   ): Promise<PriceSnapshot> {
     const previous = await this.prisma.marketPrice.findFirst({
@@ -215,7 +231,7 @@ export class MarketIntelligenceService {
 
   private async detectCompetitorOpportunity(
     companyId: string,
-    product: Product,
+    product: MarketIntelProduct,
     competitor: Competitor,
     snapshot: PriceSnapshot,
   ) {
@@ -312,7 +328,7 @@ export class MarketIntelligenceService {
     ];
   }
 
-  private async isStockHigh(companyId: string, product: Product): Promise<boolean> {
+  private async isStockHigh(companyId: string, product: MarketIntelProduct): Promise<boolean> {
     // Heurística: poucas vendas recentes => estoque parado/alto
     const recentSales = await this.prisma.sale.count({
       where: {
