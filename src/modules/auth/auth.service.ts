@@ -19,6 +19,21 @@ export interface JwtPayload {
   niche?: string;
 }
 
+type AuthUserRecord = {
+  id: string;
+  email: string;
+  password?: string;
+  name: string | null;
+  admin: boolean;
+  detailLevel: string;
+  niche?: string | null;
+  companyId: string | null;
+  company?: {
+    id: string;
+    name: string;
+  } | null;
+};
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -31,25 +46,7 @@ export class AuthService {
 
   async login(dto: LoginDto) {
     const normalizedEmail = dto.email.toLowerCase().trim();
-    const user = await this.prisma.user.findUnique({
-      where: { email: normalizedEmail },
-      select: {
-        id: true,
-        email: true,
-        password: true,
-        name: true,
-        admin: true,
-        detailLevel: true,
-        niche: true,
-        companyId: true,
-        company: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-      },
-    });
+    const user = await this.findUserForLogin(normalizedEmail);
 
     if (!user) {
       throw new UnauthorizedException('Credenciais invalidas');
@@ -77,7 +74,7 @@ export class AuthService {
         name: user.name,
         admin: user.admin,
         detailLevel: user.detailLevel,
-        niche: user.niche,
+        niche: user.niche ?? null,
         companyId: user.companyId,
         companyName: user.company?.name ?? '',
       },
@@ -104,6 +101,7 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
+    const includeNiche = await this.hasUserNicheColumn();
     const created = await this.prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
         data: {
@@ -112,6 +110,11 @@ export class AuthService {
           name: dto.name?.trim() || 'Administrador',
           admin: false,
         },
+        select: this.buildUserSelect({
+          includePassword: false,
+          includeCompany: false,
+          includeNiche,
+        }),
       });
 
       const company = await tx.company.create({
@@ -122,12 +125,17 @@ export class AuthService {
         },
       });
 
-      await tx.user.update({
+      const updatedUser = await tx.user.update({
         where: { id: user.id },
         data: { companyId: company.id },
+        select: this.buildUserSelect({
+          includePassword: false,
+          includeCompany: false,
+          includeNiche,
+        }),
       });
 
-      return { company, user };
+      return { company, user: updatedUser as AuthUserRecord };
     });
 
     const payload: JwtPayload = {
@@ -147,7 +155,7 @@ export class AuthService {
         name: created.user.name,
         admin: created.user.admin,
         detailLevel: created.user.detailLevel,
-        niche: created.user.niche,
+        niche: created.user.niche ?? null,
         companyId: created.company.id,
         companyName: created.company.name,
       },
@@ -188,24 +196,9 @@ export class AuthService {
       throw new UnauthorizedException('Refresh token expirado ou revogado');
     }
 
-    const user = await this.prisma.user.findUnique({
-      where: { id: payload.sub },
-      select: {
-        id: true,
-        email: true,
-        password: true,
-        name: true,
-        admin: true,
-        detailLevel: true,
-        niche: true,
-        companyId: true,
-        company: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-      },
+    const user = await this.findUserById(payload.sub, {
+      includePassword: true,
+      includeCompany: true,
     });
 
     if (!user) {
@@ -234,7 +227,7 @@ export class AuthService {
         name: user.name,
         admin: user.admin,
         detailLevel: user.detailLevel,
-        niche: user.niche,
+        niche: user.niche ?? null,
         companyId: user.companyId,
         companyName: user.company?.name ?? '',
       },
@@ -266,16 +259,9 @@ export class AuthService {
   }
 
   async validateUser(payload: JwtPayload) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: payload.sub },
-      select: {
-        id: true,
-        email: true,
-        companyId: true,
-        admin: true,
-        detailLevel: true,
-        niche: true,
-      },
+    const user = await this.findUserById(payload.sub, {
+      includePassword: false,
+      includeCompany: false,
     });
     if (!user) return null;
     return {
@@ -286,6 +272,63 @@ export class AuthService {
       detailLevel: user.detailLevel,
       niche: user.niche ?? undefined,
     };
+  }
+
+  private async hasUserNicheColumn() {
+    return this.prisma.hasColumn('User', 'niche');
+  }
+
+  private buildUserSelect(options: {
+    includePassword: boolean;
+    includeCompany: boolean;
+    includeNiche: boolean;
+  }): Prisma.UserSelect {
+    return {
+      id: true,
+      email: true,
+      ...(options.includePassword ? { password: true } : {}),
+      name: true,
+      admin: true,
+      detailLevel: true,
+      ...(options.includeNiche ? { niche: true } : {}),
+      companyId: true,
+      ...(options.includeCompany
+        ? {
+            company: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+          }
+        : {}),
+    };
+  }
+
+  private async findUserForLogin(email: string) {
+    const includeNiche = await this.hasUserNicheColumn();
+    return (await this.prisma.user.findUnique({
+      where: { email },
+      select: this.buildUserSelect({
+        includePassword: true,
+        includeCompany: true,
+        includeNiche,
+      }),
+    })) as AuthUserRecord | null;
+  }
+
+  private async findUserById(
+    userId: string,
+    options: { includePassword: boolean; includeCompany: boolean },
+  ) {
+    const includeNiche = await this.hasUserNicheColumn();
+    return (await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: this.buildUserSelect({
+        ...options,
+        includeNiche,
+      }),
+    })) as AuthUserRecord | null;
   }
 
   private async issueTokens(payload: JwtPayload) {

@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -6,23 +7,26 @@ import * as bcrypt from 'bcrypt';
 
 const BCRYPT_ROUNDS = Number(process.env.BCRYPT_ROUNDS || 12);
 
+type UserProfileRecord = {
+  id: string;
+  email: string;
+  name: string | null;
+  admin: boolean;
+  detailLevel: string;
+  niche?: string | null;
+  companyId: string | null;
+};
+
 @Injectable()
 export class UserService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getProfile(userId: string) {
+    const includeNiche = await this.hasUserNicheColumn();
     const [user, companyCount] = await Promise.all([
       this.prisma.user.findUnique({
         where: { id: userId },
-        select: {
-          id: true,
-          email: true,
-          name: true,
-          admin: true,
-          detailLevel: true,
-          niche: true,
-          companyId: true,
-        },
+        select: this.buildProfileSelect(includeNiche),
       }),
       this.prisma.company.count({
         where: {
@@ -37,18 +41,19 @@ export class UserService {
 
     return {
       ...user,
+      niche: user.niche ?? null,
       companyCount,
     };
   }
 
   async updateProfile(userId: string, dto: UpdateProfileDto) {
+    const includeNiche = await this.hasUserNicheColumn();
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: {
         id: true,
         email: true,
         admin: true,
-        niche: true,
         companyId: true,
       },
     });
@@ -62,20 +67,15 @@ export class UserService {
       data: {
         name: dto.name?.trim(),
         detailLevel: dto.detailLevel,
-        niche: dto.niche,
+        ...(includeNiche && dto.niche !== undefined ? { niche: dto.niche } : {}),
       },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        admin: true,
-        detailLevel: true,
-        niche: true,
-        companyId: true,
-      },
+      select: this.buildProfileSelect(includeNiche),
     });
 
-    return updated;
+    return {
+      ...updated,
+      niche: updated.niche ?? null,
+    };
   }
 
   async changePassword(userId: string, dto: ChangePasswordDto) {
@@ -129,5 +129,21 @@ export class UserService {
     ]);
 
     return { success: true };
+  }
+
+  private async hasUserNicheColumn() {
+    return this.prisma.hasColumn('User', 'niche');
+  }
+
+  private buildProfileSelect(includeNiche: boolean): Prisma.UserSelect {
+    return {
+      id: true,
+      email: true,
+      name: true,
+      admin: true,
+      detailLevel: true,
+      ...(includeNiche ? { niche: true } : {}),
+      companyId: true,
+    };
   }
 }

@@ -51,6 +51,8 @@ if (normalizedDatabaseUrl && normalizedDatabaseUrl !== process.env.DATABASE_URL)
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PrismaService.name);
+  private readonly columnAvailabilityCache = new Map<string, boolean>();
+  private readonly columnAvailabilityWarned = new Set<string>();
 
   async onModuleInit(): Promise<void> {
     const maxAttempts = resolveRetryCount();
@@ -81,5 +83,34 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
 
   async onModuleDestroy(): Promise<void> {
     await this.$disconnect();
+  }
+
+  async hasColumn(tableName: string, columnName: string): Promise<boolean> {
+    const cacheKey = `${tableName}.${columnName}`;
+    const cached = this.columnAvailabilityCache.get(cacheKey);
+    if (typeof cached === 'boolean') {
+      return cached;
+    }
+
+    const rows = await this.$queryRaw<Array<{ present: number }>>`
+      SELECT 1 AS present
+      FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = ${tableName}
+        AND column_name = ${columnName}
+      LIMIT 1
+    `;
+
+    const isAvailable = rows.length > 0;
+    this.columnAvailabilityCache.set(cacheKey, isAvailable);
+
+    if (!isAvailable && !this.columnAvailabilityWarned.has(cacheKey)) {
+      this.logger.warn(
+        `Coluna opcional ausente no banco atual: ${cacheKey}. O app vai usar fallback compativel.`,
+      );
+      this.columnAvailabilityWarned.add(cacheKey);
+    }
+
+    return isAvailable;
   }
 }
