@@ -11,8 +11,8 @@ type UserProfileRecord = {
   id: string;
   email: string;
   name: string | null;
-  admin: boolean;
-  detailLevel: string;
+  admin?: boolean | null;
+  detailLevel?: string | null;
   niche?: string | null;
   companyId: string | null;
 };
@@ -22,11 +22,11 @@ export class UserService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getProfile(userId: string) {
-    const includeNiche = await this.hasUserNicheColumn();
+    const fieldAvailability = await this.resolveProfileFieldAvailability();
     const [user, companyCount] = await Promise.all([
       this.prisma.user.findUnique({
         where: { id: userId },
-        select: this.buildProfileSelect(includeNiche),
+        select: this.buildProfileSelect(fieldAvailability),
       }),
       this.prisma.company.count({
         where: {
@@ -39,21 +39,21 @@ export class UserService {
       throw new NotFoundException('Usuario nao encontrado');
     }
 
+    const normalizedUser = this.normalizeProfileRecord(user as UserProfileRecord);
+
     return {
-      ...user,
-      niche: user.niche ?? null,
+      ...normalizedUser,
       companyCount,
     };
   }
 
   async updateProfile(userId: string, dto: UpdateProfileDto) {
-    const includeNiche = await this.hasUserNicheColumn();
+    const fieldAvailability = await this.resolveProfileFieldAvailability();
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: {
         id: true,
         email: true,
-        admin: true,
         companyId: true,
       },
     });
@@ -66,16 +66,15 @@ export class UserService {
       where: { id: userId },
       data: {
         name: dto.name?.trim(),
-        detailLevel: dto.detailLevel,
-        ...(includeNiche && dto.niche !== undefined ? { niche: dto.niche } : {}),
+        ...(fieldAvailability.detailLevel && dto.detailLevel !== undefined
+          ? { detailLevel: dto.detailLevel }
+          : {}),
+        ...(fieldAvailability.niche && dto.niche !== undefined ? { niche: dto.niche } : {}),
       },
-      select: this.buildProfileSelect(includeNiche),
+      select: this.buildProfileSelect(fieldAvailability),
     });
 
-    return {
-      ...updated,
-      niche: updated.niche ?? null,
-    };
+    return this.normalizeProfileRecord(updated as UserProfileRecord);
   }
 
   async changePassword(userId: string, dto: ChangePasswordDto) {
@@ -131,19 +130,41 @@ export class UserService {
     return { success: true };
   }
 
-  private async hasUserNicheColumn() {
-    return this.prisma.hasColumn('User', 'niche');
+  private async resolveProfileFieldAvailability() {
+    const [admin, detailLevel, niche] = await Promise.all([
+      this.prisma.hasColumn('User', 'admin'),
+      this.prisma.hasColumn('User', 'detailLevel'),
+      this.prisma.hasColumn('User', 'niche'),
+    ]);
+
+    return { admin, detailLevel, niche };
   }
 
-  private buildProfileSelect(includeNiche: boolean): Prisma.UserSelect {
+  private buildProfileSelect(fieldAvailability: {
+    admin: boolean;
+    detailLevel: boolean;
+    niche: boolean;
+  }): Prisma.UserSelect {
     return {
       id: true,
       email: true,
       name: true,
-      admin: true,
-      detailLevel: true,
-      ...(includeNiche ? { niche: true } : {}),
+      ...(fieldAvailability.admin ? { admin: true } : {}),
+      ...(fieldAvailability.detailLevel ? { detailLevel: true } : {}),
+      ...(fieldAvailability.niche ? { niche: true } : {}),
       companyId: true,
+    };
+  }
+
+  private normalizeProfileRecord(user: UserProfileRecord) {
+    return {
+      ...user,
+      admin: Boolean(user.admin),
+      detailLevel:
+        typeof user.detailLevel === 'string' && user.detailLevel.trim()
+          ? user.detailLevel
+          : 'medium',
+      niche: user.niche ?? null,
     };
   }
 }

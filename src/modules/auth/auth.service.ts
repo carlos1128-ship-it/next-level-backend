@@ -24,8 +24,8 @@ type AuthUserRecord = {
   email: string;
   password?: string;
   name: string | null;
-  admin: boolean;
-  detailLevel: string;
+  admin?: boolean | null;
+  detailLevel?: string | null;
   niche?: string | null;
   companyId: string | null;
   company?: {
@@ -61,7 +61,7 @@ export class AuthService {
       sub: user.id,
       email: user.email,
       companyId: user.companyId ?? undefined,
-      admin: user.admin,
+      admin: Boolean(user.admin),
     };
 
     const tokens = await this.issueTokens(payload);
@@ -72,7 +72,7 @@ export class AuthService {
         id: user.id,
         email: user.email,
         name: user.name,
-        admin: user.admin,
+        admin: Boolean(user.admin),
         detailLevel: user.detailLevel,
         niche: user.niche ?? null,
         companyId: user.companyId,
@@ -82,6 +82,7 @@ export class AuthService {
   }
 
   async register(dto: RegisterDto) {
+    const fieldAvailability = await this.resolveUserFieldAvailability();
     const existingUser = await this.prisma.user.findUnique({
       where: { email: dto.email },
     });
@@ -101,19 +102,18 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
-    const includeNiche = await this.hasUserNicheColumn();
     const created = await this.prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
         data: {
           email: dto.email.toLowerCase().trim(),
           password: passwordHash,
           name: dto.name?.trim() || 'Administrador',
-          admin: false,
+          ...(fieldAvailability.admin ? { admin: false } : {}),
         },
         select: this.buildUserSelect({
           includePassword: false,
           includeCompany: false,
-          includeNiche,
+          fieldAvailability,
         }),
       });
 
@@ -131,7 +131,7 @@ export class AuthService {
         select: this.buildUserSelect({
           includePassword: false,
           includeCompany: false,
-          includeNiche,
+          fieldAvailability,
         }),
       });
 
@@ -142,7 +142,7 @@ export class AuthService {
       sub: created.user.id,
       email: created.user.email,
       companyId: created.company.id,
-      admin: created.user.admin,
+      admin: Boolean(created.user.admin),
     };
 
     const tokens = await this.issueTokens(payload);
@@ -153,7 +153,7 @@ export class AuthService {
         id: created.user.id,
         email: created.user.email,
         name: created.user.name,
-        admin: created.user.admin,
+        admin: Boolean(created.user.admin),
         detailLevel: created.user.detailLevel,
         niche: created.user.niche ?? null,
         companyId: created.company.id,
@@ -214,7 +214,7 @@ export class AuthService {
       sub: user.id,
       email: user.email,
       companyId: user.companyId ?? undefined,
-      admin: user.admin,
+      admin: Boolean(user.admin),
     };
 
     const tokens = await this.issueTokens(nextPayload);
@@ -225,7 +225,7 @@ export class AuthService {
         id: user.id,
         email: user.email,
         name: user.name,
-        admin: user.admin,
+        admin: Boolean(user.admin),
         detailLevel: user.detailLevel,
         niche: user.niche ?? null,
         companyId: user.companyId,
@@ -268,29 +268,39 @@ export class AuthService {
       id: user.id,
       email: user.email,
       companyId: user.companyId ?? undefined,
-      admin: user.admin,
+      admin: Boolean(user.admin),
       detailLevel: user.detailLevel,
       niche: user.niche ?? undefined,
     };
   }
 
-  private async hasUserNicheColumn() {
-    return this.prisma.hasColumn('User', 'niche');
+  private async resolveUserFieldAvailability() {
+    const [admin, detailLevel, niche] = await Promise.all([
+      this.prisma.hasColumn('User', 'admin'),
+      this.prisma.hasColumn('User', 'detailLevel'),
+      this.prisma.hasColumn('User', 'niche'),
+    ]);
+
+    return { admin, detailLevel, niche };
   }
 
   private buildUserSelect(options: {
     includePassword: boolean;
     includeCompany: boolean;
-    includeNiche: boolean;
+    fieldAvailability: {
+      admin: boolean;
+      detailLevel: boolean;
+      niche: boolean;
+    };
   }): Prisma.UserSelect {
     return {
       id: true,
       email: true,
       ...(options.includePassword ? { password: true } : {}),
       name: true,
-      admin: true,
-      detailLevel: true,
-      ...(options.includeNiche ? { niche: true } : {}),
+      ...(options.fieldAvailability.admin ? { admin: true } : {}),
+      ...(options.fieldAvailability.detailLevel ? { detailLevel: true } : {}),
+      ...(options.fieldAvailability.niche ? { niche: true } : {}),
       companyId: true,
       ...(options.includeCompany
         ? {
@@ -306,29 +316,49 @@ export class AuthService {
   }
 
   private async findUserForLogin(email: string) {
-    const includeNiche = await this.hasUserNicheColumn();
-    return (await this.prisma.user.findUnique({
+    const fieldAvailability = await this.resolveUserFieldAvailability();
+    const user = (await this.prisma.user.findUnique({
       where: { email },
       select: this.buildUserSelect({
         includePassword: true,
         includeCompany: true,
-        includeNiche,
+        fieldAvailability,
       }),
     })) as AuthUserRecord | null;
+
+    return this.normalizeAuthUserRecord(user);
   }
 
   private async findUserById(
     userId: string,
     options: { includePassword: boolean; includeCompany: boolean },
   ) {
-    const includeNiche = await this.hasUserNicheColumn();
-    return (await this.prisma.user.findUnique({
+    const fieldAvailability = await this.resolveUserFieldAvailability();
+    const user = (await this.prisma.user.findUnique({
       where: { id: userId },
       select: this.buildUserSelect({
         ...options,
-        includeNiche,
+        fieldAvailability,
       }),
     })) as AuthUserRecord | null;
+
+    return this.normalizeAuthUserRecord(user);
+  }
+
+  private normalizeAuthUserRecord(user: AuthUserRecord | null): AuthUserRecord | null {
+    if (!user) {
+      return null;
+    }
+
+    return {
+      ...user,
+      admin: Boolean(user.admin),
+      detailLevel:
+        typeof user.detailLevel === 'string' && user.detailLevel.trim()
+          ? user.detailLevel
+          : 'medium',
+      niche: user.niche ?? null,
+    };
   }
 
   private async issueTokens(payload: JwtPayload) {

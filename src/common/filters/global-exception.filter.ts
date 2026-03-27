@@ -198,6 +198,9 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         return 'Existe uma referencia invalida entre os dados enviados.';
       case 'P2025':
         return 'O registro solicitado nao foi encontrado.';
+      case 'P2021':
+      case 'P2022':
+        return 'O banco publicado esta com estrutura desatualizada para esta operacao. Sincronize as migrations e tente novamente.';
       default:
         return 'O banco recusou a operacao. Ajuste os dados e tente novamente.';
     }
