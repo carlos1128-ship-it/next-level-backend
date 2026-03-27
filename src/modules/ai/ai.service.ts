@@ -10,7 +10,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { AiChatRole } from '@prisma/client';
+import { AiChatRole, Plan, Prisma } from '@prisma/client';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import OpenAI from 'openai';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -23,6 +23,14 @@ export interface ChatResponseDto {
   message: string;
   tokensUsed?: number;
 }
+
+type AiUserRecord = {
+  id: string;
+  plan: Plan;
+  detailLevel?: string | null;
+  companyId: string | null;
+  analyses?: Array<{ createdAt: Date }>;
+};
 
 @Injectable()
 export class AiService {
@@ -45,10 +53,14 @@ export class AiService {
   }
 
   async analyzeSales(data: Record<string, unknown>, userId: string) {
-    const user = await this.prisma.user.findUnique({
+    const fieldAvailability = await this.resolveUserFieldAvailability();
+    const user = (await this.prisma.user.findUnique({
       where: { id: userId },
-      include: { analyses: true },
-    });
+      select: this.buildUserSelect({
+        includeAnalyses: true,
+        fieldAvailability,
+      }),
+    })) as AiUserRecord | null;
 
     if (!user) {
       throw new NotFoundException('Usuario nao encontrado');
@@ -57,7 +69,7 @@ export class AiService {
     const now = new Date();
     const currentMonth = now.getMonth();
     const currentYear = now.getFullYear();
-    const monthlyCount = user.analyses.filter((analysis) => {
+    const monthlyCount = (user.analyses ?? []).filter((analysis) => {
       const createdAt = new Date(analysis.createdAt);
       return (
         createdAt.getMonth() === currentMonth &&
@@ -102,10 +114,14 @@ export class AiService {
   }
 
   async chat(message: string, userId: string): Promise<ChatResponseDto> {
-    const user = await this.prisma.user.findUnique({
+    const fieldAvailability = await this.resolveUserFieldAvailability();
+    const user = (await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, companyId: true, detailLevel: true },
-    });
+      select: this.buildUserSelect({
+        includeAnalyses: false,
+        fieldAvailability,
+      }),
+    })) as AiUserRecord | null;
 
     if (!user) {
       throw new NotFoundException('Usuario nao encontrado');
@@ -143,6 +159,34 @@ export class AiService {
       success: true,
       message: text,
       ...(tokensUsed ? { tokensUsed } : {}),
+    };
+  }
+
+  private async resolveUserFieldAvailability() {
+    const detailLevel = await this.prisma.hasColumn('User', 'detailLevel');
+    return { detailLevel };
+  }
+
+  private buildUserSelect(options: {
+    includeAnalyses: boolean;
+    fieldAvailability: {
+      detailLevel: boolean;
+    };
+  }): Prisma.UserSelect {
+    return {
+      id: true,
+      plan: true,
+      ...(options.fieldAvailability.detailLevel ? { detailLevel: true } : {}),
+      companyId: true,
+      ...(options.includeAnalyses
+        ? {
+            analyses: {
+              select: {
+                createdAt: true,
+              },
+            },
+          }
+        : {}),
     };
   }
 

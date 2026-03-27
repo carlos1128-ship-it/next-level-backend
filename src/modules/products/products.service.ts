@@ -1,11 +1,30 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, Product } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { ListProductsDto } from './dto/list-products.dto';
 
 export type FinancialWarningLevel = 'HEALTHY' | 'WARNING' | 'CRITICAL';
+
+type ProductFieldAvailability = {
+  tax: boolean;
+  shipping: boolean;
+};
+
+type ProductRecord = {
+  id: string;
+  companyId: string;
+  name: string;
+  sku: string | null;
+  category: string | null;
+  price: Prisma.Decimal;
+  cost: Prisma.Decimal | null;
+  tax?: Prisma.Decimal | null;
+  shipping?: Prisma.Decimal | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
 
 @Injectable()
 export class ProductsService {
@@ -76,18 +95,52 @@ export class ProductsService {
     return new Prisma.Decimal(numeric);
   }
 
-  private map(product: Product) {
-    const price = Number(product.price);
-    const costNum = product.cost != null ? Number(product.cost) : 0;
-    const taxNum = product.tax != null ? Number(product.tax) : 0;
-    const shipNum = product.shipping != null ? Number(product.shipping) : 0;
+  private async resolveProductFieldAvailability(): Promise<ProductFieldAvailability> {
+    const [tax, shipping] = await Promise.all([
+      this.prisma.hasColumn('Product', 'tax'),
+      this.prisma.hasColumn('Product', 'shipping'),
+    ]);
+
+    return { tax, shipping };
+  }
+
+  private buildProductSelect(fieldAvailability: ProductFieldAvailability): Prisma.ProductSelect {
+    return {
+      id: true,
+      companyId: true,
+      name: true,
+      sku: true,
+      category: true,
+      price: true,
+      cost: true,
+      ...(fieldAvailability.tax ? { tax: true } : {}),
+      ...(fieldAvailability.shipping ? { shipping: true } : {}),
+      createdAt: true,
+      updatedAt: true,
+    };
+  }
+
+  private normalizeProductRecord(product: ProductRecord): ProductRecord {
+    return {
+      ...product,
+      tax: product.tax ?? null,
+      shipping: product.shipping ?? null,
+    };
+  }
+
+  private map(product: ProductRecord) {
+    const normalized = this.normalizeProductRecord(product);
+    const price = Number(normalized.price);
+    const costNum = normalized.cost != null ? Number(normalized.cost) : 0;
+    const taxNum = normalized.tax != null ? Number(normalized.tax) : 0;
+    const shipNum = normalized.shipping != null ? Number(normalized.shipping) : 0;
 
     const mapped = {
-      ...product,
+      ...normalized,
       price,
-      cost: product.cost != null ? Number(product.cost) : null,
-      tax: product.tax != null ? Number(product.tax) : null,
-      shipping: product.shipping != null ? Number(product.shipping) : null,
+      cost: normalized.cost != null ? Number(normalized.cost) : null,
+      tax: normalized.tax != null ? Number(normalized.tax) : null,
+      shipping: normalized.shipping != null ? Number(normalized.shipping) : null,
     };
 
     return {
@@ -97,6 +150,7 @@ export class ProductsService {
   }
 
   async create(userId: string, dto: CreateProductDto, tokenCompanyId?: string | null) {
+    const fieldAvailability = await this.resolveProductFieldAvailability();
     const companyId = await this.resolveCompanyId(userId, dto.companyId, tokenCompanyId);
 
     if (!dto.name?.trim()) {
@@ -114,18 +168,29 @@ export class ProductsService {
         category: dto.category?.trim() || null,
         price: this.toDecimal(dto.price, 'price'),
         cost: dto.cost !== undefined && dto.cost !== null ? this.toDecimal(dto.cost, 'cost') : null,
-        tax: dto.tax !== undefined && dto.tax !== null ? this.toDecimal(dto.tax, 'tax') : null,
-        shipping:
-          dto.shipping !== undefined && dto.shipping !== null
-            ? this.toDecimal(dto.shipping, 'shipping')
-            : null,
+        ...(fieldAvailability.tax
+          ? {
+              tax:
+                dto.tax !== undefined && dto.tax !== null ? this.toDecimal(dto.tax, 'tax') : null,
+            }
+          : {}),
+        ...(fieldAvailability.shipping
+          ? {
+              shipping:
+                dto.shipping !== undefined && dto.shipping !== null
+                  ? this.toDecimal(dto.shipping, 'shipping')
+                  : null,
+            }
+          : {}),
       },
+      select: this.buildProductSelect(fieldAvailability),
     });
 
-    return this.map(product);
+    return this.map(product as ProductRecord);
   }
 
   async findAll(userId: string, query: ListProductsDto, tokenCompanyId?: string | null) {
+    const fieldAvailability = await this.resolveProductFieldAvailability();
     const companyId = await this.resolveCompanyId(userId, query.companyId, tokenCompanyId);
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(Math.max(1, Number(query.limit) || 10), 100);
@@ -165,11 +230,12 @@ export class ProductsService {
         skip: (page - 1) * limit,
         take: limit,
         orderBy: { createdAt: 'desc' },
+        select: this.buildProductSelect(fieldAvailability),
       }),
     ]);
 
     return {
-      data: products.map((product) => this.map(product)),
+      data: products.map((product) => this.map(product as ProductRecord)),
       pagination: {
         page,
         limit,
@@ -180,10 +246,12 @@ export class ProductsService {
   }
 
   async findOne(id: string, userId: string, companyId?: string | null, tokenCompanyId?: string | null) {
+    const fieldAvailability = await this.resolveProductFieldAvailability();
     const resolvedCompanyId = await this.resolveCompanyId(userId, companyId, tokenCompanyId);
-    const product = await this.prisma.product.findFirst({
+    const product = (await this.prisma.product.findFirst({
       where: { id, companyId: resolvedCompanyId },
-    });
+      select: this.buildProductSelect(fieldAvailability),
+    })) as ProductRecord | null;
 
     if (!product) {
       throw new NotFoundException('Produto nao encontrado');
@@ -198,8 +266,12 @@ export class ProductsService {
     dto: UpdateProductDto,
     tokenCompanyId?: string | null,
   ) {
+    const fieldAvailability = await this.resolveProductFieldAvailability();
     const companyId = await this.resolveCompanyId(userId, dto.companyId, tokenCompanyId);
-    const existing = await this.prisma.product.findFirst({ where: { id, companyId } });
+    const existing = await this.prisma.product.findFirst({
+      where: { id, companyId },
+      select: { id: true },
+    });
     if (!existing) {
       throw new NotFoundException('Produto nao encontrado');
     }
@@ -218,32 +290,42 @@ export class ProductsService {
             ? null
             : this.toDecimal(dto.cost, 'cost')
           : undefined,
-      tax:
-        dto.tax !== undefined
-          ? dto.tax === null
-            ? null
-            : this.toDecimal(dto.tax, 'tax')
-          : undefined,
-      shipping:
-        dto.shipping !== undefined
-          ? dto.shipping === null
-            ? null
-            : this.toDecimal(dto.shipping, 'shipping')
-          : undefined,
+      ...(fieldAvailability.tax
+        ? {
+            tax:
+              dto.tax !== undefined
+                ? dto.tax === null
+                  ? null
+                  : this.toDecimal(dto.tax, 'tax')
+                : undefined,
+          }
+        : {}),
+      ...(fieldAvailability.shipping
+        ? {
+            shipping:
+              dto.shipping !== undefined
+                ? dto.shipping === null
+                  ? null
+                  : this.toDecimal(dto.shipping, 'shipping')
+                : undefined,
+          }
+        : {}),
     };
 
     const updated = await this.prisma.product.update({
       where: { id },
       data,
+      select: this.buildProductSelect(fieldAvailability),
     });
 
-    return this.map(updated);
+    return this.map(updated as ProductRecord);
   }
 
   async remove(id: string, userId: string, companyId?: string | null, tokenCompanyId?: string | null) {
     const resolvedCompanyId = await this.resolveCompanyId(userId, companyId, tokenCompanyId);
     const existing = await this.prisma.product.findFirst({
       where: { id, companyId: resolvedCompanyId },
+      select: { id: true },
     });
 
     if (!existing) {

@@ -81,6 +81,23 @@ npm run dev
 
 API base: `http://localhost:3333/api`
 
+## Deploy em producao
+
+Use migrations de producao no banco publicado:
+
+```bash
+npm run prisma:migrate:deploy
+npm run build
+npm run start
+```
+
+No Render, configure:
+
+```bash
+Build Command: npm install && npm run prisma:generate && npm run prisma:migrate:deploy && npm run build
+Start Command: npm run start
+```
+
 ## Endpoints principais
 
 - `POST /api/auth/register`

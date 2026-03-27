@@ -35,7 +35,7 @@ DATABASE_URL="postgresql://USER:PASSWORD@HOST/DB?schema=public&sslmode=require"
 ```bash
 npm install
 npm run prisma:generate
-npm run prisma:migrate
+npm run prisma:migrate:deploy
 npm run build
 ```
 
@@ -43,6 +43,13 @@ npm run build
 
 ```bash
 npm run start
+```
+
+Para Render, deixe o deploy com esse fluxo:
+
+```bash
+Build Command: npm install && npm run prisma:generate && npm run prisma:migrate:deploy && npm run build
+Start Command: npm run start
 ```
 
 ## 5) Health operacional (manual)
