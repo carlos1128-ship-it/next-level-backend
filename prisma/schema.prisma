@@ -1,0 +1,534 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Plan {
+  FREE
+  PRO
+  ENTERPRISE
+}
+
+enum UserNiche {
+  ECOMMERCE
+  MEDICINA
+  SERVICOS
+  EDUCACAO
+  OUTROS
+}
+
+enum FinancialTransactionType {
+  INCOME
+  EXPENSE
+}
+
+enum AiChatRole {
+  USER
+  ASSISTANT
+}
+
+enum IntegrationProvider {
+  WHATSAPP
+  INSTAGRAM
+  MERCADOLIVRE
+}
+
+enum ForecastType {
+  SALES
+  DEMAND
+  REVENUE
+}
+
+enum StrategicActionType {
+  MARKETING
+  ESTOQUE
+  FINANCEIRO
+}
+
+enum StrategicActionStatus {
+  SUGGESTED
+  APPROVED
+  EXECUTED
+  REJECTED
+}
+
+enum LeadStatus {
+  NEW
+  QUALIFIED
+  CONVERTED
+  LOST
+}
+
+enum ActorType {
+  HUMAN
+  AI
+  SYSTEM
+}
+
+enum WebhookLogStatus {
+  SUCCESS
+  FAILED
+}
+
+model Company {
+  id          String    @id @default(cuid())
+  userId      String?
+  name        String
+  sector      String?
+  segment     String?
+  document    String?
+  description String?
+  openedAt    DateTime?
+  slug        String    @unique @default(cuid())
+  currency    String    @default("BRL")
+  timezone    String    @default("America/Sao_Paulo")
+  defaultTaxRate Decimal? @db.Decimal(5, 2)
+  metaPhoneNumberId String?
+  metaWabaId        String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  users    User[]
+  sales    Sale[]
+  adSpends AdSpend[]
+  financialTransactions FinancialTransaction[]
+  aiChatMessages       AiChatMessage[]
+  products            Product[]
+  customers           Customer[]
+  operationalCosts    OperationalCost[]
+  integrations        Integration[]
+  webhookEvents       WebhookEvent[]
+  webhookLogs         WebhookLog[]
+  alerts              Alert[]
+  forecastSnapshots   ForecastSnapshot[]
+  strategicActions    StrategicAction[]
+  competitors         Competitor[]
+  marketPrices        MarketPrice[]
+  marketTrends        MarketTrend[]
+  botConfig           BotConfig?
+  leads               Lead[]
+  usageQuota          UsageQuota?
+  apiLogs             ApiLog[]
+  auditTrails         AuditTrail[]
+}
+
+model AdSpend {
+  id        String   @id @default(cuid())
+  companyId String
+  amount    Decimal  @db.Decimal(12, 2)
+  spentAt   DateTime
+  source    String   @default("meta")
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([companyId, spentAt])
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  plan      Plan     @default(FREE)
+  admin     Boolean  @default(false)
+  detailLevel String @default("medium")
+  niche     UserNiche?
+  name      String?
+  companyId String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company              Company?               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  sales                Sale[]
+  analyses             Analysis[]
+  financialTransactions FinancialTransaction[]
+  aiChatMessages       AiChatMessage[]
+  refreshTokens        RefreshToken[]
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@index([revokedAt])
+}
+
+// Canal de origem da venda. manual = criada pelo usuário; shopify/meta = futuros webhooks.
+enum SaleChannel {
+  manual
+  shopify
+  meta
+}
+
+model Sale {
+  id          String      @id @default(cuid())
+  userId      String?
+  companyId   String
+  amount      Decimal     @db.Decimal(12, 2)
+  productName String?     // Nome do produto (ou use category para agrupamento)
+  category    String?     // Categoria opcional para agrupamento no dashboard
+  channel     SaleChannel @default(manual) // manual | shopify | meta
+  occurredAt  DateTime    // Timestamp real da venda (não o created_at)
+  createdAt   DateTime    @default(now())
+
+  user    User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, occurredAt])
+  @@index([companyId])
+  @@index([companyId, occurredAt])
+}
+
+model Analysis {
+  id        String   @id @default(uuid())
+  content   String
+  userId    String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, createdAt])
+}
+
+model FinancialTransaction {
+  id          String                   @id @default(cuid())
+  companyId   String
+  userId      String
+  type        FinancialTransactionType
+  amount      Decimal                  @db.Decimal(12, 2)
+  description String
+  category    String?
+  date        DateTime                 @default(now())
+  occurredAt  DateTime
+  createdAt   DateTime                 @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([userId])
+  @@index([occurredAt])
+  @@index([companyId, occurredAt])
+}
+
+model AiChatMessage {
+  id         String    @id @default(cuid())
+  userId     String
+  companyId  String
+  role       AiChatRole
+  content    String
+  tokensUsed Int?
+  createdAt  DateTime  @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([companyId])
+  @@index([createdAt])
+}
+
+model Product {
+  id        String   @id @default(cuid())
+  companyId String
+  name      String
+  sku       String?
+  category  String?
+  price     Decimal  @db.Decimal(12, 2)
+  cost      Decimal? @db.Decimal(12, 2)
+  /// Impostos/tributos estimados por unidade (opcional, para margem real)
+  tax       Decimal? @db.Decimal(12, 2)
+  /// Frete/logística estimado por unidade (opcional)
+  shipping  Decimal? @db.Decimal(12, 2)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  marketPrices MarketPrice[]
+
+  @@index([companyId])
+  @@index([companyId, name])
+  @@index([companyId, sku])
+}
+
+model Customer {
+  id        String   @id @default(cuid())
+  companyId String
+  name      String
+  email     String?
+  phone     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([companyId, name])
+  @@index([companyId, email])
+}
+
+model OperationalCost {
+  id        String   @id @default(cuid())
+  companyId String
+  name      String
+  category  String?
+  amount    Decimal  @db.Decimal(12, 2)
+  date      DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([companyId, date])
+  @@index([companyId, category])
+}
+
+model Integration {
+  id          String               @id @default(cuid())
+  companyId   String
+  provider    IntegrationProvider
+  accessToken String
+  externalId  String
+  status      String               @default("connected")
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, provider])
+  @@unique([companyId, provider])
+  @@unique([provider, externalId])
+}
+
+model WebhookEvent {
+  id        String               @id @default(cuid())
+  companyId String?
+  provider  IntegrationProvider
+  payload   Json
+  processed Boolean              @default(false)
+  createdAt DateTime             @default(now())
+
+  company Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([provider])
+  @@index([companyId])
+}
+
+model WebhookLog {
+  id        String           @id @default(cuid())
+  companyId String?
+  provider  IntegrationProvider
+  status    WebhookLogStatus @default(SUCCESS)
+  message   String?
+  eventId   String?
+  createdAt DateTime         @default(now())
+
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+
+  @@index([provider, status, createdAt])
+  @@index([companyId, provider, createdAt])
+}
+
+model Alert {
+  id        String   @id @default(cuid())
+  companyId String
+  type      String
+  message   String
+  severity  String
+  createdAt DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+}
+
+model ForecastSnapshot {
+  id            String        @id @default(cuid())
+  companyId     String
+  type          ForecastType
+  data          Json
+  accuracyScore Float         @default(0)
+  createdAt     DateTime      @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, type])
+  @@index([createdAt])
+}
+
+model StrategicAction {
+  id           String                @id @default(cuid())
+  companyId    String
+  title        String
+  description  String
+  type         StrategicActionType
+  status       StrategicActionStatus @default(SUGGESTED)
+  impactScore  Int                   @default(50)
+  payload      Json
+  createdAt    DateTime              @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, status])
+  @@index([companyId, type])
+}
+
+model BotConfig {
+  id             String   @id @default(cuid())
+  companyId      String   @unique
+  botName        String   @default("Atendente IA")
+  welcomeMessage String?
+  toneOfVoice    String   @default("amigavel")
+  instructions   String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+}
+
+model Lead {
+  id               String      @id @default(cuid())
+  companyId        String
+  externalId       String
+  name             String?
+  status           LeadStatus  @default(NEW)
+  score            Int         @default(0)
+  lastInteraction  DateTime?
+  botPausedUntil   DateTime?
+  lastQuotedValue  Decimal?    @db.Decimal(12, 2)
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  company       Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversations ChatConversation[]
+
+  @@unique([companyId, externalId])
+  @@index([companyId, status])
+}
+
+model ChatConversation {
+  id        String    @id @default(cuid())
+  leadId    String
+  role      AiChatRole
+  content   String
+  createdAt DateTime  @default(now())
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId, createdAt])
+}
+
+model UsageQuota {
+  id                   String   @id @default(cuid())
+  companyId            String   @unique
+  llmTokensUsed        Int      @default(0)
+  whatsappMessagesSent Int      @default(0)
+  currentTier          Plan     @default(FREE)
+  billingCycleEnd      DateTime
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@index([updatedAt])
+}
+
+model ApiLog {
+  id           String   @id @default(cuid())
+  method       String
+  path         String
+  statusCode   Int
+  responseTime Int
+  status       String?
+  provider     String?
+  errorMessage String?
+  companyId    String?
+  payload      Json?
+  createdAt    DateTime @default(now())
+
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt])
+  @@index([statusCode, createdAt])
+}
+
+model AuditTrail {
+  id        String    @id @default(cuid())
+  companyId String?
+  actorType ActorType @default(SYSTEM)
+  actorId   String?
+  action    String
+  details   Json?
+  createdAt DateTime  @default(now())
+
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt])
+}
+
+model Competitor {
+  id        String   @id @default(cuid())
+  companyId String
+  name      String
+  url       String
+  category  String?
+  createdAt DateTime @default(now())
+
+  company      Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  marketPrices MarketPrice[]
+
+  @@index([companyId, category])
+  @@unique([companyId, name])
+}
+
+model MarketPrice {
+  id           String   @id @default(cuid())
+  companyId    String
+  productId    String
+  competitorId String
+  price        Decimal  @db.Decimal(12, 2)
+  url          String?
+  createdAt    DateTime @default(now())
+
+  company    Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  product    Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  competitor Competitor @relation(fields: [competitorId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, productId])
+  @@index([productId])
+  @@index([competitorId, createdAt])
+  @@index([companyId, createdAt])
+}
+
+model MarketTrend {
+  id                String   @id @default(cuid())
+  companyId         String
+  term              String
+  volume            Int      @default(0)
+  growthPercentage  Float    @default(0)
+  createdAt         DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, createdAt])
+  @@unique([companyId, term, createdAt])
+}

@@ -1,0 +1,76 @@
+-- CreateTable
+CREATE TABLE "Competitor" (
+    "id" TEXT NOT NULL,
+    "companyId" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "url" TEXT NOT NULL,
+    "category" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "Competitor_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "MarketPrice" (
+    "id" TEXT NOT NULL,
+    "companyId" TEXT NOT NULL,
+    "productId" TEXT NOT NULL,
+    "competitorId" TEXT NOT NULL,
+    "price" DECIMAL(12,2) NOT NULL,
+    "url" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "MarketPrice_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "MarketTrend" (
+    "id" TEXT NOT NULL,
+    "companyId" TEXT NOT NULL,
+    "term" TEXT NOT NULL,
+    "volume" INTEGER NOT NULL DEFAULT 0,
+    "growthPercentage" DOUBLE PRECISION NOT NULL DEFAULT 0,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "MarketTrend_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE INDEX "Competitor_companyId_category_idx" ON "Competitor"("companyId", "category");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "Competitor_companyId_name_key" ON "Competitor"("companyId", "name");
+
+-- CreateIndex
+CREATE INDEX "MarketPrice_companyId_productId_idx" ON "MarketPrice"("companyId", "productId");
+
+-- CreateIndex
+CREATE INDEX "MarketPrice_productId_idx" ON "MarketPrice"("productId");
+
+-- CreateIndex
+CREATE INDEX "MarketPrice_competitorId_createdAt_idx" ON "MarketPrice"("competitorId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "MarketPrice_companyId_createdAt_idx" ON "MarketPrice"("companyId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "MarketTrend_companyId_createdAt_idx" ON "MarketTrend"("companyId", "createdAt");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "MarketTrend_companyId_term_createdAt_key" ON "MarketTrend"("companyId", "term", "createdAt");
+
+-- AddForeignKey
+ALTER TABLE "Competitor" ADD CONSTRAINT "Competitor_companyId_fkey" FOREIGN KEY ("companyId") REFERENCES "Company"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "MarketPrice" ADD CONSTRAINT "MarketPrice_companyId_fkey" FOREIGN KEY ("companyId") REFERENCES "Company"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "MarketPrice" ADD CONSTRAINT "MarketPrice_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "MarketPrice" ADD CONSTRAINT "MarketPrice_competitorId_fkey" FOREIGN KEY ("competitorId") REFERENCES "Competitor"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "MarketTrend" ADD CONSTRAINT "MarketTrend_companyId_fkey" FOREIGN KEY ("companyId") REFERENCES "Company"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
