@@ -93,6 +93,12 @@ export class UserService {
       throw new NotFoundException('Usuario nao encontrado');
     }
 
+    if (!user.password) {
+      throw new BadRequestException(
+        'Conta criada via Google. Use a opcao de login com Google.',
+      );
+    }
+
     const isValid = await bcrypt.compare(dto.currentPassword, user.password);
     if (!isValid) {
       throw new BadRequestException('Senha atual invalida');

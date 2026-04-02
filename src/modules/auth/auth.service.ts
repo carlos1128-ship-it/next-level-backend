@@ -19,10 +19,18 @@ export interface JwtPayload {
   niche?: string;
 }
 
+export interface GoogleProfile {
+  googleId: string;
+  email: string;
+  name: string;
+  avatar?: string;
+}
+
 type AuthUserRecord = {
   id: string;
   email: string;
-  password?: string;
+  password?: string | null;
+  googleId?: string | null;
   name: string | null;
   admin?: boolean | null;
   detailLevel?: string | null;
@@ -256,6 +264,121 @@ export class AuthService {
     });
 
     return { success: true };
+  }
+
+  async validateGoogleUser(profile: GoogleProfile) {
+    const fieldAvailability = await this.resolveUserFieldAvailability();
+
+    // 1. Try to find by googleId
+    let user: AuthUserRecord | null = null;
+    try {
+      user = (await this.prisma.user.findUnique({
+        where: { googleId: profile.googleId },
+        select: this.buildUserSelect({
+          includePassword: false,
+          includeCompany: true,
+          fieldAvailability,
+        }),
+      })) as AuthUserRecord | null;
+    } catch {
+      // googleId column may not exist yet
+    }
+
+    // 2. If not found by googleId, try by email
+    if (!user) {
+      user = (await this.prisma.user.findUnique({
+        where: { email: profile.email.toLowerCase().trim() },
+        select: this.buildUserSelect({
+          includePassword: false,
+          includeCompany: true,
+          fieldAvailability,
+        }),
+      })) as AuthUserRecord | null;
+
+      // Link google account to existing user
+      if (user) {
+        try {
+          await this.prisma.user.update({
+            where: { id: user.id },
+            data: { googleId: profile.googleId },
+          });
+        } catch {
+          // googleId column may not exist yet
+        }
+      }
+    }
+
+    // 3. If user still not found, create new user + company
+    if (!user) {
+      const companyName = profile.name || 'Minha Empresa';
+      const companySlug = this.slugify(companyName) + '-' + Date.now().toString(36);
+
+      const created = await this.prisma.$transaction(async (tx) => {
+        const newUser = await tx.user.create({
+          data: {
+            email: profile.email.toLowerCase().trim(),
+            name: profile.name || 'Usuário Google',
+            googleId: profile.googleId,
+            ...(fieldAvailability.admin ? { admin: false } : {}),
+          },
+          select: this.buildUserSelect({
+            includePassword: false,
+            includeCompany: false,
+            fieldAvailability,
+          }),
+        });
+
+        const company = await tx.company.create({
+          data: {
+            name: companyName,
+            slug: companySlug,
+            userId: newUser.id,
+          },
+        });
+
+        const updatedUser = await tx.user.update({
+          where: { id: newUser.id },
+          data: { companyId: company.id },
+          select: this.buildUserSelect({
+            includePassword: false,
+            includeCompany: true,
+            fieldAvailability,
+          }),
+        });
+
+        return { company, user: updatedUser as AuthUserRecord };
+      });
+
+      user = created.user;
+    }
+
+    const normalizedUser = this.normalizeAuthUserRecord(user);
+    if (!normalizedUser) {
+      throw new UnauthorizedException('Falha ao validar usuario Google');
+    }
+
+    const payload: JwtPayload = {
+      sub: normalizedUser.id,
+      email: normalizedUser.email,
+      companyId: normalizedUser.companyId ?? undefined,
+      admin: Boolean(normalizedUser.admin),
+    };
+
+    const tokens = await this.issueTokens(payload);
+
+    return {
+      ...tokens,
+      user: {
+        id: normalizedUser.id,
+        email: normalizedUser.email,
+        name: normalizedUser.name,
+        admin: Boolean(normalizedUser.admin),
+        detailLevel: normalizedUser.detailLevel,
+        niche: normalizedUser.niche ?? null,
+        companyId: normalizedUser.companyId,
+        companyName: normalizedUser.company?.name ?? '',
+      },
+    };
   }
 
   async validateUser(payload: JwtPayload) {
