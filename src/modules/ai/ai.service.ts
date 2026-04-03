@@ -37,6 +37,10 @@ export class AiService {
   private readonly logger = new Logger(AiService.name);
   private genAI: GoogleGenerativeAI | null = null;
   private openai: OpenAI | null = null;
+  private readonly geminiSimpleModel: string;
+  private readonly geminiComplexModel: string;
+  private readonly openAiSimpleModel: string;
+  private readonly openAiComplexModel: string;
 
   constructor(
     private readonly configService: ConfigService,
@@ -46,10 +50,22 @@ export class AiService {
     if (geminiApiKey) {
       this.genAI = new GoogleGenerativeAI(geminiApiKey);
     }
+    this.geminiSimpleModel =
+      this.configService.get<string>('GEMINI_MODEL') || 'gemini-2.5-flash';
+    this.geminiComplexModel =
+      this.configService.get<string>('GEMINI_COMPLEX_MODEL') ||
+      this.configService.get<string>('GEMINI_MODEL') ||
+      'gemini-2.5-flash';
     const openAiKey = this.configService.get<string>('OPENAI_API_KEY');
     if (openAiKey) {
       this.openai = new OpenAI({ apiKey: openAiKey });
     }
+    this.openAiSimpleModel =
+      this.configService.get<string>('OPENAI_MODEL') || 'gpt-4o-mini';
+    this.openAiComplexModel =
+      this.configService.get<string>('OPENAI_COMPLEX_MODEL') ||
+      this.configService.get<string>('OPENAI_MODEL') ||
+      'gpt-4o-mini';
   }
 
   async analyzeSales(data: Record<string, unknown>, userId: string) {
@@ -412,7 +428,10 @@ export class AiService {
     complexity: 'simple' | 'complex',
   ): Promise<{ text: string; tokensUsed?: number }> {
     if (provider === 'gemini') {
-      const modelName = complexity === 'complex' ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
+      const modelName =
+        complexity === 'complex'
+          ? this.geminiComplexModel
+          : this.geminiSimpleModel;
       const model = this.genAI?.getGenerativeModel({ model: modelName });
       if (!model) throw new ServiceUnavailableException('Gemini nao configurado');
       const timeoutMs = 10000;
@@ -429,7 +448,10 @@ export class AiService {
     }
 
     if (!this.openai) throw new ServiceUnavailableException('OpenAI nao configurado');
-    const modelName = complexity === 'complex' ? 'gpt-4o' : 'gpt-4o-mini';
+    const modelName =
+      complexity === 'complex'
+        ? this.openAiComplexModel
+        : this.openAiSimpleModel;
     const timeoutMs = 10000;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
