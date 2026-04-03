@@ -89,11 +89,13 @@ export class AiService {
     try {
       ({ text } = await this.generateText(prompt, user.companyId || undefined, 'complex'));
     } catch (error) {
-      if (this.isRecoverableAiError(error)) {
-        text = this.buildLocalAnalysisFallback(data);
-      } else {
-        throw error;
-      }
+      this.logAiFailure('analyzeSales', error, {
+        userId,
+        companyId: user.companyId || undefined,
+        hasGemini: Boolean(this.genAI),
+        hasOpenAI: Boolean(this.openai),
+      });
+      throw this.toPublicAiException(error);
     }
 
     await this.prisma.analysis.create({
@@ -277,33 +279,45 @@ export class AiService {
     return false;
   }
 
-  private isRecoverableAiError(error: unknown): boolean {
-    if (error instanceof ServiceUnavailableException) {
-      return true;
+  private toPublicAiException(error: unknown): HttpException {
+    if (error instanceof QuotaExceededException) {
+      return new HttpException(
+        'Limite da IA excedido no momento. Tente novamente em alguns minutos.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
-    if (error instanceof HttpException && error.getStatus() === HttpStatus.TOO_MANY_REQUESTS) {
-      return true;
+    if (error instanceof HttpException) {
+      return error;
     }
-    return this.isServiceUnavailableError(error) || this.isQuotaExceededError(error);
+    if (this.isQuotaExceededError(error)) {
+      return new HttpException(
+        'Limite da IA excedido no momento. Tente novamente em alguns minutos.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+    if (this.isServiceUnavailableError(error)) {
+      return new ServiceUnavailableException(
+        'Servico de IA indisponivel no momento. Verifique a configuracao do provedor e tente novamente.',
+      );
+    }
+    return new InternalServerErrorException('Falha ao gerar insights com a IA.');
   }
 
-  private buildLocalAnalysisFallback(data: Record<string, unknown>): string {
-    const metrics = [
-      `receita=${data.revenue ?? 'n/d'}`,
-      `perdas=${data.losses ?? 'n/d'}`,
-      `lucro=${data.profit ?? 'n/d'}`,
-      `caixa=${data.cashflow ?? 'n/d'}`,
-    ]
-      .map(String)
-      .join(' | ');
-
-    return [
-      '[Modo offline] IA principal indisponivel; heuristica rapida.',
-      `Resumo: ${metrics}`,
-      'Riscos: validar dados e limites antes de agir.',
-      'Oportunidades: rever mix, canais e horarios de pico.',
-      'Recomendacao: priorize custos recorrentes e precificacao alvo.',
-    ].join('\n');
+  private logAiFailure(
+    context: string,
+    error: unknown,
+    metadata?: Record<string, unknown>,
+  ) {
+    const status =
+      error instanceof HttpException
+        ? error.getStatus()
+        : (error as { status?: unknown })?.status ||
+          (error as { response?: { status?: unknown } })?.response?.status;
+    const message = error instanceof Error ? error.message : String(error);
+    this.logger.error(
+      `[${context}] AI request failed${status ? ` (${status})` : ''}: ${message}`,
+      metadata ? JSON.stringify(metadata) : undefined,
+    );
   }
 
   private sleep(ms: number) {
