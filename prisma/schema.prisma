@@ -145,7 +145,7 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  company              Company?               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company              Company?               @relation(fields: [companyId], references: [id], onDelete: SetNull)
   sales                Sale[]
   analyses             Analysis[]
   financialTransactions FinancialTransaction[]

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CompaniesService } from './companies.service';
 import { CreateCompanyDto } from './dto/create-company.dto';
@@ -16,5 +16,10 @@ export class CompaniesController {
   @Post()
   create(@Body() dto: CreateCompanyDto, @Req() req: { user: { id: string } }) {
     return this.companiesService.create(dto, req.user.id);
+  }
+
+  @Delete(':id')
+  remove(@Param('id') id: string, @Req() req: { user: { id: string } }) {
+    return this.companiesService.remove(id, req.user.id);
   }
 }
