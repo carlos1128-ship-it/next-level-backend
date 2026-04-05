@@ -1,11 +1,14 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma, FinancialTransactionType } from '@prisma/client';
+import { fromZonedTime } from 'date-fns-tz';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { ListTransactionsDto } from './dto/list-transactions.dto';
 
 @Injectable()
 export class FinanceService {
+  private readonly transactionTimeZone = 'America/Sao_Paulo';
+
   constructor(private readonly prisma: PrismaService) {}
 
   private normalizeTransactionType(type: FinancialTransactionType) {
@@ -17,6 +20,24 @@ export class FinanceService {
       ...transaction,
       type: this.normalizeTransactionType(transaction.type),
     };
+  }
+
+  private parseTransactionDate(value?: string) {
+    if (!value) return new Date();
+
+    const normalized = String(value).trim();
+    if (!normalized) return new Date();
+
+    const hasExplicitTimezone = /([zZ]|[+\-]\d{2}:\d{2})$/.test(normalized);
+    const parsed = hasExplicitTimezone
+      ? new Date(normalized)
+      : fromZonedTime(normalized, this.transactionTimeZone);
+
+    if (Number.isNaN(parsed.getTime())) {
+      throw new BadRequestException('Data da transacao invalida');
+    }
+
+    return parsed;
   }
 
   private async ensureUserCompany(userId: string, companyId: string) {
@@ -109,11 +130,7 @@ export class FinanceService {
         ? FinancialTransactionType.INCOME
         : FinancialTransactionType.EXPENSE;
 
-    const transactionDate = dto.date
-      ? new Date(dto.date)
-      : dto.occurredAt
-        ? new Date(dto.occurredAt)
-        : new Date();
+    const transactionDate = this.parseTransactionDate(dto.date || dto.occurredAt);
 
     const createdTransaction = await this.prisma.financialTransaction.create({
       data: {
