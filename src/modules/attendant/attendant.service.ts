@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { OnEvent } from '@nestjs/event-emitter';
 import {
   AiChatRole,
@@ -28,6 +29,7 @@ export class AttendantService {
     private readonly whatsappService: WhatsappService,
     private readonly instagramService: InstagramService,
     private readonly alertsService: AlertsService,
+    private readonly configService: ConfigService,
   ) {}
 
   @OnEvent('webhooks.received')
@@ -52,10 +54,16 @@ export class AttendantService {
     const companyId = event.companyId || payload.companyId;
     if (!companyId) return;
 
-    const messages =
-      payload.provider === IntegrationProvider.INSTAGRAM
-        ? this.extractInstagramMessages(event.payload as Record<string, unknown>)
-        : this.extractWhatsappMessages(event.payload as Record<string, unknown>);
+    const rawPayload = event.payload as Record<string, unknown>;
+
+    let messages: Array<{ from: string; text: string; name?: string | null }>;
+    if (payload.provider === IntegrationProvider.INSTAGRAM) {
+      messages = this.extractInstagramMessages(rawPayload);
+    } else if (this.isEvolutionPayload(rawPayload)) {
+      messages = this.extractEvolutionMessages(rawPayload);
+    } else {
+      messages = this.extractWhatsappMessages(rawPayload);
+    }
 
     for (const msg of messages) {
       await this.processIncomingMessage(companyId, payload.provider, msg.from, msg.text, msg.name);
@@ -131,6 +139,51 @@ export class AttendantService {
     };
   }
 
+  // ─── Evolution API Instance Management ────────────────────────────────────
+
+  async createWhatsappInstance(companyId: string) {
+    const config = await this.getOrCreateConfig(companyId);
+    const instanceName = config.evolutionInstanceName || `nl-${companyId.slice(0, 12)}`;
+    const serverUrl = this.configService.get<string>('APP_URL') || 'http://localhost:3000';
+    const webhookUrl = `${serverUrl}/webhooks/evolution/${companyId}`;
+
+    const result = await this.whatsappService.createEvolutionInstance(instanceName, webhookUrl);
+
+    if (!config.evolutionInstanceName) {
+      await this.prisma.botConfig.update({
+        where: { id: config.id },
+        data: { evolutionInstanceName: instanceName },
+      });
+    }
+
+    return { instanceName, qrCode: result.qrCode, status: result.status };
+  }
+
+  async getWhatsappQRCode(companyId: string) {
+    const config = await this.getOrCreateConfig(companyId);
+    if (!config.evolutionInstanceName) {
+      return { status: 'not_created', qrCode: null };
+    }
+    const result = await this.whatsappService.getEvolutionQRCode(config.evolutionInstanceName);
+    return { instanceName: config.evolutionInstanceName, ...result };
+  }
+
+  async getWhatsappStatus(companyId: string) {
+    const config = await this.getOrCreateConfig(companyId);
+    if (!config.evolutionInstanceName) {
+      return { status: 'not_created' };
+    }
+    const state = await this.whatsappService.getEvolutionConnectionState(config.evolutionInstanceName);
+    return {
+      instanceName: config.evolutionInstanceName,
+      status: state,
+      quotaUsed: config.messageQuotaUsed,
+      quotaLimit: config.messageQuotaLimit,
+    };
+  }
+
+  // ─── Core Message Processing ───────────────────────────────────────────────
+
   private async processIncomingMessage(
     companyId: string,
     provider: IntegrationProvider,
@@ -140,6 +193,12 @@ export class AttendantService {
   ) {
     const botConfig = await this.getOrCreateConfig(companyId);
     if (!botConfig.isActive) return;
+
+    // Verificação de quota (tier freemium)
+    if (botConfig.messageQuotaUsed >= botConfig.messageQuotaLimit) {
+      this.logger.warn(`Quota de mensagens esgotada para empresa ${companyId} (${botConfig.messageQuotaUsed}/${botConfig.messageQuotaLimit})`);
+      return;
+    }
 
     let lead = await this.prisma.lead.upsert({
       where: { companyId_externalId: { companyId, externalId } },
@@ -180,7 +239,6 @@ export class AttendantService {
       return;
     }
 
-    // Busca histórico de conversa (últimas N mensagens) para contexto da IA
     const history = await this.prisma.chatConversation.findMany({
       where: { leadId: lead.id },
       orderBy: { createdAt: 'desc' },
@@ -215,10 +273,11 @@ export class AttendantService {
       this.logger.warn(`IA indisponivel, usando fallback simples: ${(error as Error)?.message}`);
     }
 
-    // Envia resposta pelo canal correto (WhatsApp ou Instagram)
     try {
       if (provider === IntegrationProvider.INSTAGRAM) {
         await this.instagramService.sendDm(companyId, externalId, reply);
+      } else if (botConfig.evolutionInstanceName) {
+        await this.whatsappService.sendEvolutionMessage(botConfig.evolutionInstanceName, externalId, reply);
       } else {
         await this.whatsappService.sendTextMessage(companyId, externalId, reply);
       }
@@ -228,6 +287,12 @@ export class AttendantService {
 
     await this.prisma.chatConversation.create({
       data: { leadId: lead.id, role: AiChatRole.ASSISTANT, content: reply },
+    });
+
+    // Incrementa quota após resposta enviada com sucesso
+    await this.prisma.botConfig.update({
+      where: { id: botConfig.id },
+      data: { messageQuotaUsed: { increment: 1 } },
     });
 
     lead = await this.scoreLead(companyId, lead, text, lastQuotedValue);
@@ -372,7 +437,43 @@ export class AttendantService {
     });
   }
 
-  // Extrai mensagens no formato WhatsApp Business API
+  // ─── Payload Extraction ────────────────────────────────────────────────────
+
+  /** Detecta se o payload é do Evolution API (vs Meta Cloud API) */
+  private isEvolutionPayload(payload: Record<string, unknown>): boolean {
+    return typeof payload['event'] === 'string' && payload['event'] === 'messages.upsert';
+  }
+
+  /** Extrai mensagens do formato Evolution API */
+  private extractEvolutionMessages(payload: Record<string, unknown>) {
+    const messages: Array<{ from: string; text: string; name?: string | null }> = [];
+    const data = payload['data'] as Record<string, unknown> | undefined;
+    if (!data) return messages;
+
+    const key = data['key'] as Record<string, unknown> | undefined;
+    if (key?.['fromMe'] === true) return messages;
+
+    const remoteJid = typeof key?.['remoteJid'] === 'string' ? key['remoteJid'] : '';
+    // Extrai número limpo de "5511999999999@s.whatsapp.net"
+    const from = remoteJid.split('@')[0] || '';
+
+    const message = data['message'] as Record<string, unknown> | undefined;
+    const text =
+      typeof message?.['conversation'] === 'string'
+        ? message['conversation']
+        : typeof (message?.['extendedTextMessage'] as Record<string, unknown> | undefined)?.['text'] === 'string'
+          ? ((message?.['extendedTextMessage'] as Record<string, unknown>)['text'] as string)
+          : '';
+
+    const name = typeof data['pushName'] === 'string' ? data['pushName'] : null;
+
+    if (from && text) {
+      messages.push({ from, text, name });
+    }
+
+    return messages;
+  }
+
   private extractWhatsappMessages(payload: Record<string, unknown>) {
     const messages: Array<{ from: string; text: string; name?: string | null }> = [];
     const entries = (payload?.['entry'] as Array<Record<string, unknown>>) || [];
@@ -398,7 +499,6 @@ export class AttendantService {
     return messages;
   }
 
-  // Extrai mensagens no formato Instagram DM (entry[].messaging[])
   private extractInstagramMessages(payload: Record<string, unknown>) {
     const messages: Array<{ from: string; text: string; name?: string | null }> = [];
     const entries = (payload?.['entry'] as Array<Record<string, unknown>>) || [];
@@ -418,6 +518,8 @@ export class AttendantService {
 
     return messages;
   }
+
+  // ─── Helpers ──────────────────────────────────────────────────────────────
 
   private containsKeyword(text: string, keywords: string[]) {
     const lower = text.toLowerCase();

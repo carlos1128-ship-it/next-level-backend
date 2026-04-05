@@ -392,15 +392,18 @@ model StrategicAction {
 }
 
 model BotConfig {
-  id             String   @id @default(cuid())
-  companyId      String   @unique
-  botName        String   @default("Atendente IA")
-  welcomeMessage String?
-  toneOfVoice    String   @default("amigavel")
-  instructions   String?
-  isActive       Boolean  @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id                    String   @id @default(cuid())
+  companyId             String   @unique
+  botName               String   @default("Atendente IA")
+  welcomeMessage        String?
+  toneOfVoice           String   @default("amigavel")
+  instructions          String?
+  isActive              Boolean  @default(true)
+  evolutionInstanceName String?
+  messageQuotaUsed      Int      @default(0)
+  messageQuotaLimit     Int      @default(100)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 }

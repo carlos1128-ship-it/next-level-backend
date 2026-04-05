@@ -4,6 +4,7 @@ import {
   Get,
   Headers,
   Logger,
+  Param,
   Post,
   Query,
 } from '@nestjs/common';
@@ -169,6 +170,50 @@ export class WebhooksController {
         .digest('hex');
 
     return expected === signature;
+  }
+
+  /**
+   * Recebe webhooks da Evolution API (WhatsApp self-hosted).
+   * URL configurada no Evolution como: {SERVER_URL}/webhooks/evolution/{companyId}
+   */
+  @Public()
+  @Post('evolution/:companyId')
+  async handleEvolution(
+    @Param('companyId') companyId: string,
+    @Headers('apikey') apiKey: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    const expectedKey = this.configService.get<string>('EVOLUTION_API_KEY');
+    if (expectedKey && apiKey !== expectedKey) {
+      return { ok: false };
+    }
+
+    // Filtra apenas eventos de mensagens recebidas
+    const event = body?.['event'] as string | undefined;
+    if (event !== 'messages.upsert') {
+      return { ok: true, ignored: true };
+    }
+
+    const data = body?.['data'] as Record<string, unknown> | undefined;
+    const key = data?.['key'] as Record<string, unknown> | undefined;
+    if (key?.['fromMe'] === true) {
+      return { ok: true, ignored: true };
+    }
+
+    const instanceName = (body?.['instance'] as string | undefined) || '';
+
+    try {
+      await this.webhookIngestService.registerEvent(
+        IntegrationProvider.WHATSAPP,
+        body,
+        instanceName,
+        companyId,
+      );
+      return { ok: true };
+    } catch (error) {
+      this.logger.error('Falha ao salvar webhook Evolution', error as Error);
+      return { ok: true, stored: false };
+    }
   }
 
   private extractCompanyId(payload: Record<string, unknown>): string | null {
