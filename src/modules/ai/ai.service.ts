@@ -287,6 +287,33 @@ export class AiService {
     return false;
   }
 
+  private getProviderErrorMessage(error: unknown): string | null {
+    if (!error || typeof error !== 'object') {
+      return null;
+    }
+
+    const responseData = (error as { response?: { data?: unknown } }).response?.data;
+    if (typeof responseData === 'string' && responseData.trim()) {
+      return responseData.trim();
+    }
+
+    if (responseData && typeof responseData === 'object') {
+      const payload = responseData as {
+        message?: unknown;
+        error?: unknown;
+        detail?: unknown;
+      };
+      const candidate = [payload.message, payload.error, payload.detail].find(
+        (value) => typeof value === 'string' && value.trim(),
+      );
+      if (typeof candidate === 'string' && candidate.trim()) {
+        return candidate.trim();
+      }
+    }
+
+    return error instanceof Error && error.message.trim() ? error.message.trim() : null;
+  }
+
   private isServiceUnavailableError(error: unknown): boolean {
     const message = error instanceof Error ? error.message.toLowerCase() : '';
     if (
@@ -310,7 +337,7 @@ export class AiService {
   private toPublicAiException(error: unknown): HttpException {
     if (error instanceof QuotaExceededException) {
       return new HttpException(
-        'Limite da IA excedido no momento. Tente novamente em alguns minutos.',
+        'Cota mensal da empresa para analises de IA foi atingida.',
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
@@ -318,8 +345,10 @@ export class AiService {
       return error;
     }
     if (this.isQuotaExceededError(error)) {
+      const providerMessage = this.getProviderErrorMessage(error);
       return new HttpException(
-        'Limite da IA excedido no momento. Tente novamente em alguns minutos.',
+        providerMessage ||
+          'O provedor de IA recusou temporariamente a requisicao por excesso de chamadas. Tente novamente em instantes.',
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
