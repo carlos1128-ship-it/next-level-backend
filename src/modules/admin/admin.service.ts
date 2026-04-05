@@ -100,7 +100,7 @@ export class AdminService implements OnModuleDestroy {
     });
 
     const planPrice: Record<Plan, number> = {
-      FREE: 0,
+      COMUM: 0,
       PRO: 297,
       ENTERPRISE: 997,
     };
@@ -232,7 +232,7 @@ export class AdminService implements OnModuleDestroy {
       update: {},
       create: {
         companyId,
-        currentTier: Plan.FREE,
+        currentTier: Plan.COMUM,
         billingCycleEnd: this.addDays(new Date(), 30),
       },
     });

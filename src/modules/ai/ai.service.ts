@@ -102,7 +102,7 @@ export class AiService {
       );
     }).length;
 
-    if (user.plan === 'FREE' && monthlyCount >= 5) {
+    if (user.plan === 'COMUM' && monthlyCount >= 5) {
       throw new ForbiddenException(
         'Limite mensal atingido. Faca upgrade para PRO.',
       );
@@ -337,7 +337,7 @@ export class AiService {
   private toPublicAiException(error: unknown): HttpException {
     if (error instanceof QuotaExceededException) {
       return new HttpException(
-        'Cota mensal da empresa para analises de IA foi atingida.',
+        error.message,
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
@@ -427,16 +427,12 @@ export class AiService {
     const style = this.detailStyle(detailLevel);
 
     return [
-      'Voce e um consultor estrategico de vendas SaaS.',
-      'Gere insights extremamente curtos, diretos e acionaveis.',
-      'Nao use introducao, conclusao, contexto, justificativas, avisos ou texto conversacional.',
-      'Cada insight deve ter no maximo 2 frases curtas ou 1 topico curto.',
-      'Priorize apenas a acao de maior impacto ou a metrica mais critica.',
-      'Use formato de lista compacta com exatamente 4 linhas.',
-      'Estrutura obrigatoria: Padroes: ..., Riscos: ..., Oportunidades: ..., Recomendacoes: ...',
-      'Cada linha deve ser independente e caber bem em dashboard.',
+      'Aja como analista financeiro. Sem introducao. Sem conclusao.',
+      'Retorne exatamente 3 topicos em formato de lista.',
+      'Cada topico: maximo 1 frase direta e acionavel.',
+      'Formato obrigatorio: "- <texto>"',
       `Dados: ${JSON.stringify(data)}`,
-      `Regra de concisao: ${style}`,
+      `Concisao: ${style}`,
     ].join('\n');
   }
 
@@ -472,19 +468,21 @@ export class AiService {
       update: {},
       create: {
         companyId,
-        currentTier: 'FREE',
+        currentTier: 'COMUM',
         billingCycleEnd: this.addDays(new Date(), 30),
       },
     });
 
     const limits: Record<string, number> = {
-      FREE: 10000,
+      COMUM: 50000,
       PRO: 200000,
       ENTERPRISE: 10000000,
     };
     const limit = limits[quota.currentTier] ?? 10000;
     if (quota.llmTokensUsed + tokensRequested > limit) {
-      throw new QuotaExceededException();
+      throw new QuotaExceededException(
+        `Cota interna de tokens atingida. Uso: ${quota.llmTokensUsed}/${limit} tokens (plano ${quota.currentTier}). Redefina a cota ou faca upgrade.`,
+      );
     }
   }
 
