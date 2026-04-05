@@ -35,6 +35,8 @@ type AiUserRecord = {
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name);
+  private readonly providerTimeoutMs: number;
+  private readonly providerMaxRetries: number;
   private genAI: GoogleGenerativeAI | null = null;
   private openai: OpenAI | null = null;
   private readonly geminiSimpleModel: string;
@@ -66,6 +68,13 @@ export class AiService {
       this.configService.get<string>('OPENAI_COMPLEX_MODEL') ||
       this.configService.get<string>('OPENAI_MODEL') ||
       'gpt-4o-mini';
+    this.providerTimeoutMs = Number(
+      this.configService.get<string>('AI_PROVIDER_TIMEOUT_MS') || 20000,
+    );
+    this.providerMaxRetries = Math.max(
+      1,
+      Number(this.configService.get<string>('AI_PROVIDER_MAX_RETRIES') || 2),
+    );
   }
 
   async analyzeSales(data: Record<string, unknown>, userId: string) {
@@ -228,7 +237,7 @@ export class AiService {
 
     let lastError: unknown;
 
-    for (const provider of providers) {
+    for (const [index, provider] of providers.entries()) {
       try {
         const result = await this.callProvider(provider, prompt, complexity);
         const tokensUsed = result.tokensUsed ?? estimatedTokens;
@@ -247,8 +256,11 @@ export class AiService {
             HttpStatus.TOO_MANY_REQUESTS,
           );
         }
+        const hasFallback = index < providers.length - 1;
         this.logger.warn(
-          `Provedor ${provider} falhou, tentando fallback: ${error instanceof Error ? error.message : error}`,
+          hasFallback
+            ? `Provedor ${provider} falhou, tentando fallback: ${error instanceof Error ? error.message : error}`
+            : `Provedor ${provider} falhou sem fallback disponivel: ${error instanceof Error ? error.message : error}`,
         );
       }
     }
@@ -340,6 +352,38 @@ export class AiService {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  private shouldRetryProviderError(error: unknown): boolean {
+    return this.isServiceUnavailableError(error);
+  }
+
+  private async executeWithRetry<T>(
+    provider: 'gemini' | 'openai',
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= this.providerMaxRetries; attempt += 1) {
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error;
+        const canRetry =
+          attempt < this.providerMaxRetries &&
+          this.shouldRetryProviderError(error);
+        if (!canRetry) {
+          break;
+        }
+        const delayMs = 400 * attempt;
+        this.logger.warn(
+          `Provedor ${provider} instavel na tentativa ${attempt}/${this.providerMaxRetries}. Novo retry em ${delayMs}ms.`,
+        );
+        await this.sleep(delayMs);
+      }
+    }
+
+    throw lastError;
+  }
+
   private normalizeDetailLevel(value: string | null | undefined): DetailLevel {
     if (value === 'low' || value === 'high') {
       return value;
@@ -355,11 +399,15 @@ export class AiService {
 
     return [
       'Voce e um consultor estrategico de vendas SaaS.',
-      'Nao repita os mesmos argumentos. Evite respostas longas e redundantes.',
-      style,
-      'Gere exatamente 4 secoes: padroes, riscos, oportunidades, recomendacoes.',
-      'Use linguagem clara, objetiva e orientada a acao.',
+      'Gere insights extremamente curtos, diretos e acionaveis.',
+      'Nao use introducao, conclusao, contexto, justificativas, avisos ou texto conversacional.',
+      'Cada insight deve ter no maximo 2 frases curtas ou 1 topico curto.',
+      'Priorize apenas a acao de maior impacto ou a metrica mais critica.',
+      'Use formato de lista compacta com exatamente 4 linhas.',
+      'Estrutura obrigatoria: Padroes: ..., Riscos: ..., Oportunidades: ..., Recomendacoes: ...',
+      'Cada linha deve ser independente e caber bem em dashboard.',
       `Dados: ${JSON.stringify(data)}`,
+      `Regra de concisao: ${style}`,
     ].join('\n');
   }
 
@@ -376,12 +424,12 @@ export class AiService {
 
   private detailStyle(detailLevel: DetailLevel): string {
     if (detailLevel === 'low') {
-      return 'Nivel de detalhe: baixo. Responda em ate 5 linhas.';
+      return 'Nivel de detalhe: baixo. Ate 10 palavras por linha.';
     }
     if (detailLevel === 'high') {
-      return 'Nivel de detalhe: alto. Responda em ate 220 palavras e use no maximo 6 bullets.';
+      return 'Nivel de detalhe: alto. Ate 18 palavras por linha.';
     }
-    return 'Nivel de detalhe: medio. Responda em ate 120 palavras e use no maximo 4 bullets.';
+    return 'Nivel de detalhe: medio. Ate 14 palavras por linha.';
   }
 
   private estimateTokens(text: string): number {
@@ -434,42 +482,50 @@ export class AiService {
           : this.geminiSimpleModel;
       const model = this.genAI?.getGenerativeModel({ model: modelName });
       if (!model) throw new ServiceUnavailableException('Gemini nao configurado');
-      const timeoutMs = 10000;
-      const result = await Promise.race([
-        model.generateContent(prompt),
-        this.sleep(timeoutMs).then(() => {
-          throw new ServiceUnavailableException('Gemini timeout');
-        }),
-      ]);
-      const text = result.response.text()?.trim();
-      if (!text) throw new InternalServerErrorException('Gemini retornou vazio');
-      const tokensUsed = result.response.usageMetadata?.totalTokenCount;
-      return { text, tokensUsed };
+      return this.executeWithRetry('gemini', async () => {
+        const result = await Promise.race([
+          model.generateContent(prompt),
+          this.sleep(this.providerTimeoutMs).then(() => {
+            throw new ServiceUnavailableException('Gemini timeout');
+          }),
+        ]);
+        const text = result.response.text()?.trim();
+        if (!text) throw new InternalServerErrorException('Gemini retornou vazio');
+        const tokensUsed = result.response.usageMetadata?.totalTokenCount;
+        return { text, tokensUsed };
+      });
     }
 
-    if (!this.openai) throw new ServiceUnavailableException('OpenAI nao configurado');
+    const openai = this.openai;
+    if (!openai) throw new ServiceUnavailableException('OpenAI nao configurado');
     const modelName =
       complexity === 'complex'
         ? this.openAiComplexModel
         : this.openAiSimpleModel;
-    const timeoutMs = 10000;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await this.openai.chat.completions.create(
-        {
-          model: modelName,
-          messages: [{ role: 'user', content: prompt }],
-        },
-        { signal: controller.signal },
-      );
-      const text = response.choices[0]?.message?.content?.trim();
-      const tokensUsed = response.usage?.total_tokens;
-      if (!text) throw new InternalServerErrorException('OpenAI retornou vazio');
-      return { text, tokensUsed };
-    } finally {
-      clearTimeout(timer);
-    }
+    return this.executeWithRetry('openai', async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.providerTimeoutMs);
+      try {
+        const response = await openai.chat.completions.create(
+          {
+            model: modelName,
+            messages: [{ role: 'user', content: prompt }],
+          },
+          { signal: controller.signal },
+        );
+        const text = response.choices[0]?.message?.content?.trim();
+        const tokensUsed = response.usage?.total_tokens;
+        if (!text) throw new InternalServerErrorException('OpenAI retornou vazio');
+        return { text, tokensUsed };
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          throw new ServiceUnavailableException('OpenAI timeout');
+        }
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+    });
   }
 
   private addDays(date: Date, days: number): Date {

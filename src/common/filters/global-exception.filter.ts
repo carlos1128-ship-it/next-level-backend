@@ -46,11 +46,12 @@ export class GlobalExceptionFilter implements ExceptionFilter {
           ? HttpStatus.SERVICE_UNAVAILABLE
           : HttpStatus.INTERNAL_SERVER_ERROR;
 
-    const statusCode =
-      originalStatus >= 500
+    const statusCode = isHttpException
+      ? originalStatus
+      : originalStatus >= 500
         ? isPrismaInit || isPrismaRustPanic || isAxiosError
           ? HttpStatus.FAILED_DEPENDENCY
-          : HttpStatus.BAD_REQUEST
+          : HttpStatus.BAD_GATEWAY
         : originalStatus;
 
     const body = this.buildBody(
@@ -86,7 +87,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
   ): ErrorBody {
     const timestamp = new Date().toISOString();
 
-    if (exception instanceof HttpException && exception.getStatus() < 500) {
+    if (exception instanceof HttpException) {
       const httpStatus = exception.getStatus();
       const response = exception.getResponse();
       const message =
@@ -100,6 +101,10 @@ export class GlobalExceptionFilter implements ExceptionFilter {
             ? 'RouteNotFound'
             : statusCode === HttpStatus.BAD_REQUEST
               ? 'RequestError'
+              : statusCode === HttpStatus.SERVICE_UNAVAILABLE
+                ? 'ServiceUnavailable'
+                : statusCode === HttpStatus.TOO_MANY_REQUESTS
+                  ? 'RateLimited'
               : 'ApplicationError',
         message,
         timestamp,
