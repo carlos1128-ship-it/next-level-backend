@@ -12,6 +12,12 @@ interface SendTemplateInput {
   components?: Array<Record<string, unknown>>;
 }
 
+interface EvolutionConnectionSnapshot {
+  instanceName?: string;
+  qrCode?: string;
+  status: string;
+}
+
 @Injectable()
 export class WhatsappService {
   private readonly logger = new Logger(WhatsappService.name);
@@ -28,6 +34,22 @@ export class WhatsappService {
 
   private get evolutionKey() {
     return this.configService.get<string>('EVOLUTION_API_KEY') || '';
+  }
+
+  private normalizeQrCode(value: unknown): string | undefined {
+    if (typeof value !== 'string') return undefined;
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    if (trimmed.startsWith('data:image')) return trimmed;
+    return `data:image/png;base64,${trimmed}`;
+  }
+
+  private normalizeEvolutionStatus(state: unknown): string {
+    const normalized = typeof state === 'string' ? state.trim().toLowerCase() : '';
+    if (['open', 'connected'].includes(normalized)) return 'Connected';
+    if (['connecting', 'qrcode', 'qr', 'scan', 'pairing'].includes(normalized)) return 'Connecting';
+    if (['close', 'closed', 'disconnected', 'not_created'].includes(normalized)) return 'Disconnected';
+    return normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1) : 'Disconnected';
   }
 
   // ─── Meta Cloud API ────────────────────────────────────────────────────────
@@ -97,7 +119,7 @@ export class WhatsappService {
   async createEvolutionInstance(
     instanceName: string,
     webhookUrl: string,
-  ): Promise<{ qrCode?: string; status: string }> {
+  ): Promise<EvolutionConnectionSnapshot> {
     try {
       const { data } = await axios.post(
         `${this.evolutionUrl}/instance/create`,
@@ -114,9 +136,17 @@ export class WhatsappService {
         },
       );
 
-      const qrCode = (data?.qrcode?.base64 as string | undefined) || undefined;
-      const status = (data?.instance?.status as string) || 'connecting';
-      return { qrCode, status };
+      const qrCode = this.normalizeQrCode(
+        data?.base64 || data?.qrcode?.base64 || data?.qrcode,
+      );
+      const status = this.normalizeEvolutionStatus(
+        data?.instance?.state || data?.instance?.status || data?.state,
+      );
+      return {
+        instanceName,
+        qrCode,
+        status: qrCode ? 'Connecting' : status,
+      };
     } catch (error) {
       this.logger.error(`Falha ao criar instancia Evolution: ${(error as Error).message}`);
       throw new BadRequestException('Falha ao criar instancia no Evolution API. Verifique EVOLUTION_API_URL e EVOLUTION_API_KEY.');
@@ -127,7 +157,7 @@ export class WhatsappService {
    * Retorna o QR code atual para uma instância desconectada, ou
    * { status: 'open' } se já estiver conectada.
    */
-  async getEvolutionQRCode(instanceName: string): Promise<{ qrCode?: string; status: string }> {
+  async getEvolutionQRCode(instanceName: string): Promise<EvolutionConnectionSnapshot> {
     try {
       const { data } = await axios.get(
         `${this.evolutionUrl}/instance/connect/${instanceName}`,
@@ -137,14 +167,23 @@ export class WhatsappService {
         },
       );
 
-      if ((data?.instance?.state as string) === 'open') {
-        return { status: 'open' };
-      }
+      const status = this.normalizeEvolutionStatus(
+        data?.instance?.state || data?.instance?.status || data?.state,
+      );
+      const qrCode = this.normalizeQrCode(
+        data?.base64 || data?.qrcode?.base64 || data?.qrcode,
+      );
 
-      const qrCode = (data?.base64 as string | undefined) || undefined;
-      return { qrCode, status: 'connecting' };
-    } catch {
-      return { status: 'error' };
+      return {
+        instanceName,
+        qrCode,
+        status: qrCode ? 'Connecting' : status,
+      };
+    } catch (error) {
+      this.logger.warn(
+        `Falha ao consultar QR code da instancia ${instanceName}: ${(error as Error).message}`,
+      );
+      return { instanceName, status: 'Error' };
     }
   }
 
@@ -161,9 +200,9 @@ export class WhatsappService {
           timeout: 8000,
         },
       );
-      return (data?.instance?.state as string) || 'close';
+      return this.normalizeEvolutionStatus(data?.instance?.state || data?.instance?.status || data?.state);
     } catch {
-      return 'error';
+      return 'Error';
     }
   }
 

@@ -32,6 +32,67 @@ export class AttendantService {
     private readonly configService: ConfigService,
   ) {}
 
+  private buildEvolutionInstanceName(userId: string, companyId: string) {
+    const userToken = userId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toLowerCase();
+    const companyToken = companyId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 10).toLowerCase();
+    return `nl-${userToken}-${companyToken}`;
+  }
+
+  private async resolveCompanyIdForUser(userId: string, companyId?: string | null) {
+    const normalizedCompanyId = companyId?.trim();
+
+    if (normalizedCompanyId) {
+      const company = await this.prisma.company.findFirst({
+        where: {
+          id: normalizedCompanyId,
+          OR: [{ userId }, { users: { some: { id: userId } } }],
+        },
+        select: { id: true },
+      });
+
+      if (!company) {
+        throw new BadRequestException('Empresa invalida');
+      }
+
+      return company.id;
+    }
+
+    const owned = await this.prisma.company.findFirst({
+      where: {
+        OR: [{ userId }, { users: { some: { id: userId } } }],
+      },
+      select: { id: true },
+    });
+
+    if (!owned?.id) {
+      throw new BadRequestException('companyId nao informado');
+    }
+
+    return owned.id;
+  }
+
+  private async syncEvolutionStatus(
+    companyId: string,
+    status: string,
+    instanceName?: string | null,
+  ) {
+    await this.prisma.botConfig.upsert({
+      where: { companyId },
+      create: {
+        companyId,
+        botName: 'Atendente IA',
+        toneOfVoice: 'amigavel',
+        welcomeMessage: 'Oi! Sou o assistente virtual da empresa, posso ajudar?',
+        evolutionConnectionStatus: status,
+        evolutionInstanceName: instanceName?.trim() || undefined,
+      },
+      update: {
+        evolutionConnectionStatus: status,
+        evolutionInstanceName: instanceName?.trim() || undefined,
+      },
+    });
+  }
+
   @OnEvent('webhooks.received')
   async handleWebhook(payload: {
     eventId: string;
@@ -139,41 +200,80 @@ export class AttendantService {
     };
   }
 
+  async findCompanyIdByInstanceName(instanceName: string) {
+    const normalized = instanceName.trim();
+    if (!normalized) return null;
+
+    const config = await this.prisma.botConfig.findFirst({
+      where: { evolutionInstanceName: normalized },
+      select: { companyId: true },
+    });
+
+    return config?.companyId || null;
+  }
+
   // ─── Evolution API Instance Management ────────────────────────────────────
 
-  async createWhatsappInstance(companyId: string) {
+  async createWhatsappInstanceForUser(userId: string, companyId?: string | null) {
+    const resolvedCompanyId = await this.resolveCompanyIdForUser(userId, companyId);
+    return this.createWhatsappInstance(resolvedCompanyId, userId);
+  }
+
+  async getWhatsappQRCodeForUser(userId: string, companyId?: string | null) {
+    const resolvedCompanyId = await this.resolveCompanyIdForUser(userId, companyId);
+    return this.getWhatsappQRCode(resolvedCompanyId);
+  }
+
+  async getWhatsappStatusForUser(userId: string, companyId?: string | null) {
+    const resolvedCompanyId = await this.resolveCompanyIdForUser(userId, companyId);
+    return this.getWhatsappStatus(resolvedCompanyId);
+  }
+
+  async createWhatsappInstance(companyId: string, userId?: string) {
     const config = await this.getOrCreateConfig(companyId);
-    const instanceName = config.evolutionInstanceName || `nl-${companyId.slice(0, 12)}`;
-    const serverUrl = this.configService.get<string>('APP_URL') || 'http://localhost:3000';
-    const webhookUrl = `${serverUrl}/webhooks/evolution/${companyId}`;
+    const instanceName =
+      config.evolutionInstanceName ||
+      this.buildEvolutionInstanceName(userId || companyId, companyId);
+    const serverUrl =
+      this.configService.get<string>('APP_URL') ||
+      this.configService.get<string>('PUBLIC_API_URL') ||
+      'http://localhost:3333';
+    const webhookUrl = `${serverUrl.replace(/\/$/, '')}/webhook/whatsapp?companyId=${companyId}`;
 
     const result = await this.whatsappService.createEvolutionInstance(instanceName, webhookUrl);
+    await this.syncEvolutionStatus(companyId, result.status, instanceName);
 
-    if (!config.evolutionInstanceName) {
-      await this.prisma.botConfig.update({
-        where: { id: config.id },
-        data: { evolutionInstanceName: instanceName },
-      });
-    }
-
-    return { instanceName, qrCode: result.qrCode, status: result.status };
+    return { instanceName, qrCode: result.qrCode ?? null, status: result.status };
   }
 
   async getWhatsappQRCode(companyId: string) {
     const config = await this.getOrCreateConfig(companyId);
     if (!config.evolutionInstanceName) {
-      return { status: 'not_created', qrCode: null };
+      await this.syncEvolutionStatus(companyId, 'Disconnected');
+      return { instanceName: null, status: 'Disconnected', qrCode: null };
     }
     const result = await this.whatsappService.getEvolutionQRCode(config.evolutionInstanceName);
-    return { instanceName: config.evolutionInstanceName, ...result };
+    await this.syncEvolutionStatus(companyId, result.status, config.evolutionInstanceName);
+    return {
+      instanceName: config.evolutionInstanceName,
+      qrCode: result.qrCode ?? null,
+      status: result.status,
+    };
   }
 
   async getWhatsappStatus(companyId: string) {
     const config = await this.getOrCreateConfig(companyId);
     if (!config.evolutionInstanceName) {
-      return { status: 'not_created' };
+      await this.syncEvolutionStatus(companyId, 'Disconnected');
+      return {
+        instanceName: null,
+        status: 'Disconnected',
+        quotaUsed: config.messageQuotaUsed,
+        quotaLimit: config.messageQuotaLimit,
+      };
     }
     const state = await this.whatsappService.getEvolutionConnectionState(config.evolutionInstanceName);
+    await this.syncEvolutionStatus(companyId, state, config.evolutionInstanceName);
     return {
       instanceName: config.evolutionInstanceName,
       status: state,
@@ -192,6 +292,9 @@ export class AttendantService {
     name?: string | null,
   ) {
     const botConfig = await this.getOrCreateConfig(companyId);
+    if (provider === IntegrationProvider.WHATSAPP && botConfig.evolutionInstanceName) {
+      await this.syncEvolutionStatus(companyId, 'Connected', botConfig.evolutionInstanceName);
+    }
     if (!botConfig.isActive) return;
 
     // Verificação de quota (tier freemium)
@@ -433,6 +536,7 @@ export class AttendantService {
         botName: 'Atendente IA',
         toneOfVoice: 'amigavel',
         welcomeMessage: 'Oi! Sou o assistente virtual da empresa, posso ajudar?',
+        evolutionConnectionStatus: 'Disconnected',
       },
     });
   }

@@ -56,28 +56,34 @@ export class AttendantController {
 
   @Post('whatsapp/instance')
   createWhatsappInstance(
-    @Req() req: { user: { companyId?: string | null } },
+    @Req() req: { user: { id: string; companyId?: string | null } },
     @Query('companyId') companyId?: string,
   ) {
-    const resolved = companyId || req.user.companyId;
-    return this.attendantService.createWhatsappInstance(resolved!);
+    return this.attendantService.createWhatsappInstanceForUser(
+      req.user.id,
+      companyId || req.user.companyId,
+    );
   }
 
   @Get('whatsapp/qrcode')
   getWhatsappQRCode(
-    @Req() req: { user: { companyId?: string | null } },
+    @Req() req: { user: { id: string; companyId?: string | null } },
     @Query('companyId') companyId?: string,
   ) {
-    const resolved = companyId || req.user.companyId;
-    return this.attendantService.getWhatsappQRCode(resolved!);
+    return this.attendantService.getWhatsappQRCodeForUser(
+      req.user.id,
+      companyId || req.user.companyId,
+    );
   }
 
   @Get('whatsapp/status')
   getWhatsappStatus(
-    @Req() req: { user: { companyId?: string | null } },
+    @Req() req: { user: { id: string; companyId?: string | null } },
     @Query('companyId') companyId?: string,
   ) {
-    const resolved = companyId || req.user.companyId;
-    return this.attendantService.getWhatsappStatus(resolved!);
+    return this.attendantService.getWhatsappStatusForUser(
+      req.user.id,
+      companyId || req.user.companyId,
+    );
   }
 }

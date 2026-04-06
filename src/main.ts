@@ -1,5 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
+import { RequestMethod } from '@nestjs/common';
 import { Request, Response } from 'express';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
@@ -62,7 +63,9 @@ async function bootstrap() {
     res.status(200).end();
   });
 
-  app.setGlobalPrefix('api');
+  app.setGlobalPrefix('api', {
+    exclude: [{ path: 'webhook/whatsapp', method: RequestMethod.POST }],
+  });
   app.useGlobalPipes(
     new ZodValidationPipe(),
     new ValidationPipe({

@@ -400,6 +400,7 @@ model BotConfig {
   instructions          String?
   isActive              Boolean  @default(true)
   evolutionInstanceName String?
+  evolutionConnectionStatus String @default("Disconnected")
   messageQuotaUsed      Int      @default(0)
   messageQuotaLimit     Int      @default(100)
   createdAt             DateTime @default(now())

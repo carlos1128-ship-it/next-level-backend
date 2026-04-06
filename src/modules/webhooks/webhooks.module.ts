@@ -9,12 +9,14 @@ import { QueueModule } from '../queue/queue.module';
 import { WebhookProcessor } from './webhook-processor';
 import { WebhookQueueService } from './webhook-queue.service';
 import { isRedisConfigured } from '../queue/queue.constants';
+import { EvolutionWebhookController } from './evolution-webhook.controller';
+import { AttendantModule } from '../attendant/attendant.module';
 
 const queueEnabled = isRedisConfigured();
 
 @Module({
-  imports: [IntegrationsModule, QueueModule.register()],
-  controllers: [ShopifyController, WebhooksController],
+  imports: [IntegrationsModule, QueueModule.register(), AttendantModule],
+  controllers: [ShopifyController, WebhooksController, EvolutionWebhookController],
   providers: [
     WebhooksShopifyService,
     WebhooksMetaService,
