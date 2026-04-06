@@ -148,7 +148,13 @@ export class WhatsappService {
         status: qrCode ? 'Connecting' : status,
       };
     } catch (error) {
-      this.logger.error(`Falha ao criar instancia Evolution: ${(error as Error).message}`);
+      if (axios.isAxiosError(error)) {
+        this.logger.error(
+          `Falha ao criar instancia Evolution: status=${error.response?.status ?? 'no-response'} code=${error.code ?? 'unknown'} url=${this.evolutionUrl}/instance/create body=${JSON.stringify(error.response?.data ?? null)}`,
+        );
+      } else {
+        this.logger.error(`Falha ao criar instancia Evolution: ${(error as Error).message}`);
+      }
       throw new BadRequestException('Falha ao criar instancia no Evolution API. Verifique EVOLUTION_API_URL e EVOLUTION_API_KEY.');
     }
   }

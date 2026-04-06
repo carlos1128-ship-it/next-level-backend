@@ -238,7 +238,7 @@ export class AttendantService {
       this.configService.get<string>('APP_URL') ||
       this.configService.get<string>('PUBLIC_API_URL') ||
       'http://localhost:3333';
-    const webhookUrl = `${serverUrl.replace(/\/$/, '')}/webhook/whatsapp?companyId=${companyId}`;
+    const webhookUrl = `${serverUrl.replace(/\/$/, '')}/webhooks/evolution/${companyId}`;
 
     const result = await this.whatsappService.createEvolutionInstance(instanceName, webhookUrl);
     await this.syncEvolutionStatus(companyId, result.status, instanceName);
