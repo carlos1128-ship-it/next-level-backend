@@ -6,7 +6,7 @@
     "dev": "nest start --watch",
     "build": "nest build",
     "start": "node dist/main.js",
-    "start:prod": "node dist/main.js",
+    "start:prod": "prisma migrate deploy && node dist/main.js",
     "smoke": "powershell -ExecutionPolicy Bypass -File scripts/smoke-test.ps1",
     "test:integration": "powershell -ExecutionPolicy Bypass -File scripts/integration-test.ps1",
     "postinstall": "prisma generate",
