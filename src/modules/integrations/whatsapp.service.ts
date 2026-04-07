@@ -157,7 +157,11 @@ export class WhatsappService implements OnModuleDestroy {
       onLoadingScreen: (percent, message) => {
         this.logger.log(`WPPConnect [${companyId}] carregando ${percent}% - ${message}`);
       },
-      browserArgs: ['--no-sandbox', '--disable-setuid-sandbox'],
+      puppeteerOptions: {
+        userDataDir: `.wppconnect/${companyId}`,
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      },
     });
 
     this.getClients().set(companyId, client);
