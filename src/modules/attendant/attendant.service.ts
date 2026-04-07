@@ -1,5 +1,4 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { OnEvent } from '@nestjs/event-emitter';
 import {
   AiChatRole,
@@ -29,7 +28,6 @@ export class AttendantService {
     private readonly whatsappService: WhatsappService,
     private readonly instagramService: InstagramService,
     private readonly alertsService: AlertsService,
-    private readonly configService: ConfigService,
   ) {}
 
   private buildEvolutionInstanceName(userId: string, companyId: string) {
@@ -69,28 +67,6 @@ export class AttendantService {
     }
 
     return owned.id;
-  }
-
-  private async syncEvolutionStatus(
-    companyId: string,
-    status: string,
-    instanceName?: string | null,
-  ) {
-    await this.prisma.botConfig.upsert({
-      where: { companyId },
-      create: {
-        companyId,
-        botName: 'Atendente IA',
-        toneOfVoice: 'amigavel',
-        welcomeMessage: 'Oi! Sou o assistente virtual da empresa, posso ajudar?',
-        evolutionConnectionStatus: status,
-        evolutionInstanceName: instanceName?.trim() || undefined,
-      },
-      update: {
-        evolutionConnectionStatus: status,
-        evolutionInstanceName: instanceName?.trim() || undefined,
-      },
-    });
   }
 
   @OnEvent('webhooks.received')
@@ -212,76 +188,6 @@ export class AttendantService {
     return config?.companyId || null;
   }
 
-  // ─── Evolution API Instance Management ────────────────────────────────────
-
-  async createWhatsappInstanceForUser(userId: string, companyId?: string | null) {
-    const resolvedCompanyId = await this.resolveCompanyIdForUser(userId, companyId);
-    return this.createWhatsappInstance(resolvedCompanyId, userId);
-  }
-
-  async getWhatsappQRCodeForUser(userId: string, companyId?: string | null) {
-    const resolvedCompanyId = await this.resolveCompanyIdForUser(userId, companyId);
-    return this.getWhatsappQRCode(resolvedCompanyId);
-  }
-
-  async getWhatsappStatusForUser(userId: string, companyId?: string | null) {
-    const resolvedCompanyId = await this.resolveCompanyIdForUser(userId, companyId);
-    return this.getWhatsappStatus(resolvedCompanyId);
-  }
-
-  async createWhatsappInstance(companyId: string, userId?: string) {
-    const config = await this.getOrCreateConfig(companyId);
-    const instanceName =
-      config.evolutionInstanceName ||
-      this.buildEvolutionInstanceName(userId || companyId, companyId);
-    const serverUrl =
-      this.configService.get<string>('APP_URL') ||
-      this.configService.get<string>('PUBLIC_API_URL') ||
-      'http://localhost:3333';
-    const webhookUrl = `${serverUrl.replace(/\/$/, '')}/webhooks/evolution/${companyId}`;
-
-    const result = await this.whatsappService.createEvolutionInstance(instanceName, webhookUrl);
-    await this.syncEvolutionStatus(companyId, result.status, instanceName);
-
-    return { instanceName, qrCode: result.qrCode ?? null, status: result.status };
-  }
-
-  async getWhatsappQRCode(companyId: string) {
-    const config = await this.getOrCreateConfig(companyId);
-    if (!config.evolutionInstanceName) {
-      await this.syncEvolutionStatus(companyId, 'Disconnected');
-      return { instanceName: null, status: 'Disconnected', qrCode: null };
-    }
-    const result = await this.whatsappService.getEvolutionQRCode(config.evolutionInstanceName);
-    await this.syncEvolutionStatus(companyId, result.status, config.evolutionInstanceName);
-    return {
-      instanceName: config.evolutionInstanceName,
-      qrCode: result.qrCode ?? null,
-      status: result.status,
-    };
-  }
-
-  async getWhatsappStatus(companyId: string) {
-    const config = await this.getOrCreateConfig(companyId);
-    if (!config.evolutionInstanceName) {
-      await this.syncEvolutionStatus(companyId, 'Disconnected');
-      return {
-        instanceName: null,
-        status: 'Disconnected',
-        quotaUsed: config.messageQuotaUsed,
-        quotaLimit: config.messageQuotaLimit,
-      };
-    }
-    const state = await this.whatsappService.getEvolutionConnectionState(config.evolutionInstanceName);
-    await this.syncEvolutionStatus(companyId, state, config.evolutionInstanceName);
-    return {
-      instanceName: config.evolutionInstanceName,
-      status: state,
-      quotaUsed: config.messageQuotaUsed,
-      quotaLimit: config.messageQuotaLimit,
-    };
-  }
-
   // ─── Core Message Processing ───────────────────────────────────────────────
 
   private async processIncomingMessage(
@@ -292,9 +198,6 @@ export class AttendantService {
     name?: string | null,
   ) {
     const botConfig = await this.getOrCreateConfig(companyId);
-    if (provider === IntegrationProvider.WHATSAPP && botConfig.evolutionInstanceName) {
-      await this.syncEvolutionStatus(companyId, 'Connected', botConfig.evolutionInstanceName);
-    }
     if (!botConfig.isActive) return;
 
     // Verificação de quota (tier freemium)
@@ -379,8 +282,6 @@ export class AttendantService {
     try {
       if (provider === IntegrationProvider.INSTAGRAM) {
         await this.instagramService.sendDm(companyId, externalId, reply);
-      } else if (botConfig.evolutionInstanceName) {
-        await this.whatsappService.sendEvolutionMessage(botConfig.evolutionInstanceName, externalId, reply);
       } else {
         await this.whatsappService.sendTextMessage(companyId, externalId, reply);
       }

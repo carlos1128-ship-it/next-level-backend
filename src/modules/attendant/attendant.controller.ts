@@ -54,36 +54,4 @@ export class AttendantController {
     return this.attendantService.getRoi(resolved!);
   }
 
-  @Post('whatsapp/instance')
-  createWhatsappInstance(
-    @Req() req: { user: { id: string; companyId?: string | null } },
-    @Query('companyId') companyId?: string,
-  ) {
-    return this.attendantService.createWhatsappInstanceForUser(
-      req.user.id,
-      companyId || req.user.companyId,
-    );
-  }
-
-  @Get('whatsapp/qrcode')
-  getWhatsappQRCode(
-    @Req() req: { user: { id: string; companyId?: string | null } },
-    @Query('companyId') companyId?: string,
-  ) {
-    return this.attendantService.getWhatsappQRCodeForUser(
-      req.user.id,
-      companyId || req.user.companyId,
-    );
-  }
-
-  @Get('whatsapp/status')
-  getWhatsappStatus(
-    @Req() req: { user: { id: string; companyId?: string | null } },
-    @Query('companyId') companyId?: string,
-  ) {
-    return this.attendantService.getWhatsappStatusForUser(
-      req.user.id,
-      companyId || req.user.companyId,
-    );
-  }
 }
