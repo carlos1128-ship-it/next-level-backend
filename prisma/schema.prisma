@@ -89,6 +89,8 @@ model Company {
   defaultTaxRate Decimal? @db.Decimal(5, 2)
   metaPhoneNumberId String?
   metaWabaId        String?
+  whatsappSessionName String?
+  whatsappWid        String?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -399,8 +401,6 @@ model BotConfig {
   toneOfVoice           String   @default("amigavel")
   instructions          String?
   isActive              Boolean  @default(true)
-  evolutionInstanceName String?
-  evolutionConnectionStatus String @default("Disconnected")
   messageQuotaUsed      Int      @default(0)
   messageQuotaLimit     Int      @default(100)
   createdAt             DateTime @default(now())

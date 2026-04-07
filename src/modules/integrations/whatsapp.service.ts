@@ -3,12 +3,13 @@ import {
   Injectable,
   Logger,
   OnModuleDestroy,
-  OnModuleInit,
 } from '@nestjs/common';
 import {
   create,
   Whatsapp as WppWhatsapp,
 } from '@wppconnect-team/wppconnect';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { PrismaService } from '../../prisma/prisma.service';
 
 interface SendTemplateInput {
   to: string;
@@ -18,48 +19,81 @@ interface SendTemplateInput {
 }
 
 type GlobalWithWpp = typeof globalThis & {
-  __NEXT_LEVEL_WPP_CLIENT__?: WppWhatsapp;
+  __NEXT_LEVEL_WPP_CLIENTS__?: Map<string, WppWhatsapp>;
 };
 
 @Injectable()
-export class WhatsappService implements OnModuleInit, OnModuleDestroy {
+export class WhatsappService implements OnModuleDestroy {
   private readonly logger = new Logger(WhatsappService.name);
-  private initializingClient?: Promise<WppWhatsapp>;
+  private initializations = new Map<string, Promise<WppWhatsapp>>();
+  private qrCodes = new Map<string, string>();
+  private statuses = new Map<string, string>();
 
-  async onModuleInit() {
-    await this.ensureClient();
-  }
-
-  async onModuleDestroy() {
-    const client = this.getClient();
-    if (!client) return;
-
-    try {
-      await client.close();
-    } catch (error) {
-      this.logger.warn(
-        `Falha ao encerrar cliente WPPConnect: ${(error as Error).message}`,
-      );
+  constructor(
+    private readonly eventEmitter: EventEmitter2,
+    private readonly prisma: PrismaService,
+  ) {
+    if (!(globalThis as GlobalWithWpp).__NEXT_LEVEL_WPP_CLIENTS__) {
+      (globalThis as GlobalWithWpp).__NEXT_LEVEL_WPP_CLIENTS__ = new Map();
     }
   }
 
-  getClient() {
-    return (globalThis as GlobalWithWpp).__NEXT_LEVEL_WPP_CLIENT__;
+  getStatus(companyId: string): string {
+    return this.statuses.get(companyId) || 'Disconnected';
   }
 
-  async sendTextMessage(_companyId: string, to: string, message: string) {
-    const client = await this.ensureClient();
+  async onModuleDestroy() {
+    const clients = this.getClients();
+    for (const [session, client] of clients.entries()) {
+      try {
+        await client.close();
+      } catch (error) {
+        this.logger.warn(`Falha ao encerrar cliente WPPConnect [${session}]: ${(error as Error).message}`);
+      }
+    }
+  }
+
+  private getClients() {
+    return (globalThis as GlobalWithWpp).__NEXT_LEVEL_WPP_CLIENTS__!;
+  }
+
+  getClient(companyId: string): WppWhatsapp | undefined {
+    return this.getClients().get(companyId);
+  }
+
+  getQrCode(companyId: string): string | null {
+    return this.qrCodes.get(companyId) || null;
+  }
+
+  async createSession(companyId: string): Promise<{ success: boolean; message: string }> {
+    const existing = this.getClient(companyId);
+    if (existing) {
+      return { success: true, message: 'Session já conectada' };
+    }
+
+    if (!this.initializations.has(companyId)) {
+      this.initializations.set(companyId, this.bootstrapClient(companyId));
+    }
+
+    return { success: true, message: 'Sessão iniciada' };
+  }
+
+  async sendTextMessage(companyId: string, to: string, message: string) {
+    const client = this.getClient(companyId);
+    if (!client) throw new BadRequestException('WhatsApp não conectado');
     const recipient = this.normalizeRecipient(to);
     await client.sendText(recipient, message);
     return { sent: true };
   }
 
-  async sendTemplateMessage(_companyId: string, payload: SendTemplateInput) {
+  async sendTemplateMessage(companyId: string, payload: SendTemplateInput) {
     if (!payload.template) {
       throw new BadRequestException('template obrigatorio');
     }
 
-    const client = await this.ensureClient();
+    const client = this.getClient(companyId);
+    if (!client) throw new BadRequestException('WhatsApp não conectado');
+
     const recipient = this.normalizeRecipient(payload.to);
     const body = [
       `Template: ${payload.template}`,
@@ -81,47 +115,69 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  private async ensureClient(): Promise<WppWhatsapp> {
-    const existing = this.getClient();
-    if (existing) return existing;
-
-    if (!this.initializingClient) {
-      this.initializingClient = this.bootstrapClient();
-    }
-
-    return this.initializingClient;
-  }
-
-  private async bootstrapClient(): Promise<WppWhatsapp> {
-    this.logger.log('Inicializando sessao local do WhatsApp via WPPConnect...');
+  private async bootstrapClient(companyId: string): Promise<WppWhatsapp> {
+    this.logger.log(`Inicializando sessao do WhatsApp [${companyId}] via WPPConnect...`);
 
     const client = await create({
-      session: process.env.WPPCONNECT_SESSION || 'next-level-local',
+      session: companyId,
       headless: this.resolveHeadless(),
-      logQR: true,
+      logQR: false,
       updatesLog: true,
       autoClose: 0,
       waitForLogin: false,
       disableWelcome: true,
       folderNameToken: '.wppconnect',
-      catchQR: (_base64Qr, asciiQR, attempt) => {
-        this.logger.log(`QR Code do WhatsApp gerado. Tentativa ${attempt}.`);
-        console.log('\n=== QR CODE WPPCONNECT ===\n');
-        console.log(asciiQR);
-        console.log('\n=========================\n');
+      catchQR: (base64Qr, asciiQR, attempt) => {
+        this.logger.log(`QR Code gerado para [${companyId}]. Tentativa ${attempt}.`);
+        this.qrCodes.set(companyId, base64Qr);
       },
-      statusFind: (status, session) => {
-        this.logger.log(`WPPConnect status=${String(status)} session=${session}`);
+      statusFind: async (status, session) => {
+        this.logger.log(`WPPConnect [${session}] status=${String(status)}`);
+        
+        if (status === 'isLogged' || status === 'inChat') {
+          this.statuses.set(companyId, 'Connected');
+          this.qrCodes.delete(companyId);
+          try {
+            const hostDevice = await client.getHostDevice();
+            const widStr = typeof hostDevice.wid === 'string' ? hostDevice.wid : (hostDevice.wid as any)?._serialized || (hostDevice.id as any)?._serialized;
+            if (widStr) {
+              await this.prisma.company.update({
+                where: { id: session },
+                data: {
+                  whatsappSessionName: session,
+                  whatsappWid: String(widStr),
+                },
+              });
+            }
+          } catch (e) {
+            this.logger.warn(`Erro ao salvar WID [${session}]: ${(e as Error).message}`);
+          }
+        }
       },
       onLoadingScreen: (percent, message) => {
-        this.logger.log(`WPPConnect carregando ${percent}% - ${message}`);
+        this.logger.log(`WPPConnect [${companyId}] carregando ${percent}% - ${message}`);
       },
       browserArgs: ['--no-sandbox', '--disable-setuid-sandbox'],
     });
 
-    (globalThis as GlobalWithWpp).__NEXT_LEVEL_WPP_CLIENT__ = client;
-    this.initializingClient = undefined;
-    this.logger.log('Cliente WPPConnect pronto para envio com client.sendText().');
+    this.getClients().set(companyId, client);
+    this.initializations.delete(companyId);
+    this.logger.log(`Cliente WPPConnect [${companyId}] pronto para envio.`);
+
+    client.onMessage(async (message) => {
+      if (message.isGroupMsg) return;
+
+      const content = message.body || '';
+      const from = message.from;
+      const name = message.sender?.pushname || message.sender?.name;
+      
+      this.eventEmitter.emit('whatsapp.message.received', {
+        companyId,
+        from,
+        text: content,
+        name,
+      });
+    });
 
     return client;
   }
@@ -131,16 +187,13 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     if (!trimmed) {
       throw new BadRequestException('numero de destino obrigatorio');
     }
-
     if (trimmed.includes('@')) {
       return trimmed;
     }
-
     const digits = trimmed.replace(/\D/g, '');
     if (!digits) {
       throw new BadRequestException('numero de destino invalido');
     }
-
     return `${digits}@c.us`;
   }
 

@@ -30,12 +30,6 @@ export class AttendantService {
     private readonly alertsService: AlertsService,
   ) {}
 
-  private buildEvolutionInstanceName(userId: string, companyId: string) {
-    const userToken = userId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toLowerCase();
-    const companyToken = companyId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 10).toLowerCase();
-    return `nl-${userToken}-${companyToken}`;
-  }
-
   private async resolveCompanyIdForUser(userId: string, companyId?: string | null) {
     const normalizedCompanyId = companyId?.trim();
 
@@ -96,8 +90,6 @@ export class AttendantService {
     let messages: Array<{ from: string; text: string; name?: string | null }>;
     if (payload.provider === IntegrationProvider.INSTAGRAM) {
       messages = this.extractInstagramMessages(rawPayload);
-    } else if (this.isEvolutionPayload(rawPayload)) {
-      messages = this.extractEvolutionMessages(rawPayload);
     } else {
       messages = this.extractWhatsappMessages(rawPayload);
     }
@@ -176,19 +168,43 @@ export class AttendantService {
     };
   }
 
-  async findCompanyIdByInstanceName(instanceName: string) {
-    const normalized = instanceName.trim();
-    if (!normalized) return null;
+  // ─── Core Message Processing ───────────────────────────────────────────────
 
-    const config = await this.prisma.botConfig.findFirst({
-      where: { evolutionInstanceName: normalized },
-      select: { companyId: true },
-    });
-
-    return config?.companyId || null;
+  async createWhatsappSession(companyId: string) {
+    return this.whatsappService.createSession(companyId);
   }
 
-  // ─── Core Message Processing ───────────────────────────────────────────────
+  async getWhatsappQrCode(companyId: string) {
+    const base64 = this.whatsappService.getQrCode(companyId);
+    return { qrCode: base64, status: base64 ? 'WAITING_QR' : 'CONNECTING' };
+  }
+
+  async getWhatsappStatus(companyId: string) {
+    const status = this.whatsappService.getStatus(companyId);
+    const qrCode = this.whatsappService.getQrCode(companyId);
+    return {
+      status,
+      qrCode,
+      quotaUsed: 0,
+      quotaLimit: 10000,
+    };
+  }
+
+  @OnEvent('whatsapp.message.received')
+  async handleWhatsappMessage(payload: {
+    companyId: string;
+    from: string;
+    text: string;
+    name?: string;
+  }) {
+    await this.processIncomingMessage(
+      payload.companyId,
+      IntegrationProvider.WHATSAPP,
+      payload.from,
+      payload.text,
+      payload.name,
+    );
+  }
 
   private async processIncomingMessage(
     companyId: string,
@@ -437,47 +453,11 @@ export class AttendantService {
         botName: 'Atendente IA',
         toneOfVoice: 'amigavel',
         welcomeMessage: 'Oi! Sou o assistente virtual da empresa, posso ajudar?',
-        evolutionConnectionStatus: 'Disconnected',
       },
     });
   }
 
   // ─── Payload Extraction ────────────────────────────────────────────────────
-
-  /** Detecta se o payload é do Evolution API (vs Meta Cloud API) */
-  private isEvolutionPayload(payload: Record<string, unknown>): boolean {
-    return typeof payload['event'] === 'string' && payload['event'] === 'messages.upsert';
-  }
-
-  /** Extrai mensagens do formato Evolution API */
-  private extractEvolutionMessages(payload: Record<string, unknown>) {
-    const messages: Array<{ from: string; text: string; name?: string | null }> = [];
-    const data = payload['data'] as Record<string, unknown> | undefined;
-    if (!data) return messages;
-
-    const key = data['key'] as Record<string, unknown> | undefined;
-    if (key?.['fromMe'] === true) return messages;
-
-    const remoteJid = typeof key?.['remoteJid'] === 'string' ? key['remoteJid'] : '';
-    // Extrai número limpo de "5511999999999@s.whatsapp.net"
-    const from = remoteJid.split('@')[0] || '';
-
-    const message = data['message'] as Record<string, unknown> | undefined;
-    const text =
-      typeof message?.['conversation'] === 'string'
-        ? message['conversation']
-        : typeof (message?.['extendedTextMessage'] as Record<string, unknown> | undefined)?.['text'] === 'string'
-          ? ((message?.['extendedTextMessage'] as Record<string, unknown>)['text'] as string)
-          : '';
-
-    const name = typeof data['pushName'] === 'string' ? data['pushName'] : null;
-
-    if (from && text) {
-      messages.push({ from, text, name });
-    }
-
-    return messages;
-  }
 
   private extractWhatsappMessages(payload: Record<string, unknown>) {
     const messages: Array<{ from: string; text: string; name?: string | null }> = [];

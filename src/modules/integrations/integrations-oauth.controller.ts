@@ -17,8 +17,7 @@ import { ActiveCompanyGuard } from '../../common/guards/active-company.guard';
 type OAuthProvider =
   | 'whatsapp'
   | 'instagram'
-  | 'mercadolivre'
-  | 'mercadopago';
+  | 'mercadolivre';
 
 interface OAuthStatePayload {
   provider: OAuthProvider;
@@ -29,27 +28,24 @@ interface OAuthStatePayload {
 }
 
 const OAUTH_ROUTE_PARAM =
-  ':provider(whatsapp|instagram|mercadolivre|mercadopago)';
+  ':provider(whatsapp|instagram|mercadolivre)';
 
 const PROVIDER_LABELS: Record<OAuthProvider, string> = {
   whatsapp: 'WhatsApp',
   instagram: 'Instagram',
   mercadolivre: 'Mercado Livre',
-  mercadopago: 'Mercado Pago',
 };
 
 const PROVIDER_ENV_PREFIX: Record<OAuthProvider, string> = {
   whatsapp: 'WHATSAPP',
   instagram: 'INSTAGRAM',
   mercadolivre: 'MERCADOLIVRE',
-  mercadopago: 'MERCADOPAGO',
 };
 
 const PROVIDER_SCOPES: Record<OAuthProvider, string> = {
   whatsapp: 'whatsapp_business_management whatsapp_business_messaging',
   instagram: 'instagram_basic instagram_manage_messages pages_manage_metadata',
   mercadolivre: 'offline_access read write',
-  mercadopago: 'offline_access payments',
 };
 
 @Controller('auth')
@@ -274,8 +270,7 @@ export class IntegrationsOAuthController {
     if (
       normalized !== 'whatsapp' &&
       normalized !== 'instagram' &&
-      normalized !== 'mercadolivre' &&
-      normalized !== 'mercadopago'
+      normalized !== 'mercadolivre'
     ) {
       throw new BadRequestException('Provedor OAuth invalido');
     }

@@ -20,3 +20,17 @@ yarn-error.log*
 Thumbs.db
 .vscode/
 prisma/migrations_archived/
+
+# Dependências e Builds
+node_modules/
+dist/
+
+# Arquivos de Sessão do WPPConnect
+.wppconnect/
+tokens/
+BrowserMetrics-spare.pma
+DevToolsActivePort
+
+# Logs e Cache
+*.log
+.npm

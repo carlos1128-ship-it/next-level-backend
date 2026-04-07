@@ -54,4 +54,31 @@ export class AttendantController {
     return this.attendantService.getRoi(resolved!);
   }
 
+  @Post('whatsapp/instance')
+  createWhatsappInstance(
+    @Req() req: { user: { companyId?: string | null } },
+    @Query('companyId') companyId?: string,
+  ) {
+    const resolved = companyId || req.user.companyId;
+    return this.attendantService.createWhatsappSession(resolved!);
+  }
+
+  @Get('whatsapp/qrcode')
+  getWhatsappQrCode(
+    @Req() req: { user: { companyId?: string | null } },
+    @Query('companyId') companyId?: string,
+  ) {
+    const resolved = companyId || req.user.companyId;
+    return this.attendantService.getWhatsappQrCode(resolved!);
+  }
+
+  @Get('whatsapp/status')
+  getWhatsappStatus(
+    @Req() req: { user: { companyId?: string | null } },
+    @Query('companyId') companyId?: string,
+  ) {
+    const resolved = companyId || req.user.companyId;
+    return this.attendantService.getWhatsappStatus(resolved!);
+  }
+
 }
