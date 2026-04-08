@@ -121,8 +121,8 @@ export class WhatsappService implements OnModuleDestroy {
 
     const client = await create({
       session: companyId,
-      useChrome: true,
-      headless: this.resolveHeadless(),
+      useChrome: false, // Força o uso do executablePath abaixo
+      headless: 'new' as any,
       logQR: false,
       updatesLog: true,
       autoClose: 0,
@@ -162,16 +162,15 @@ export class WhatsappService implements OnModuleDestroy {
       puppeteerOptions: {
         userDataDir: `.wppconnect/${companyId}`,
         headless: 'new' as any,
+        // Prioriza a variável do Render, depois o caminho padrão do Linux
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome',
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
-          '--disable-accelerated-2d-canvas',
-          '--no-first-run',
+          '--disable-gpu',
           '--no-zygote',
-          '--single-process', // Essencial para economizar RAM no plano free do Render
-          '--disable-gpu'
+          '--single-process'
         ],
       },
     });
