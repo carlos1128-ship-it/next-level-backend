@@ -48,7 +48,7 @@ async function bootstrap() {
   const expressApp = app.getHttpAdapter().getInstance();
   const trustProxy = parseTrustProxy(
     process.env.TRUST_PROXY ??
-      (process.env.NODE_ENV === 'production' ? '1' : 'false'),
+    (process.env.NODE_ENV === 'production' ? '1' : 'false'),
   );
 
   expressApp.get('/', (_req: Request, res: Response) => {
@@ -105,6 +105,12 @@ async function bootstrap() {
     allowedHeaders: ['Content-Type', 'Authorization'],
   });
 
-  await app.listen(process.env.PORT || 3333);
+  const port = process.env.PORT || 3333;
+  await app.listen(port, '0.0.0.0');
+  const url = await app.getUrl();
+  console.log(`🚀 Application is running on: ${url}`);
+  console.log(`📡 Listening on port: ${port}`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`✅ Ready to accept connections`);
 }
 bootstrap();

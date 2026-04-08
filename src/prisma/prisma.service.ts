@@ -28,13 +28,13 @@ function normalizeDatabaseUrl(raw: string | undefined): string | undefined {
 }
 
 function resolveRetryCount(): number {
-  const fallback = process.env.NODE_ENV === 'production' ? 5 : 1;
+  const fallback = process.env.NODE_ENV === 'production' ? 3 : 1;
   const parsed = Number(process.env.PRISMA_CONNECT_RETRIES ?? fallback);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function resolveRetryDelayMs(): number {
-  const fallback = 3000;
+  const fallback = 1500;
   const parsed = Number(process.env.PRISMA_CONNECT_RETRY_DELAY_MS ?? fallback);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
@@ -55,20 +55,25 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   private readonly columnAvailabilityWarned = new Set<string>();
 
   async onModuleInit(): Promise<void> {
+    const startTime = Date.now();
     const maxAttempts = resolveRetryCount();
     const retryDelayMs = resolveRetryDelayMs();
+
+    this.logger.log(`Iniciando conexao com banco de dados (max ${maxAttempts} tentativas)...`);
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
         await this.$connect();
         await this.$queryRaw`SELECT 1`;
-        this.logger.log('Conexao com banco validada no startup');
+        const elapsed = Date.now() - startTime;
+        this.logger.log(`Conexao com banco validada em ${elapsed}ms`);
         return;
       } catch (error) {
         const isLastAttempt = attempt === maxAttempts;
+        const elapsed = Date.now() - startTime;
 
         this.logger.error(
-          `Falha ao conectar no banco de dados (tentativa ${attempt}/${maxAttempts})`,
+          `Falha ao conectar no banco de dados (tentativa ${attempt}/${maxAttempts}, ${elapsed}ms)`,
           error as Error,
         );
 
