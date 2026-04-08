@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  InternalServerErrorException,
   Logger,
   OnModuleDestroy,
 } from '@nestjs/common';
@@ -77,6 +78,41 @@ export class WhatsappService implements OnModuleDestroy {
     }
 
     return { success: true, message: 'Sessão iniciada' };
+  }
+
+  async logoutSession(companyId: string) {
+    const client = this.getClient(companyId);
+    if (!client) {
+      // Se não tem cliente na memória, ainda limpamos o banco por segurança
+      await this.prisma.company.update({
+        where: { id: companyId },
+        data: { whatsappSessionName: null, whatsappWid: null }
+      });
+      return { success: true, message: 'Sessão resetada no banco' };
+    }
+
+    try {
+      await client.logout();
+      await client.close();
+      this.getClients().delete(companyId);
+      this.statuses.delete(companyId);
+      this.qrCodes.delete(companyId);
+
+      await this.prisma.company.update({
+        where: { id: companyId },
+        data: { 
+          whatsappSessionName: null,
+          whatsappWid: null 
+        }
+      });
+
+      return { success: true, message: 'Desconectado com sucesso' };
+    } catch (error) {
+      this.logger.error(`Erro ao desconectar [${companyId}]: ${(error as Error).message}`);
+      // Em caso de erro no logout (ex: browser já fechado), limpamos a memória
+      this.getClients().delete(companyId);
+      throw new InternalServerErrorException('Falha ao desconectar sessão');
+    }
   }
 
   async sendTextMessage(companyId: string, to: string, message: string) {
