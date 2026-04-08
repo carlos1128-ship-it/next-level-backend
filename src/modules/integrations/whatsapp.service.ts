@@ -119,6 +119,29 @@ export class WhatsappService implements OnModuleDestroy {
   private async bootstrapClient(companyId: string): Promise<WppWhatsapp> {
     this.logger.log(`Inicializando sessao do WhatsApp [${companyId}] via WPPConnect...`);
 
+    this.logger.log(`Detectando executavel do Chrome/Chromium...`);
+    const possiblePaths = [
+      process.env.PUPPETEER_EXECUTABLE_PATH,
+      puppeteer.executablePath(),
+      '/usr/bin/google-chrome',
+      '/usr/bin/chromium-browser',
+      '/usr/bin/chromium',
+    ].filter(Boolean) as string[];
+
+    let resolvedPath: string | undefined;
+    for (const p of possiblePaths) {
+      if (require('fs').existsSync(p)) {
+        resolvedPath = p;
+        this.logger.log(`Navegador encontrado em: ${p}`);
+        break;
+      }
+    }
+
+    if (!resolvedPath) {
+      this.logger.warn(`Nenhum binario encontrado nos caminhos conhecidos. Tentando padrao do puppeteer.`);
+      resolvedPath = puppeteer.executablePath();
+    }
+
     const client = await create({
       session: companyId,
       useChrome: true,
@@ -143,9 +166,9 @@ export class WhatsappService implements OnModuleDestroy {
             const hostDevice = await client.getHostDevice();
             const widStr = typeof hostDevice.wid === 'string' ? hostDevice.wid : (hostDevice.wid as any)?._serialized || (hostDevice.id as any)?._serialized;
             if (widStr) {
-              await this.prisma.company.update({
-                where: { id: session },
-                data: {
+               await this.prisma.company.update({
+                where: { id: companyId },
+                data: { 
                   whatsappSessionName: session,
                   whatsappWid: String(widStr),
                 },
@@ -161,7 +184,7 @@ export class WhatsappService implements OnModuleDestroy {
       },
       puppeteerOptions: {
         userDataDir: `.wppconnect/${companyId}`,
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || puppeteer.executablePath(),
+        executablePath: resolvedPath,
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
