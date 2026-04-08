@@ -119,29 +119,6 @@ export class WhatsappService implements OnModuleDestroy {
   private async bootstrapClient(companyId: string): Promise<WppWhatsapp> {
     this.logger.log(`Inicializando sessao do WhatsApp [${companyId}] via WPPConnect...`);
 
-    this.logger.log(`Detectando executavel do Chrome/Chromium...`);
-    const possiblePaths = [
-      process.env.PUPPETEER_EXECUTABLE_PATH,
-      puppeteer.executablePath(),
-      '/usr/bin/google-chrome',
-      '/usr/bin/chromium-browser',
-      '/usr/bin/chromium',
-    ].filter(Boolean) as string[];
-
-    let resolvedPath: string | undefined;
-    for (const p of possiblePaths) {
-      if (require('fs').existsSync(p)) {
-        resolvedPath = p;
-        this.logger.log(`Navegador encontrado em: ${p}`);
-        break;
-      }
-    }
-
-    if (!resolvedPath) {
-      this.logger.warn(`Nenhum binario encontrado nos caminhos conhecidos. Tentando padrao do puppeteer.`);
-      resolvedPath = puppeteer.executablePath();
-    }
-
     const client = await create({
       session: companyId,
       useChrome: true,
@@ -184,15 +161,17 @@ export class WhatsappService implements OnModuleDestroy {
       },
       puppeteerOptions: {
         userDataDir: `.wppconnect/${companyId}`,
-        executablePath: resolvedPath,
+        headless: 'new' as any,
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome',
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
-          '--disable-gpu',
+          '--disable-accelerated-2d-canvas',
           '--no-first-run',
           '--no-zygote',
-          '--single-process',
+          '--single-process', // Essencial para economizar RAM no plano free do Render
+          '--disable-gpu'
         ],
       },
     });
