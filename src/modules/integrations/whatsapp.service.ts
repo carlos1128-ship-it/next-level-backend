@@ -100,9 +100,9 @@ export class WhatsappService implements OnModuleDestroy {
 
       await this.prisma.company.update({
         where: { id: companyId },
-        data: { 
+        data: {
           whatsappSessionName: null,
-          whatsappWid: null 
+          whatsappWid: null
         }
       });
 
@@ -117,7 +117,7 @@ export class WhatsappService implements OnModuleDestroy {
 
   async terminateSession(companyId: string) {
     const client = this.getClient(companyId);
-    
+
     if (client) {
       try {
         await client.close();
@@ -191,7 +191,7 @@ export class WhatsappService implements OnModuleDestroy {
       },
       statusFind: async (status, session) => {
         this.logger.log(`WPPConnect [${session}] status=${String(status)}`);
-        
+
         if (status === 'isLogged' || status === 'inChat') {
           this.statuses.set(companyId, 'Connected');
           this.qrCodes.delete(companyId);
@@ -199,9 +199,9 @@ export class WhatsappService implements OnModuleDestroy {
             const hostDevice = await client.getHostDevice();
             const widStr = typeof hostDevice.wid === 'string' ? hostDevice.wid : (hostDevice.wid as any)?._serialized || (hostDevice.id as any)?._serialized;
             if (widStr) {
-               await this.prisma.company.update({
+              await this.prisma.company.update({
                 where: { id: companyId },
-                data: { 
+                data: {
                   whatsappSessionName: session,
                   whatsappWid: String(widStr),
                 },
@@ -231,6 +231,13 @@ export class WhatsappService implements OnModuleDestroy {
       },
     });
 
+    // Verificação de race condition: se a sessão foi abortada durante a inicialização
+    if (!this.initializations.has(companyId) && !this.getClients().has(companyId)) {
+      this.logger.warn(`Sessão [${companyId}] foi abortada durante a inicialização. Matando o processo zumbi...`);
+      await client.close();
+      return client;
+    }
+
     this.getClients().set(companyId, client);
     this.initializations.delete(companyId);
     this.logger.log(`Cliente WPPConnect [${companyId}] pronto para envio.`);
@@ -241,7 +248,7 @@ export class WhatsappService implements OnModuleDestroy {
       const content = message.body || '';
       const from = message.from;
       const name = message.sender?.pushname || message.sender?.name;
-      
+
       this.eventEmitter.emit('whatsapp.message.received', {
         companyId,
         from,
