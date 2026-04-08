@@ -8,6 +8,7 @@ import {
   create,
   Whatsapp as WppWhatsapp,
 } from '@wppconnect-team/wppconnect';
+import puppeteer from 'puppeteer';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../../prisma/prisma.service';
 
@@ -160,7 +161,7 @@ export class WhatsappService implements OnModuleDestroy {
       },
       puppeteerOptions: {
         userDataDir: `.wppconnect/${companyId}`,
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || puppeteer.executablePath(),
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
