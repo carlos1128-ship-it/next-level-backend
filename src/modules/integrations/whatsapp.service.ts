@@ -115,6 +115,26 @@ export class WhatsappService implements OnModuleDestroy {
     }
   }
 
+  async terminateSession(companyId: string) {
+    const client = this.getClient(companyId);
+    
+    if (client) {
+      try {
+        await client.close();
+      } catch (error) {
+        this.logger.error(`[WhatsappService] Erro ao fechar cliente [${companyId}]: ${(error as Error).message}`);
+      }
+    }
+
+    this.getClients().delete(companyId);
+    this.initializations.delete(companyId);
+    this.statuses.delete(companyId);
+    this.qrCodes.delete(companyId);
+
+    this.logger.log(`[WhatsappService] Sessão [${companyId}] encerrada pelo usuário.`);
+    return { success: true };
+  }
+
   async sendTextMessage(companyId: string, to: string, message: string) {
     const client = this.getClient(companyId);
     if (!client) throw new BadRequestException('WhatsApp não conectado');

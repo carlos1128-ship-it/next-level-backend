@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
 import { ActiveCompanyGuard } from '../../common/guards/active-company.guard';
 import { AttendantService } from './attendant.service';
 import { UpdateBotConfigDto } from './dto/update-bot-config.dto';
@@ -79,6 +79,13 @@ export class AttendantController {
   ) {
     const resolved = companyId || req.user.companyId;
     return this.attendantService.getWhatsappStatus(resolved!);
+  }
+
+  @Delete('whatsapp/session/:companyId')
+  terminateWhatsappSession(
+    @Param('companyId') companyId: string,
+  ) {
+    return this.attendantService.terminateWhatsappSession(companyId);
   }
 
 }
