@@ -183,7 +183,6 @@ export class WhatsappService implements OnModuleDestroy {
       updatesLog: true,
       autoClose: 120000, // Se ninguém ler em 2 minutos, mata o processo sozinho
       waitForLogin: true, // Espera o login completar antes de retornar
-      qrTimeout: 60000, // Dá 1 minuto para cada QR Code antes de expirar
       disableWelcome: true,
       folderNameToken: '.wppconnect',
       catchQR: (base64Qr, asciiQR, attempt) => {
