@@ -181,13 +181,16 @@ export class WhatsappService implements OnModuleDestroy {
       headless: 'new' as any,
       logQR: false,
       updatesLog: true,
-      autoClose: 0,
-      waitForLogin: false,
+      autoClose: 120000, // Se ninguém ler em 2 minutos, mata o processo sozinho
+      waitForLogin: true, // Espera o login completar antes de retornar
+      qrTimeout: 60000, // Dá 1 minuto para cada QR Code antes de expirar
       disableWelcome: true,
       folderNameToken: '.wppconnect',
       catchQR: (base64Qr, asciiQR, attempt) => {
         this.logger.log(`QR Code gerado para [${companyId}]. Tentativa ${attempt}.`);
-        this.qrCodes.set(companyId, base64Qr);
+        // Garante o prefixo data URI correto para o frontend
+        const qrCodeData = base64Qr.startsWith('data:') ? base64Qr : `data:image/png;base64,${base64Qr}`;
+        this.qrCodes.set(companyId, qrCodeData);
       },
       statusFind: async (status, session) => {
         this.logger.log(`WPPConnect [${session}] status=${String(status)}`);
@@ -224,9 +227,14 @@ export class WhatsappService implements OnModuleDestroy {
           '--no-sandbox',
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
-          '--disable-gpu',
+          '--disable-accelerated-2d-canvas',
+          '--no-first-run',
           '--no-zygote',
-          '--single-process'
+          '--single-process',
+          '--disable-gpu',
+          '--disable-extensions', // Desativa extensões que pesam
+          '--disable-default-apps',
+          '--no-default-browser-check',
         ],
       },
     });
