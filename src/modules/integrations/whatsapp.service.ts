@@ -120,6 +120,7 @@ export class WhatsappService implements OnModuleDestroy {
 
     const client = await create({
       session: companyId,
+      useChrome: true,
       headless: this.resolveHeadless(),
       logQR: false,
       updatesLog: true,
@@ -160,7 +161,15 @@ export class WhatsappService implements OnModuleDestroy {
       puppeteerOptions: {
         userDataDir: `.wppconnect/${companyId}`,
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--no-first-run',
+          '--no-zygote',
+          '--single-process',
+        ],
       },
     });
 
