@@ -11,11 +11,23 @@ import {
 import { ActiveCompanyGuard } from '../../common/guards/active-company.guard';
 import { ConnectIntegrationDto } from './dto/connect-integration.dto';
 import { IntegrationsService } from './integrations.service';
+import { ShopeeScraperService } from './shopee-scraper.service';
 
 @Controller('integrations')
 @UseGuards(ActiveCompanyGuard)
 export class IntegrationsController {
-  constructor(private readonly integrationsService: IntegrationsService) {}
+  constructor(
+    private readonly integrationsService: IntegrationsService,
+    private readonly shopeeScraper: ShopeeScraperService
+  ) {}
+
+  @Get('shopee/orders')
+  async shopeeOrders(
+    @Query('companyId') companyId: string,
+  ) {
+    const orders = await this.shopeeScraper.getRecentOrders(companyId);
+    return { data: orders };
+  }
 
   @Get('status')
   async status(

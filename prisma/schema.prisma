@@ -92,6 +92,11 @@ model Company {
   metaWabaId        String?
   whatsappSessionName String?
   whatsappWid        String?
+  shopeeShopId       String?
+  shopeeAccessToken  String?
+  shopeeRefreshToken String?
+  shopeeTokenExpiresAt DateTime?
+  shopeeCookies      String? @db.Text
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 

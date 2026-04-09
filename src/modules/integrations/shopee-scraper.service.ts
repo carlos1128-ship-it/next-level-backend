@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { Browser, Page, Cookie } from 'puppeteer';
+import { PrismaService } from '../../prisma/prisma.service';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -17,36 +18,38 @@ export interface ShopeeOrder {
 @Injectable()
 export class ShopeeScraperService {
   private readonly logger = new Logger(ShopeeScraperService.name);
-  private readonly sessionPath = path.join(process.cwd(), '.shopee_session.json');
   private browser: Browser | null = null;
 
-  async getRecentOrders(): Promise<ShopeeOrder[]> {
-    const page = await this.initPage();
+  constructor(private readonly prisma: PrismaService) {}
+
+  async getRecentOrders(companyId: string): Promise<ShopeeOrder[]> {
+    const page = await this.initPage(companyId);
     
     try {
-      this.logger.log('Navigating to Shopee Seller Center Orders page...');
-      // URL for Brazilian Seller Center Orders
+      this.logger.log(`[${companyId}] Navigating to Shopee Seller Center Orders...`);
       await page.goto('https://seller.shopee.com.br/portal/sale/order', { waitUntil: 'networkidle2' });
 
       // Check if we need to login
-      if (page.url().includes('account/signin')) {
-        this.logger.warn('Session expired or not found. Attempting login...');
-        await this.login(page);
+      if (page.url().includes('account/signin') || page.url().includes('signin')) {
+        this.logger.warn(`[${companyId}] Session expired or not found. Attempting login...`);
+        await this.login(page, companyId);
+        
         // After login, navigate back to orders if not redirected
         if (!page.url().includes('portal/sale/order')) {
           await page.goto('https://seller.shopee.com.br/portal/sale/order', { waitUntil: 'networkidle2' });
         }
       }
 
-      this.logger.log('Extracting orders...');
+      this.logger.log(`[${companyId}] Extracting orders via XHR & DOM...`);
       
       let capturedOrders: ShopeeOrder[] = [];
 
-      // Intercept XHR response for orders
+      // Intercept XHR response for orders - api/v3/order/get_order_list
       const orderXhrPromise = new Promise<void>((resolve) => {
         page.on('response', async (response) => {
           const url = response.url();
-          if (url.includes('api/v2/order/get_order_list') || url.includes('api/v2/orders')) {
+          // Update to v3 and v2 fallback
+          if (url.includes('api/v3/order/get_order_list') || url.includes('api/v2/order/get_order_list')) {
             try {
               const data = await response.json();
               if (data?.data?.order_list) {
@@ -56,7 +59,7 @@ export class ShopeeScraperService {
                   totalAmount: order.total_amount,
                   customerName: order.buyer_user?.user_name || 'N/A'
                 }));
-                this.logger.log(`Intercepted ${capturedOrders.length} orders from XHR`);
+                this.logger.log(`[${companyId}] Intercepted ${capturedOrders.length} orders from XHR`);
                 resolve();
               }
             } catch (e) {
@@ -69,7 +72,7 @@ export class ShopeeScraperService {
       // Wait for a bit to allow XHR to fire, or fallback to DOM
       await Promise.race([
         orderXhrPromise,
-        new Promise(resolve => setTimeout(resolve, 5000)) // Wait max 5 seconds for XHR
+        new Promise(resolve => setTimeout(resolve, 8000)) // Wait max 8 seconds for XHR
       ]);
 
       if (capturedOrders.length > 0) {
@@ -77,12 +80,12 @@ export class ShopeeScraperService {
       }
 
       // Fallback to DOM extraction
-      this.logger.warn('XHR interception failed or timed out. Falling back to DOM scraping...');
-      await page.waitForSelector('.order-list-item', { timeout: 10000 }).catch(() => {
-        this.logger.error('Order list selector not found.');
+      this.logger.warn(`[${companyId}] XHR interception failed or timed out. Falling back to DOM...`);
+      await page.waitForSelector('.order-list-item', { timeout: 10000 }).catch(async () => {
+        this.logger.error(`[${companyId}] Order list selector not found. Saving debug screenshot.`);
+        await this.saveScreenshot(page, 'debug-shopee');
       });
 
-      // Simple DOM extraction as a baseline
       const orders = await page.evaluate(() => {
         const items = Array.from(document.querySelectorAll('.order-list-item'));
         return items.map(item => {
@@ -90,8 +93,6 @@ export class ShopeeScraperService {
           const status = item.querySelector('.order-status')?.textContent?.trim() || 'N/A';
           const totalAmountStr = item.querySelector('.order-total-price')?.textContent?.trim() || '0';
           const customerName = item.querySelector('.buyer-name')?.textContent?.trim() || 'N/A';
-          
-          // Basic number cleanup for BRL
           const totalAmount = parseFloat(totalAmountStr.replace(/[^\d,.]/g, '').replace(',', '.'));
 
           return {
@@ -105,8 +106,8 @@ export class ShopeeScraperService {
 
       return orders;
     } catch (error) {
-      this.logger.error(`Failed to get recent orders: ${error.message}`);
-      await this.saveScreenshot(page, 'orders_error');
+      this.logger.error(`[${companyId}] Failed to get recent orders: ${error.message}`);
+      await this.saveScreenshot(page, 'debug-shopee');
       throw error;
     } finally {
       if (this.browser) {
@@ -116,7 +117,7 @@ export class ShopeeScraperService {
     }
   }
 
-  private async login(page: Page) {
+  private async login(page: Page, companyId: string) {
     const user = process.env.SHOPEE_USER;
     const pass = process.env.SHOPEE_PASS;
 
@@ -125,15 +126,15 @@ export class ShopeeScraperService {
     }
 
     try {
-      this.logger.log('Filling login form...');
+      this.logger.log(`[${companyId}] Filling login form...`);
       await page.waitForSelector('input[name="identifier"]');
-      await page.type('input[name="identifier"]', user, { delay: 100 });
-      await page.type('input[name="password"]', pass, { delay: 100 });
+      await page.type('input[name="identifier"]', user, { delay: 50 });
+      await page.type('input[name="password"]', pass, { delay: 50 });
       
       await page.click('button[type="submit"]');
 
       // Wait for navigation or CAPTCHA
-      const response = await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 }).catch(() => null);
+      await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 }).catch(() => null);
 
       // Check for CAPTCHA or error
       const isCaptcha = await page.evaluate(() => {
@@ -141,29 +142,30 @@ export class ShopeeScraperService {
       });
 
       if (isCaptcha) {
-        this.logger.error('CAPTCHA detected during login! Please handle manually or check screenshot.');
-        await this.saveScreenshot(page, 'captcha_login');
+        this.logger.error(`[${companyId}] CAPTCHA detected during login!`);
+        await this.saveScreenshot(page, 'debug-shopee');
         throw new Error('CAPTCHA detected');
       }
 
-      if (page.url().includes('account/signin')) {
-        this.logger.error('Login failed, still on sign-in page.');
-        await this.saveScreenshot(page, 'login_failed');
+      if (page.url().includes('account/signin') || page.url().includes('signin')) {
+        this.logger.error(`[${companyId}] Login failed, still on sign-in page.`);
+        await this.saveScreenshot(page, 'debug-shopee');
         throw new Error('Login failed');
       }
 
-      this.logger.log('Login successful! Saving session...');
-      await this.saveSession(page);
+      this.logger.log(`[${companyId}] Login successful! Saving session to database...`);
+      await this.saveSession(page, companyId);
     } catch (error) {
-      this.logger.error(`Login process failed: ${error.message}`);
+      this.logger.error(`[${companyId}] Login process failed: ${error.message}`);
+      await this.saveScreenshot(page, 'debug-shopee');
       throw error;
     }
   }
 
-  private async initPage(): Promise<Page> {
+  private async initPage(companyId: string): Promise<Page> {
     if (!this.browser) {
       this.browser = await puppeteer.launch({
-        headless: true, // Set to false for debugging
+        headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox']
       }) as any;
     }
@@ -171,32 +173,42 @@ export class ShopeeScraperService {
     const page = await this.browser!.newPage();
     await page.setViewport({ width: 1280, height: 800 });
     
-    await this.loadSession(page);
+    await this.loadSession(page, companyId);
 
     return page;
   }
 
-  private async saveSession(page: Page) {
+  private async saveSession(page: Page, companyId: string) {
     const cookies = await page.cookies();
-    fs.writeFileSync(this.sessionPath, JSON.stringify(cookies, null, 2));
-    this.logger.log(`Session saved to ${this.sessionPath}`);
+    const cookiesJson = JSON.stringify(cookies);
+    
+    await this.prisma.company.update({
+      where: { id: companyId },
+      data: { shopeeCookies: cookiesJson }
+    });
+    
+    this.logger.log(`[${companyId}] Session (cookies) saved to database`);
   }
 
-  private async loadSession(page: Page) {
-    if (fs.existsSync(this.sessionPath)) {
-      const cookiesString = fs.readFileSync(this.sessionPath, 'utf8');
-      const cookies = JSON.parse(cookiesString) as Cookie[];
-      await page.setCookie(...cookies);
-      this.logger.log('Session loaded from disk');
+  private async loadSession(page: Page, companyId: string) {
+    const company = await this.prisma.company.findUnique({
+      where: { id: companyId },
+      select: { shopeeCookies: true }
+    });
+
+    if (company?.shopeeCookies) {
+      try {
+        const cookies = JSON.parse(company.shopeeCookies) as Cookie[];
+        await page.setCookie(...cookies);
+        this.logger.log(`[${companyId}] Session loaded from database`);
+      } catch (e) {
+        this.logger.error(`[${companyId}] Failed to parse cookies from database: ${e.message}`);
+      }
     }
   }
 
   private async saveScreenshot(page: Page, name: string) {
-    const screenshotDir = path.join(process.cwd(), 'screenshots');
-    if (!fs.existsSync(screenshotDir)) {
-      fs.mkdirSync(screenshotDir);
-    }
-    const filePath = path.join(screenshotDir, `${name}_${Date.now()}.png`);
+    const filePath = path.join(process.cwd(), `${name}.png`);
     await page.screenshot({ path: filePath, fullPage: true });
     this.logger.log(`Screenshot saved to ${filePath}`);
   }
