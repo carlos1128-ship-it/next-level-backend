@@ -6,11 +6,25 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { WhatsappService } from './whatsapp.service';
 import { InstagramService } from './instagram.service';
 import { MetaGraphService } from './meta-graph.service';
+import { ShopeeScraperService } from './shopee-scraper.service';
 
 @Global()
 @Module({
   controllers: [IntegrationsController, IntegrationsOAuthController],
-  providers: [IntegrationsService, PrismaService, WhatsappService, InstagramService, MetaGraphService],
-  exports: [IntegrationsService, WhatsappService, InstagramService, MetaGraphService],
+  providers: [
+    IntegrationsService, 
+    PrismaService, 
+    WhatsappService, 
+    InstagramService, 
+    MetaGraphService,
+    ShopeeScraperService
+  ],
+  exports: [
+    IntegrationsService, 
+    WhatsappService, 
+    InstagramService, 
+    MetaGraphService,
+    ShopeeScraperService
+  ],
 })
 export class IntegrationsModule {}
