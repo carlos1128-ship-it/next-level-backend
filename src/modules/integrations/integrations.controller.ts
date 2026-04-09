@@ -29,6 +29,22 @@ export class IntegrationsController {
     return { data: orders };
   }
 
+  @Post('shopee/initialize-login')
+  async shopeeInitLogin(
+    @Query('companyId') companyId: string,
+    @Body() credentials: { user?: string; pass?: string }
+  ) {
+    return this.shopeeScraper.initializeLogin(companyId, credentials);
+  }
+
+  @Post('shopee/verify-otp')
+  async shopeeVerifyOtp(
+    @Query('companyId') companyId: string,
+    @Body('code') code: string,
+  ) {
+    return this.shopeeScraper.submitVerificationCode(companyId, code);
+  }
+
   @Get('status')
   async status(
     @Req() req: { user: { id: string } },

@@ -93,6 +93,8 @@ model Company {
   whatsappSessionName String?
   whatsappWid        String?
   shopeeShopId       String?
+  shopeeUser         String?
+  shopeePass         String?
   shopeeAccessToken  String?
   shopeeRefreshToken String?
   shopeeTokenExpiresAt DateTime?
