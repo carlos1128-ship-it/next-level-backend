@@ -10,6 +10,7 @@ import {
   InternalServerErrorException,
   Logger,
   OnModuleDestroy,
+  OnApplicationShutdown,
 } from '@nestjs/common';
 import {
   create,
@@ -58,7 +59,7 @@ const CHROMIUM_ARGS = [
 ];
 
 const WHATSAPP_USER_AGENT =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 
 // ─── NeonTokenStore ───────────────────────────────────────────────────────────
 
@@ -139,7 +140,7 @@ class NeonTokenStore implements TokenStore {
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 @Injectable()
-export class WhatsappService implements OnModuleDestroy {
+export class WhatsappService implements OnModuleDestroy, OnApplicationShutdown {
   private readonly logger = new Logger(WhatsappService.name);
   private readonly initializations = new Map<string, Promise<WppWhatsapp>>();
   private readonly qrCodes = new Map<string, string>();
@@ -173,13 +174,15 @@ export class WhatsappService implements OnModuleDestroy {
   async getProfile(companyId: string) {
     const company = await this.prisma.company.findUnique({
       where: { id: companyId },
-      select: { whatsappName: true, whatsappWid: true, whatsappAvatar: true, whatsappStatus: true },
+      // Cast to any since fields exist in schema but client is out of sync
+      select: { whatsappName: true, whatsappWid: true, whatsappAvatar: true, whatsappStatus: true } as any,
     });
+    const comp = company as any;
     return {
-      name: company?.whatsappName || 'Unknown',
-      number: company?.whatsappWid || 'Unknown',
-      avatar: company?.whatsappAvatar || null,
-      status: company?.whatsappStatus || this.getStatus(companyId),
+      name: comp?.whatsappName || 'Unknown',
+      number: comp?.whatsappWid || 'Unknown',
+      avatar: comp?.whatsappAvatar || null,
+      status: comp?.whatsappStatus || this.getStatus(companyId),
     };
   }
 
@@ -195,11 +198,12 @@ export class WhatsappService implements OnModuleDestroy {
         // Reconcile if DB or Local State is out of sync
         const companyData = await this.prisma.company.findUnique({
           where: { id: companyId },
-          select: { whatsappStatus: true }
+          select: { whatsappStatus: true } as any
         });
 
-        if (companyData?.whatsappStatus !== 'CONNECTED') {
-          this.logger.log(`[WA-RECONCILE][${companyId}] Found live session but DB status is '${companyData?.whatsappStatus}'. Forcing sync...`);
+        const cData = companyData as any;
+        if (cData?.whatsappStatus !== 'CONNECTED') {
+          this.logger.log(`[WA-RECONCILE][${companyId}] Found live session but DB status is '${cData?.whatsappStatus}'. Forcing sync...`);
           await this.handleConnectionStateChange('CONNECTED', client, companyId);
         }
         return true;
@@ -213,10 +217,20 @@ export class WhatsappService implements OnModuleDestroy {
   // ─── Lifecycle ──────────────────────────────────────────────────────────────
 
   async onModuleDestroy() {
+    await this.closeAllClients();
+  }
+
+  async onApplicationShutdown(signal?: string) {
+    this.logger.log(`[WA-SHUTDOWN] Signal ${signal} received. Closing all active sessions...`);
+    await this.closeAllClients();
+  }
+
+  private async closeAllClients() {
     const clients = this.getClients();
     for (const [sessionId, client] of clients.entries()) {
       try {
         await client.close();
+        this.logger.log(`[WA-SHUTDOWN] Closed session for ${sessionId}`);
       } catch (error) {
         this.logger.warn(`Falha ao encerrar cliente [${sessionId}]: ${(error as Error).message}`);
       }
@@ -315,7 +329,7 @@ export class WhatsappService implements OnModuleDestroy {
   async forceNewSession(companyId: string): Promise<void> {
     await this.prisma.company.update({
       where: { id: companyId },
-      data: { whatsappSessionToken: null, whatsappStatus: 'DISCONNECTED' },
+      data: { whatsappSessionToken: null, whatsappStatus: 'DISCONNECTED' } as any,
     }).catch(() => null);
 
     const staleClient = this.getClient(companyId);
@@ -348,55 +362,66 @@ export class WhatsappService implements OnModuleDestroy {
       this.startDeadlockTimer(companyId);
     }
 
-    const client = await create({
-      session: `company-${companyId}`,
-      tokenStore: neonStore,
-      headless: true,
-      logQR: false,
-      updatesLog: false,
-      autoClose: 0,
-      waitForLogin: false,
-      disableWelcome: true,
-      folderNameToken: SESSION_BASE_DIR,
-      catchQR: (base64Qr: string, _ascii: string, attempt: number) => {
-        this.clearDeadlockTimer(companyId);
-        const uri = base64Qr.startsWith('data:') ? base64Qr : `data:image/png;base64,${base64Qr}`;
-        this.qrCodes.set(companyId, uri);
-        this.statuses.set(companyId, 'QR_READY');
-        this.eventEmitter.emit('whatsapp.qr.generated', { companyId, qrCode: uri });
-        this.eventEmitter.emit('whatsapp.session.status', { companyId, status: 'QR_READY' });
-      },
-      statusFind: (statusSession: string) => {
-        if (statusSession === 'notLogged') this.statuses.set(companyId, 'Awaiting QR');
-        else if (statusSession === 'qrReadSuccess') {
-          this.statuses.set(companyId, 'Authenticating...');
-          this.eventEmitter.emit('whatsapp.session.status', { companyId, status: 'AUTHENTICATING' });
-        }
-      },
-      puppeteerOptions: {
+    try {
+      this.logger.log(`[WA-INIT][${companyId}] Initializing wppconnect client...`);
+      // @ts-ignore
+      const client = await create({
+        session: `company-${companyId}`,
+        tokenStore: neonStore,
         headless: true,
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome',
-        args: [`--user-agent=${WHATSAPP_USER_AGENT}`, ...CHROMIUM_ARGS],
-      },
-    });
+        logQR: false,
+        updatesLog: false,
+        autoClose: 60000,
+        waitForLogin: false,
+        disableWelcome: true,
+        folderNameToken: SESSION_BASE_DIR,
+        // @ts-ignore
+        waVersion: '2.2412.54',
+        catchQR: (base64Qr: string, _ascii: string, attempt: number) => {
+          this.clearDeadlockTimer(companyId);
+          const uri = base64Qr.startsWith('data:') ? base64Qr : `data:image/png;base64,${base64Qr}`;
+          this.qrCodes.set(companyId, uri);
+          this.statuses.set(companyId, 'QR_READY');
+          this.eventEmitter.emit('whatsapp.qr.generated', { companyId, qrCode: uri });
+          this.eventEmitter.emit('whatsapp.session.status', { companyId, status: 'QR_READY' });
+        },
+        statusFind: (statusSession: string) => {
+          if (statusSession === 'notLogged') this.statuses.set(companyId, 'Awaiting QR');
+          else if (statusSession === 'qrReadSuccess') {
+            this.statuses.set(companyId, 'Authenticating...');
+            this.eventEmitter.emit('whatsapp.session.status', { companyId, status: 'AUTHENTICATING' });
+          }
+        },
+        puppeteerOptions: {
+          headless: true,
+          executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome',
+          args: [`--user-agent=${WHATSAPP_USER_AGENT}`, ...CHROMIUM_ARGS],
+        },
+      });
 
-    if (!this.initializations.has(companyId) && !this.getClients().has(companyId)) {
-      this.clearDeadlockTimer(companyId);
-      await client.close().catch(() => null);
+      if (!this.initializations.has(companyId) && !this.getClients().has(companyId)) {
+        this.clearDeadlockTimer(companyId);
+        await client.close().catch(() => null);
+        return client;
+      }
+
+      this.getClients().set(companyId, client);
+      this.initializations.delete(companyId);
+
+      // TASK 1: Immediate Status Check (Reconciliation)
+      if (await client.isConnected()) {
+        this.logger.log(`[WA-RECONCILE][${companyId}] Session already connected on startup. Forcing state sync.`);
+        await this.handleConnectionStateChange('CONNECTED', client, companyId);
+      }
+
+      this.attachEventListeners(client, companyId);
       return client;
+    } catch (error) {
+      this.logger.error(`[WA-FATAL-INIT] Unhandled error during client creation for ${companyId}: ${error instanceof Error ? error.message : error}`);
+      this.cleanupMemory(companyId);
+      this.eventEmitter.emit('whatsapp.session.status', { companyId, status: 'DISCONNECTED', message: 'Failed to initialize session' });
+      throw error;
     }
-
-    this.getClients().set(companyId, client);
-    this.initializations.delete(companyId);
-
-    // TASK 1: Immediate Status Check (Reconciliation)
-    if (await client.isConnected()) {
-      this.logger.log(`[WA-RECONCILE][${companyId}] Session already connected on startup. Forcing state sync.`);
-      await this.handleConnectionStateChange('CONNECTED', client, companyId);
-    }
-
-    this.attachEventListeners(client, companyId);
-    return client;
   }
 
   // ─── TASK 1 & 2: State Handlers & Listeners ─────────────────────────────────
@@ -413,9 +438,12 @@ export class WhatsappService implements OnModuleDestroy {
         this.eventEmitter.emit('whatsapp.session.connected', { companyId });
         this.eventEmitter.emit('whatsapp.session.status', { companyId, status: 'CONNECTED' });
 
+        this.logger.log(`[WA-CONNECTED][${companyId}] State is CONNECTED. Waiting 2 seconds for WAPI to stabilize...`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
         // TASK 2: Extract & Persist Profile
         try {
-          this.logger.log(`[WA-PROFILE][${companyId}] Extracting host device profile...`);
+          this.logger.log(`[WA-PROFILE][${companyId}] Fetching host device profile...`);
           const host = await client.getHostDevice() as any;
           const profilePic = await client.getProfilePicFromServer(host.wid?._serialized || host.wid).catch(() => null);
           
@@ -426,8 +454,9 @@ export class WhatsappService implements OnModuleDestroy {
           };
 
           await this.persistProfileData(companyId, profileData);
-        } catch (err: unknown) {
-          this.logger.warn(`[WA-PROFILE][${companyId}] Failed to sync profile: ${err instanceof Error ? err.message : err}`);
+        } catch (error) {
+          this.logger.error(`[WA-PROFILE-ERROR] Failed to get host device for company ${companyId}:`, error);
+          // Optional retry logic could be added here
         }
 
         // TASK 4: Activate AI Message Listener (Only once)
@@ -447,7 +476,7 @@ export class WhatsappService implements OnModuleDestroy {
         this.eventEmitter.emit('whatsapp.session.status', { companyId, status: 'DISCONNECTED' });
         await this.prisma.company.update({
           where: { id: companyId },
-          data: { whatsappStatus: 'DISCONNECTED' }
+          data: { whatsappStatus: 'DISCONNECTED' } as any
         }).catch(() => null);
         break;
     }
@@ -462,7 +491,7 @@ export class WhatsappService implements OnModuleDestroy {
         whatsappWid: String(data.whatsappNumber),
         whatsappAvatar: data.whatsappAvatar,
         whatsappStatus: 'CONNECTED',
-      },
+      } as any,
     });
   }
 
@@ -573,7 +602,14 @@ export class WhatsappService implements OnModuleDestroy {
   private async clearDbSession(companyId: string): Promise<void> {
     await this.prisma.company.update({
       where: { id: companyId },
-      data: { whatsappSessionName: null, whatsappWid: null, whatsappSessionToken: null, whatsappName: null, whatsappStatus: 'DISCONNECTED', whatsappAvatar: null },
+      data: {
+        whatsappSessionName: null,
+        whatsappWid: null,
+        whatsappSessionToken: null,
+        whatsappName: null,
+        whatsappStatus: 'DISCONNECTED',
+        whatsappAvatar: null
+      } as any,
     }).catch(() => null);
   }
 
