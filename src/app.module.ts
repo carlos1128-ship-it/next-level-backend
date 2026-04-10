@@ -28,6 +28,7 @@ import { StrategyModule } from './modules/strategy/strategy.module';
 import { MarketIntelligenceModule } from './modules/market-intel/market-intelligence.module';
 import { AttendantModule } from './modules/attendant/attendant.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { BullModule } from '@nestjs/bullmq';
 import { LoggingMiddleware } from './common/middleware/logging.middleware';
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { ReportModule } from './report/report.module';
@@ -36,6 +37,11 @@ import { ReportModule } from './report/report.module';
   controllers: [AppController],
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    BullModule.forRoot({
+      connection: {
+        url: process.env.REDIS_URL || 'redis://localhost:6379',
+      },
+    }),
     EventEmitterModule.forRoot(),
     ScheduleModule.forRoot(),
     PrismaModule,

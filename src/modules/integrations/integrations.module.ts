@@ -3,7 +3,7 @@ import { IntegrationsService } from './integrations.service';
 import { IntegrationsController } from './integrations.controller';
 import { IntegrationsOAuthController } from './integrations-oauth.controller';
 import { PrismaService } from '../../prisma/prisma.service';
-import { WhatsappService } from './whatsapp.service';
+import { WhatsappModule } from './whatsapp.module';
 import { InstagramService } from './instagram.service';
 import { MetaGraphService } from './meta-graph.service';
 import { ShopeeScraperService } from './shopee-scraper.service';
@@ -13,19 +13,18 @@ import { AiModule } from '../ai/ai.module';
 
 @Global()
 @Module({
-  imports: [DashboardModule, AiModule],
+  imports: [DashboardModule, AiModule, WhatsappModule],
   controllers: [IntegrationsController, IntegrationsOAuthController],
   providers: [
     IntegrationsService, 
     PrismaService, 
-    WhatsappService, 
     InstagramService, 
     MetaGraphService,
     ShopeeScraperService
   ],
   exports: [
     IntegrationsService, 
-    WhatsappService, 
+    WhatsappModule,
     InstagramService, 
     MetaGraphService,
     ShopeeScraperService

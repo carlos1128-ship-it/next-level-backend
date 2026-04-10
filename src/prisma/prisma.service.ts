@@ -18,7 +18,15 @@ function normalizeDatabaseUrl(raw: string | undefined): string | undefined {
     }
 
     if (!url.searchParams.has('connect_timeout')) {
-      url.searchParams.set('connect_timeout', '15');
+      url.searchParams.set('connect_timeout', '30');
+    }
+
+    if (!url.searchParams.has('connection_limit')) {
+      url.searchParams.set('connection_limit', '30');
+    }
+
+    if (!url.searchParams.has('pool_timeout')) {
+      url.searchParams.set('pool_timeout', '30');
     }
 
     return url.toString();
