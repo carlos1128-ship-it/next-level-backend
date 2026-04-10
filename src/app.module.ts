@@ -39,7 +39,8 @@ import { ReportModule } from './report/report.module';
     ConfigModule.forRoot({ isGlobal: true }),
     BullModule.forRoot({
       connection: {
-        url: process.env.REDIS_URL || 'redis://localhost:6379',
+        url: process.env.REDIS_URL || 'redis://127.0.0.1:6379',
+        family: 4, // Força IPv4 para evitar ECONNREFUSED no Render
       },
     }),
     EventEmitterModule.forRoot(),
