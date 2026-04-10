@@ -21,8 +21,6 @@ export class WhatsappProcessor extends WorkerHost {
     switch (job.name) {
       case 'processIncomingMessage':
         return this.handleIncomingMessage(companyId, message, from, name);
-      case 'syncToDashboard':
-        return this.handleSyncToDashboard(companyId, message, from);
       case 'sendAutoReply':
         return this.handleAutoReply(companyId, message, from);
       default:
@@ -32,17 +30,7 @@ export class WhatsappProcessor extends WorkerHost {
 
   private async handleIncomingMessage(companyId: string, text: string, from: string, name: string) {
     this.logger.log(`[PROCESS][${companyId}] Mensagem de ${from}: ${text.substring(0, 50)}...`);
-    
-    // 1. Persistir log da mensagem
-    // Implementar log de interações se necessário
-
-    // 2. Extrair dados de venda/leads (Pode usar IA para classificar)
-    // Se a mensagem contiver termos de compra, agendar sync
-  }
-
-  private async handleSyncToDashboard(companyId: string, text: string, from: string) {
-    this.logger.log(`[SYNC][${companyId}] Sincronizando métricas para ${from}`);
-    // Atualizar estatísticas da empresa no Dashboard
+    // Lógica para repassar para o AttendantService se necessário (via EventEmitter)
   }
 
   private async handleAutoReply(companyId: string, text: string, from: string) {
@@ -52,16 +40,16 @@ export class WhatsappProcessor extends WorkerHost {
         select: { userId: true },
       });
 
-      if (!company?.userId) return;
+      if (!(company as any)?.userId) return;
 
-      const aiResponse = await this.chatService.chat(company.userId, {
+      const aiResponse = await this.chatService.chat((company as any).userId, {
         companyId,
         message: text,
       });
 
       if (aiResponse.response) {
-        // O disparo real será feito pelo service via evento ou injeção
-        // Para evitar circularidade, o processor pode emitir um evento que o service escuta
+        // Nota: O disparo real de volta para o WhatsappService deve ser feito via Evento ou Injeção circular
+        this.logger.log(`[AI-REPLY][${companyId}] Resposta gerada para ${from}`);
         return { response: aiResponse.response, to: from };
       }
     } catch (error) {

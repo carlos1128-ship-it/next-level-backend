@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
-import { WhatsappService } from './whatsapp.service';
 import { WhatsappController } from './whatsapp.controller';
+import { WhatsappService } from './whatsapp.service';
 import { WhatsappProcessor } from './whatsapp.processor';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AiModule } from '../ai/ai.module';

@@ -7,7 +7,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { AiService } from '../ai/ai.service';
 import { RagService } from '../ai/rag.service';
-import { WhatsappService } from '../integrations/whatsapp.service';
+import { WhatsappService } from '../whatsapp/whatsapp.service';
 
 type ActionPayload = {
   message: string;

@@ -3,7 +3,7 @@ import { IntegrationsService } from './integrations.service';
 import { IntegrationsController } from './integrations.controller';
 import { IntegrationsOAuthController } from './integrations-oauth.controller';
 import { PrismaService } from '../../prisma/prisma.service';
-import { WhatsappModule } from './whatsapp.module';
+import { WhatsappModule } from '../whatsapp/whatsapp.module';
 import { InstagramService } from './instagram.service';
 import { MetaGraphService } from './meta-graph.service';
 import { ShopeeScraperService } from './shopee-scraper.service';

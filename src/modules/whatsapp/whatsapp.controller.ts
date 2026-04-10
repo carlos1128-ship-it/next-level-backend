@@ -1,7 +1,5 @@
-import { Controller, Get, Post, Param, Body, UseGuards, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, Logger } from '@nestjs/common';
 import { WhatsappService } from './whatsapp.service';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { Logger } from '@nestjs/common';
 
 @Controller('whatsapp/session')
 export class WhatsappController {
@@ -12,32 +10,34 @@ export class WhatsappController {
   @Post(':companyId/start')
   async start(@Param('companyId') companyId: string) {
     this.logger.log(`[HTTP][START] Company: ${companyId}`);
-    return this.whatsappService.startSession(companyId);
+    return this.whatsappService.createSession(companyId);
   }
 
   @Get(':companyId/qrcode')
   async getQrCode(@Param('companyId') companyId: string) {
     const qr = this.whatsappService.getQrCode(companyId);
-    if (!qr) return { qrcode: null, status: this.whatsappService.getSessionStatus(companyId) };
-    return { qrcode: qr, status: 'WAITING_SCAN' };
+    const status = this.whatsappService.getStatus(companyId);
+    return { 
+      qrcode: qr || null, 
+      status 
+    };
   }
 
   @Get(':companyId/status')
   async getStatus(@Param('companyId') companyId: string) {
-    const status = this.whatsappService.getSessionStatus(companyId);
+    const status = this.whatsappService.getStatus(companyId);
     return { status };
   }
 
   @Post(':companyId/disconnect')
   async disconnect(@Param('companyId') companyId: string) {
     this.logger.log(`[HTTP][DISCONNECT] Company: ${companyId}`);
-    return this.whatsappService.disconnect(companyId);
+    return this.whatsappService.terminateSession(companyId);
   }
 
   @Post('webhook')
   async webhook(@Body() body: any) {
-    // Implementação de webhook externo se necessário (ex: integrando com APIs oficiais)
-    // Para WPPConnect legacy, o próprio listener no service lida com isso.
+    // Reservado para futuras integrações de Webhook (Postman/Z-API/Evolution)
     return { success: true };
   }
 }
