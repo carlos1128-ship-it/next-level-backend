@@ -12,14 +12,32 @@ import { ActiveCompanyGuard } from '../../common/guards/active-company.guard';
 import { ConnectIntegrationDto } from './dto/connect-integration.dto';
 import { IntegrationsService } from './integrations.service';
 import { ShopeeScraperService } from './shopee-scraper.service';
+import { WhatsappService } from './whatsapp.service';
 
 @Controller('integrations')
 @UseGuards(ActiveCompanyGuard)
 export class IntegrationsController {
   constructor(
     private readonly integrationsService: IntegrationsService,
-    private readonly shopeeScraper: ShopeeScraperService
+    private readonly shopeeScraper: ShopeeScraperService,
+    private readonly whatsappService: WhatsappService
   ) {}
+
+  @Get('whatsapp/profile')
+  async whatsappProfile(
+    @Query('companyId') companyId: string,
+  ) {
+    const profile = await this.whatsappService.getProfile(companyId);
+    return { data: profile };
+  }
+
+  @Post('whatsapp/bulk-send')
+  async whatsappBulkSend(
+    @Query('companyId') companyId: string,
+    @Body() body: { numbers: string[]; message: string }
+  ) {
+    return this.whatsappService.sendBulkMessages(companyId, body.numbers, body.message);
+  }
 
   @Get('shopee/orders')
   async shopeeOrders(

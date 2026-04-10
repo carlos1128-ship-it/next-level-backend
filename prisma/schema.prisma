@@ -92,6 +92,7 @@ model Company {
   metaWabaId        String?
   whatsappSessionName  String?
   whatsappWid          String?
+  whatsappName         String?
   whatsappSessionToken String? @db.Text  // Serialized wppconnect token for session persistence across restarts
   shopeeShopId       String?
   shopeeUser         String?
