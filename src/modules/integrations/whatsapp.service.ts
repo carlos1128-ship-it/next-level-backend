@@ -264,19 +264,26 @@ export class WhatsappService implements OnModuleDestroy, OnApplicationShutdown {
     }
   }
 
-  async sendBulkMessages(companyId: string, numbers: string[], message: string) {
+  async sendBulkMessages(options: { 
+    companyId: string; 
+    numbers: string[]; 
+    message: string;
+    delayRange?: [number, number];
+  }) {
+    const { companyId, numbers, message, delayRange = [20000, 40000] } = options;
     const client = this.clients.get(companyId);
     if (!client) throw new BadRequestException('Sessão não conectada');
 
-    this.logger.log(`[BULK][${companyId}] Iniciando disparo para ${numbers.length} números`);
+    const [minDelay, maxDelay] = delayRange;
+    this.logger.log(`[BULK][${companyId}] Iniciando disparo para ${numbers.length} números (Delay: ${minDelay}-${maxDelay}ms)`);
 
     // Processamento assíncrono para não travar o worker
     const processBulk = async () => {
       for (const num of numbers) {
         try {
           await this.sendText(companyId, num, message);
-          // Anti-ban delay: 20-40 seconds
-          const delay = Math.floor(Math.random() * (40000 - 20000 + 1) + 20000);
+          const delay = Math.floor(Math.random() * (maxDelay - minDelay + 1) + minDelay);
+          this.logger.debug(`[BULK][${companyId}] Aguardando ${delay}ms para o próximo envio...`);
           await new Promise(resolve => setTimeout(resolve, delay));
         } catch (err) {
           this.logger.error(`[BULK-ERROR][${companyId}] Falha ao enviar para ${num}: ${err.message}`);

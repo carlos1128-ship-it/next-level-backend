@@ -39,7 +39,11 @@ export class IntegrationsController {
     @Query('companyId') companyId: string,
     @Body() body: { numbers: string[]; message: string }
   ) {
-    return this.whatsappService.sendBulkMessages(companyId, body.numbers, body.message);
+    return this.whatsappService.sendBulkMessages({
+      companyId,
+      numbers: body.numbers,
+      message: body.message,
+    });
   }
 
   @Get('shopee/orders')
