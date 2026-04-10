@@ -9,7 +9,7 @@ import {
 import { AiService } from '../ai/ai.service';
 import { RagService } from '../ai/rag.service';
 import { PrismaService } from '../../prisma/prisma.service';
-import { WhatsappService } from '../integrations/whatsapp.service';
+import { WhatsappService } from '../whatsapp/whatsapp.service';
 import { InstagramService } from '../integrations/instagram.service';
 import { AlertsService } from '../alerts/alerts.service';
 

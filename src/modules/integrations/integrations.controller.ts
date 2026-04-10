@@ -12,7 +12,7 @@ import { ActiveCompanyGuard } from '../../common/guards/active-company.guard';
 import { ConnectIntegrationDto } from './dto/connect-integration.dto';
 import { IntegrationsService } from './integrations.service';
 import { ShopeeScraperService } from './shopee-scraper.service';
-import { WhatsappService } from './whatsapp.service';
+import { WhatsappService } from '../whatsapp/whatsapp.service';
 
 @Controller('integrations')
 @UseGuards(ActiveCompanyGuard)
