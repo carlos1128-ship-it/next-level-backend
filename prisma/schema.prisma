@@ -93,6 +93,8 @@ model Company {
   whatsappSessionName  String?
   whatsappWid          String?
   whatsappName         String?
+  whatsappAvatar       String? @db.Text
+  whatsappStatus       String?
   whatsappSessionToken String? @db.Text  // Serialized wppconnect token for session persistence across restarts
   shopeeShopId       String?
   shopeeUser         String?

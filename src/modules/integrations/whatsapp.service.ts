@@ -10,8 +10,6 @@ import {
   InternalServerErrorException,
   Logger,
   OnModuleDestroy,
-  Inject,
-  forwardRef,
 } from '@nestjs/common';
 import {
   create,
@@ -175,13 +173,41 @@ export class WhatsappService implements OnModuleDestroy {
   async getProfile(companyId: string) {
     const company = await this.prisma.company.findUnique({
       where: { id: companyId },
-      select: { whatsappName: true, whatsappWid: true },
+      select: { whatsappName: true, whatsappWid: true, whatsappAvatar: true, whatsappStatus: true },
     });
     return {
       name: company?.whatsappName || 'Unknown',
       number: company?.whatsappWid || 'Unknown',
-      status: this.getStatus(companyId),
+      avatar: company?.whatsappAvatar || null,
+      status: company?.whatsappStatus || this.getStatus(companyId),
     };
+  }
+
+  // ─── TASK 3: Smart Real-Time Status Check ───────────────────────────────────
+
+  async checkLiveStatus(companyId: string): Promise<boolean> {
+    const client = this.getClient(companyId);
+    if (!client) return false;
+
+    try {
+      const isConnected = await client.isConnected();
+      if (isConnected) {
+        // Reconcile if DB or Local State is out of sync
+        const companyData = await this.prisma.company.findUnique({
+          where: { id: companyId },
+          select: { whatsappStatus: true }
+        });
+
+        if (companyData?.whatsappStatus !== 'CONNECTED') {
+          this.logger.log(`[WA-RECONCILE][${companyId}] Found live session but DB status is '${companyData?.whatsappStatus}'. Forcing sync...`);
+          await this.handleConnectionStateChange('CONNECTED', client, companyId);
+        }
+        return true;
+      }
+    } catch (err) {
+      this.logger.warn(`[WA-STATUS-CHECK][${companyId}] Failed to verify live status: ${err instanceof Error ? err.message : err}`);
+    }
+    return false;
   }
 
   // ─── Lifecycle ──────────────────────────────────────────────────────────────
@@ -201,7 +227,9 @@ export class WhatsappService implements OnModuleDestroy {
 
   async createSession(companyId: string): Promise<{ success: boolean; message: string }> {
     if (this.getClients().has(companyId)) {
-      return { success: true, message: 'Sessão já conectada' };
+      // Immediate reconciliation check
+      const isLive = await this.checkLiveStatus(companyId);
+      if (isLive) return { success: true, message: 'Sessão já conectada e sincronizada' };
     }
 
     if (!this.initializations.has(companyId)) {
@@ -243,11 +271,6 @@ export class WhatsappService implements OnModuleDestroy {
     return { success: true };
   }
 
-  // ─── TASK 3: Bulk Sender (Anti-Ban) ─────────────────────────────────────────
-
-  /**
-   * Envia mensagens em massa com delay aleatório para evitar banimento.
-   */
   async sendBulkMessages(companyId: string, numbers: string[], message: string) {
     const client = this.requireClient(companyId);
     this.logger.log(`[WA-BULK][${companyId}] Starting bulk send to ${numbers.length} numbers.`);
@@ -258,7 +281,6 @@ export class WhatsappService implements OnModuleDestroy {
         await client.sendText(recipient, message);
         this.logger.log(`[WA-BULK][${companyId}] Message sent to ${number}`);
 
-        // Sleep aleatório entre 20 e 40 segundos
         const delay = Math.floor(Math.random() * (40000 - 20000 + 1)) + 20000;
         await new Promise((resolve) => setTimeout(resolve, delay));
       } catch (error: unknown) {
@@ -293,7 +315,7 @@ export class WhatsappService implements OnModuleDestroy {
   async forceNewSession(companyId: string): Promise<void> {
     await this.prisma.company.update({
       where: { id: companyId },
-      data: { whatsappSessionToken: null },
+      data: { whatsappSessionToken: null, whatsappStatus: 'DISCONNECTED' },
     }).catch(() => null);
 
     const staleClient = this.getClient(companyId);
@@ -307,28 +329,6 @@ export class WhatsappService implements OnModuleDestroy {
     });
 
     this.initializations.set(companyId, this.bootstrapClient(companyId));
-  }
-
-  // ─── Messaging ──────────────────────────────────────────────────────────────
-
-  async sendTextMessage(companyId: string, to: string, message: string) {
-    const client = this.requireClient(companyId);
-    await client.sendText(this.normalizeRecipient(to), message);
-    return { sent: true };
-  }
-
-  async sendTemplateMessage(companyId: string, payload: SendTemplateInput) {
-    if (!payload.template) throw new BadRequestException('template obrigatório');
-    const client = this.requireClient(companyId);
-    const body = [
-      `Template: ${payload.template}`,
-      payload.language ? `Idioma: ${payload.language}` : '',
-      payload.components?.length ? `Componentes: ${JSON.stringify(payload.components)}` : '',
-    ]
-      .filter(Boolean)
-      .join('\n');
-    await client.sendText(this.normalizeRecipient(payload.to), body);
-    return { sent: true };
   }
 
   // ─── Core Bootstrap ──────────────────────────────────────────────────────────
@@ -388,60 +388,108 @@ export class WhatsappService implements OnModuleDestroy {
 
     this.getClients().set(companyId, client);
     this.initializations.delete(companyId);
+
+    // TASK 1: Immediate Status Check (Reconciliation)
+    if (await client.isConnected()) {
+      this.logger.log(`[WA-RECONCILE][${companyId}] Session already connected on startup. Forcing state sync.`);
+      await this.handleConnectionStateChange('CONNECTED', client, companyId);
+    }
+
     this.attachEventListeners(client, companyId);
     return client;
   }
 
-  // ─── Event Listeners ─────────────────────────────────────────────────────────
+  // ─── TASK 1 & 2: State Handlers & Listeners ─────────────────────────────────
 
-  private attachEventListeners(client: WppWhatsapp, companyId: string): void {
-    client.onStateChange(async (state: string) => {
-      this.logger.log(`[WA-STATE][${companyId}] onStateChange → ${state}`);
+  private async handleConnectionStateChange(state: string, client: WppWhatsapp, companyId: string) {
+    this.logger.log(`[WA-STATE-HANDLER][${companyId}] Processing state → ${state}`);
 
-      if (state === 'CONNECTED') {
+    switch (state) {
+      case 'CONNECTED':
         this.clearDeadlockTimer(companyId);
         this.statuses.set(companyId, 'Connected');
         this.qrCodes.delete(companyId);
 
-        // TASK 1: Device Profile Persistence
-        try {
-          const hostDevice = await client.getHostDevice() as any;
-          const wid = hostDevice.wid?.user || hostDevice.wid || 'Unknown';
-          const notifyName = hostDevice.pushname || hostDevice.notifyName || 'Unknown';
-
-          await this.prisma.company.update({
-            where: { id: companyId },
-            data: {
-              whatsappSessionName: `company-${companyId}`,
-              whatsappWid: String(wid),
-              whatsappName: notifyName,
-            },
-          });
-          this.logger.log(`[WA-CONNECTED][${companyId}] Profile saved: ${notifyName} (${wid})`);
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
-          this.logger.warn(`[WA-CONNECTED][${companyId}] Failed to save profile: ${msg}`);
-        }
-
         this.eventEmitter.emit('whatsapp.session.connected', { companyId });
         this.eventEmitter.emit('whatsapp.session.status', { companyId, status: 'CONNECTED' });
 
-      } else if (['CONFLICT', 'UNPAIRED', 'UNLAUNCHED', 'DISCONNECTED'].includes(state)) {
+        // TASK 2: Extract & Persist Profile
+        try {
+          this.logger.log(`[WA-PROFILE][${companyId}] Extracting host device profile...`);
+          const host = await client.getHostDevice() as any;
+          const profilePic = await client.getProfilePicFromServer(host.wid?._serialized || host.wid).catch(() => null);
+          
+          const profileData = {
+            whatsappName: host.pushname || host.notifyName || 'Unknown',
+            whatsappNumber: host.wid?.user || host.wid || 'Unknown',
+            whatsappAvatar: profilePic?.imgFull || null,
+          };
+
+          await this.persistProfileData(companyId, profileData);
+        } catch (err: unknown) {
+          this.logger.warn(`[WA-PROFILE][${companyId}] Failed to sync profile: ${err instanceof Error ? err.message : err}`);
+        }
+
+        // TASK 4: Activate AI Message Listener (Only once)
+        this.attachMessageListener(client, companyId);
+        break;
+
+      case 'CONFLICT':
+      case 'UNLAUNCHED':
+        this.logger.warn(`[WA-CONFLICT][${companyId}] State ${state} detected. Attempting useHere takeover...`);
+        await client.useHere().catch(e => this.logger.error(`[WA-CONFLICT] useHere failed: ${e.message}`));
+        break;
+
+      case 'UNPAIRED':
+      case 'DISCONNECTED':
         this.clearDeadlockTimer(companyId);
         this.statuses.set(companyId, 'Disconnected');
         this.eventEmitter.emit('whatsapp.session.status', { companyId, status: 'DISCONNECTED' });
-      }
+        await this.prisma.company.update({
+          where: { id: companyId },
+          data: { whatsappStatus: 'DISCONNECTED' }
+        }).catch(() => null);
+        break;
+    }
+  }
+
+  private async persistProfileData(companyId: string, data: any) {
+    this.logger.log(`[WA-PERSIST][${companyId}] Syncing database record for ${data.whatsappName}`);
+    await this.prisma.company.update({
+      where: { id: companyId },
+      data: {
+        whatsappName: data.whatsappName,
+        whatsappWid: String(data.whatsappNumber),
+        whatsappAvatar: data.whatsappAvatar,
+        whatsappStatus: 'CONNECTED',
+      },
+    });
+  }
+
+  private attachEventListeners(client: WppWhatsapp, companyId: string): void {
+    client.onStateChange(async (state: string) => {
+      this.logger.log(`[WA-STATE][${companyId}] onStateChange → ${state}`);
+      await this.handleConnectionStateChange(state, client, companyId);
     });
 
-    // TASK 2: AI Response Webhook
-    client.onMessage(async (message) => {
-      if (message.isGroupMsg) return; // Ignore groups
+    // If already connected, satisfy TASK 4 immediately
+    client.isConnected().then(connected => {
+      if (connected) this.attachMessageListener(client, companyId);
+    });
+  }
+
+  private attachMessageListener(client: any, companyId: string): void {
+    if (client.isListenerAttached) return;
+
+    this.logger.log(`[WA-LISTENER][${companyId}] Activating AI Message Listener...`);
+    
+    client.onMessage(async (message: any) => {
+      if (message.isGroupMsg) return;
       if (!message.body) return;
 
-      this.logger.log(`[WA-AI][${companyId}] Incoming message from ${message.from}`);
+      this.logger.log(`[WA-MSG][${companyId}] Message from ${message.from}`);
 
       try {
-        // Find the user responsible for this company to provide context to AI
         const company = await this.prisma.company.findUnique({
           where: { id: companyId },
           select: { userId: true },
@@ -455,12 +503,11 @@ export class WhatsappService implements OnModuleDestroy {
 
           if (aiResponse.response) {
             await client.sendText(message.from, aiResponse.response);
-            this.logger.log(`[WA-AI][${companyId}] Automated response sent to ${message.from}`);
+            this.logger.log(`[WA-AI][${companyId}] Response sent to ${message.from}`);
           }
         }
       } catch (error: unknown) {
-        const msg = error instanceof Error ? error.message : String(error);
-        this.logger.error(`[WA-AI][${companyId}] AI response failed: ${msg}`);
+        this.logger.error(`[WA-AI][${companyId}] AI execution failed: ${error instanceof Error ? error.message : error}`);
       }
 
       this.eventEmitter.emit('whatsapp.message.received', {
@@ -470,6 +517,30 @@ export class WhatsappService implements OnModuleDestroy {
         name: message.sender?.pushname ?? message.sender?.name,
       });
     });
+
+    client.isListenerAttached = true;
+  }
+
+  // ─── Messaging ──────────────────────────────────────────────────────────────
+
+  async sendTextMessage(companyId: string, to: string, message: string) {
+    const client = this.requireClient(companyId);
+    await client.sendText(this.normalizeRecipient(to), message);
+    return { sent: true };
+  }
+
+  async sendTemplateMessage(companyId: string, payload: SendTemplateInput) {
+    if (!payload.template) throw new BadRequestException('template obrigatório');
+    const client = this.requireClient(companyId);
+    const body = [
+      `Template: ${payload.template}`,
+      payload.language ? `Idioma: ${payload.language}` : '',
+      payload.components?.length ? `Componentes: ${JSON.stringify(payload.components)}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+    await client.sendText(this.normalizeRecipient(payload.to), body);
+    return { sent: true };
   }
 
   // ─── Private Utilities ────────────────────────────────────────────────────────
@@ -502,7 +573,7 @@ export class WhatsappService implements OnModuleDestroy {
   private async clearDbSession(companyId: string): Promise<void> {
     await this.prisma.company.update({
       where: { id: companyId },
-      data: { whatsappSessionName: null, whatsappWid: null, whatsappSessionToken: null, whatsappName: null },
+      data: { whatsappSessionName: null, whatsappWid: null, whatsappSessionToken: null, whatsappName: null, whatsappStatus: 'DISCONNECTED', whatsappAvatar: null },
     }).catch(() => null);
   }
 

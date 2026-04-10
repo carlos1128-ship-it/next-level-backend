@@ -27,6 +27,9 @@ export class IntegrationsController {
   async whatsappProfile(
     @Query('companyId') companyId: string,
   ) {
+    // Smart Reconciliation: Check live status and sync DB if needed before returning profile
+    await this.whatsappService.checkLiveStatus(companyId).catch(() => null);
+    
     const profile = await this.whatsappService.getProfile(companyId);
     return { data: profile };
   }
