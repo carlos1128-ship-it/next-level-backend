@@ -30,14 +30,19 @@ await app.listen(port, '0.0.0.0');
 
 ## 🔧 Configuração no Render
 
-### Build Command
-```bash
-npm install && npx prisma generate && npm run build
-```
+### Build / Start Command
 
-### Start Command
+Escolha apenas um modo de deploy:
+
+#### Opcao A: Docker Runtime
+- O Render usa o `Dockerfile`
+- Nao configure `Build Command`
+- Nao configure `Start Command`
+
+#### Opcao B: Native Runtime (Node)
 ```bash
-npm run start:prod
+Build Command: npm install && npx puppeteer browsers install chrome && npx prisma generate && npm run build
+Start Command: npm run start:prod
 ```
 
 ### Environment Variables Obrigatórias
@@ -54,8 +59,11 @@ TRUST_PROXY=1
 ### ⚠️ Variáveis para Evitar Loop de Puppeteer
 ```
 WPPCONNECT_HEADLESS=true
-PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome
 ```
+
+Observacao:
+- Em `Docker Runtime`, se quiser fixar manualmente: `PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable`
+- Em `Native Runtime`, prefira nao definir `PUPPETEER_EXECUTABLE_PATH`; o backend agora tenta localizar o binario automaticamente na cache do Puppeteer
 
 ## 🐛 Diagnóstico de Problemas
 
@@ -68,16 +76,12 @@ PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome
 **Solução**: Verifique se `DATABASE_URL` tem `sslmode=require`
 
 ### Erro de Puppeteer/Chrome não encontrado
-**Causa**: Render não tem Chrome instalado
-**Solução**: Adicione ao `render.yaml`:
-```yaml
-buildCommand: |
-  apt-get update && apt-get install -y wget gnupg
-  wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add -
-  echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
-  apt-get update && apt-get install -y google-chrome-stable
-  npm install && npx prisma generate && npm run build
-```
+**Causa**: O caminho configurado não existe no runtime atual, ou o serviço está em `Node` e não em `Docker`
+**Solução**:
+- Se estiver em `Docker`, confirme que o Render está realmente usando o `Dockerfile`
+- Se estiver em `Node`, o `Dockerfile` é ignorado; use `npx puppeteer browsers install chrome` no `Build Command`
+- Remova `PUPPETEER_EXECUTABLE_PATH` e `CHROME_PATH` se estiverem apontando para caminhos inválidos
+- Refaça o deploy e use o caminho exibido no log apenas se precisar fixá-lo
 
 ### Timeout de 60 segundos do Render
 **Causa**: Processo muito lento antes do `app.listen()`

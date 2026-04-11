@@ -59,6 +59,11 @@ const BROWSER_PATH_CANDIDATES = [
   '/usr/bin/chromium',
   '/usr/bin/chromium-browser',
 ];
+const PUPPETEER_CACHE_ROOTS = [
+  path.join(process.cwd(), '.cache', 'puppeteer'),
+  '/opt/render/project/src/.cache/puppeteer',
+  '/opt/render/.cache/puppeteer',
+];
 
 // ─── NeonTokenStore ───────────────────────────────────────────────────────────
 
@@ -502,7 +507,51 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
       }
     }
 
-    return configuredPaths[0] || undefined;
+    if (configuredPaths.length > 0) {
+      this.logger.warn(
+        `[WA-BROWSER] Nenhum executavel encontrado nos caminhos configurados: ${configuredPaths.join(', ')}. Usando autodeteccao do Puppeteer/WPPConnect.`,
+      );
+    }
+
+    for (const cacheRoot of PUPPETEER_CACHE_ROOTS) {
+      const discoveredPath = this.findBrowserInDirectory(cacheRoot, 4);
+      if (discoveredPath) {
+        this.logger.log(`[WA-BROWSER] Executavel encontrado na cache do Puppeteer: ${discoveredPath}`);
+        return discoveredPath;
+      }
+    }
+
+    return undefined;
+  }
+
+  private findBrowserInDirectory(baseDir: string, depth: number): string | null {
+    if (depth < 0 || !fs.existsSync(baseDir)) {
+      return null;
+    }
+
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(baseDir, { withFileTypes: true });
+    } catch {
+      return null;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(baseDir, entry.name);
+
+      if (entry.isFile() && ['chrome', 'google-chrome', 'google-chrome-stable', 'chromium'].includes(entry.name)) {
+        return fullPath;
+      }
+
+      if (entry.isDirectory()) {
+        const nested = this.findBrowserInDirectory(fullPath, depth - 1);
+        if (nested) {
+          return nested;
+        }
+      }
+    }
+
+    return null;
   }
 
   private getSessionDir(companyId: string) {

@@ -1,37 +1,88 @@
-# Configuração Render.com - Next Level AI (WhatsApp)
+# Render.com - WhatsApp
 
-Para que a integração do WhatsApp funcione corretamente no Render, siga estas etapas:
+Este projeto pode rodar no Render de dois jeitos diferentes, e isso muda totalmente como o Chrome fica disponivel.
 
-## 1. Environment Variables (Environment -> Secret Files ou Env Vars)
-Adicione as seguintes variáveis no painel do Render para garantir a estabilidade:
+## 1. Docker Runtime
 
-```env
-# REDIS: Otimizado para rede interna do Render
-# Use a Internal Redis URL do seu painel
-REDIS_URL=redis://red-d7cojmt7vvec73ehb5vg:6379
+Use este modo se voce quer que o `Dockerfile` controle tudo.
 
-# CHROME (Opcional): O Puppeteer agora detecta automaticamente o binário na cache.
-# Se receber "Browser not found", use o caminho extraído do log:
-# CHROME_PATH=/opt/render/project/src/.cache/puppeteer/chrome/linux-146.0.7680.153/chrome-linux64/chrome
+- O Render usa o [Dockerfile](/abs/path/c:\CURSOJS\next-level-backend\Dockerfile)
+- O navegador e instalado na imagem
+- O path esperado e `PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable`
+
+Neste modo:
+
+- Nao use `Build Command`
+- Nao use `Start Command`
+- Nao configure `CHROME_PATH` manualmente, a menos que tenha um motivo real
+
+## 2. Native Runtime
+
+Use este modo se o servico no Render estiver configurado como `Node`, e nao como `Docker`.
+
+Neste modo o `Dockerfile` e ignorado. O Chrome precisa ser baixado no build e normalmente fica na cache do Puppeteer.
+
+Build Command recomendado:
+
+```bash
+npm install && npx puppeteer browsers install chrome && npm run build
 ```
 
-## 2. Build Config (Settings -> Build & Deploy)
-O comando de build deve garantir que o Chrome seja baixado para a cache do ambiente:
+Start Command recomendado:
 
-**Build Command:**
-`npm install && npx puppeteer browsers install chrome && npm run build`
+```bash
+npm run start:prod
+```
 
-## 3. Persistent Sessions (Recomendado)
-Para evitar que os usuários tenham que ler o QR Code a cada deploy:
-1. Adicione um **Render Disk**.
+Neste modo:
+
+- Prefira nao definir `PUPPETEER_EXECUTABLE_PATH`
+- Prefira nao definir `CHROME_PATH`
+- O backend agora tenta autodetectar o binario na cache do Puppeteer
+
+Se voce quiser fixar o caminho manualmente, use o caminho real exibido no log do deploy, por exemplo:
+
+```env
+CHROME_PATH=/opt/render/project/src/.cache/puppeteer/chrome/linux-146.0.7680.153/chrome-linux64/chrome
+```
+
+## 3. Env Vars
+
+Essenciais:
+
+```env
+REDIS_URL=redis://...
+DATABASE_URL=postgresql://...&sslmode=require
+NODE_ENV=production
+PORT=3333
+```
+
+Para o banco Neon, o backend ja normaliza:
+
+- `sslmode=require`
+- `connect_timeout=30`
+- `connection_limit=5`
+- `pool_timeout=30`
+
+## 4. Sessao Persistente
+
+Para evitar novo QR a cada restart:
+
+1. Adicione um Render Disk
 2. Mount Path: `/tmp/.wppconnect`
-3. Tamanho: 1GB é suficiente.
-*Isso garante que a pasta de sessões persista entre deploys e restarts.*
+3. Tamanho: `1GB` costuma bastar
 
-## 4. Otimizações de Rede
-O código já está configurado com `family: 4` no BullMQ para evitar erros de `ECONNREFUSED` que ocorrem na rede IPv6 interna do Render.
+## 5. Troubleshooting
 
-## 5. Troubleshooting de Browser
-Se o serviço iniciar, mas o WhatsApp falhar com erro de protocolo:
-1. Verifique se o Render Plan tem pelo menos **1GB de RAM**. Planos de 512MB podem falhar ao abrir o navegador.
-2. Observe os logs: procure pela linha `chrome@xxx /opt/render/...` para confirmar o caminho do binário.
+Se aparecer `Browser was not found`:
+
+1. Confirme se o servico esta em `Docker` ou `Node`
+2. Se estiver em `Node`, lembre que o `Dockerfile` nao vale
+3. Remova `PUPPETEER_EXECUTABLE_PATH` e `CHROME_PATH` se estiverem apontando para caminho errado
+4. Refaça o deploy
+
+Se aparecer `browser is already running`:
+
+1. Reinicie o servico
+2. Se possivel, limpe `/tmp/.wppconnect`
+3. O backend ja faz cleanup pesado e retry com espera maior
