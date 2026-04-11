@@ -37,18 +37,6 @@ export type WhatsappStatus =
   | 'UNPAIRED';
 
 const SESSION_BASE_DIR = '/tmp/.wppconnect';
-const CHROMIUM_ARGS = [
-  '--no-sandbox',
-  '--disable-setuid-sandbox',
-  '--disable-dev-shm-usage',
-  '--disable-accelerated-2d-canvas',
-  '--no-first-run',
-  '--no-zygote',
-  '--single-process',
-  '--disable-gpu',
-  '--disable-extensions',
-];
-
 const WHATSAPP_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 
@@ -313,8 +301,20 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
           this.handleStatusChange(companyId, statusSession);
         },
         puppeteerOptions: {
-          executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome',
-          args: [`--user-agent=${WHATSAPP_USER_AGENT}`, ...CHROMIUM_ARGS],
+          // Evita crash se o binário específico não existir. No Render, o Puppeteer 
+          // geralmente instala o Chromium na cache local, e remover o path fixo permite 
+          // que ele encontre o binário automaticamente.
+          executablePath: process.env.CHROME_PATH || undefined, 
+          args: [
+            `--user-agent=${WHATSAPP_USER_AGENT}`,
+            '--no-sandbox',                // Essencial: permite rodar em containers sem privilégios de root
+            '--disable-setuid-sandbox',     // Reforça a segurança no isolamento do processo
+            '--disable-dev-shm-usage',      // Usa /tmp em vez de /dev/shm para evitar crash por falta de memória compartilhada
+            '--disable-gpu',                // Desabilita aceleração de hardware (não disponível em servidores cloud)
+            '--no-zygote',                  // Previne problemas de fork em ambientes restritos
+            '--single-process',             // Economiza memória, rodando o browser em um único processo
+            '--disable-extensions',         // Evita overhead de carregar extensões desnecessárias
+          ],
         },
       } as any);
 
