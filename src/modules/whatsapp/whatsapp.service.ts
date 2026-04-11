@@ -1,7 +1,7 @@
 /**
  * =============================================================================
- * WHATSAPP SERVICE — Multi-tenant + BullMQ + Neon Persistence
- * Optimized for Render.com and Stable WAPI Injection
+ * WHATSAPP SERVICE — Estabilidade Avançada para Render.com
+ * Multi-tenant + BullMQ + Neon Persistence + Erro Handling Resiliente
  * =============================================================================
  */
 
@@ -99,7 +99,7 @@ class NeonTokenStore implements TokenStore {
 export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplicationShutdown {
   private readonly logger = new Logger(WhatsappService.name);
   private readonly clients = new Map<string, WhatsappClient>();
-  private readonly initializations = new Map<string, Promise<WhatsappClient>>();
+  private readonly initializations = new Map<string, Promise<WhatsappClient | null>>();
   private readonly qrCodes = new Map<string, string>();
   private readonly statuses = new Map<string, WhatsappStatus>();
 
@@ -108,9 +108,6 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
     @InjectQueue('whatsapp-queue') private readonly whatsappQueue: Queue,
   ) {}
 
-  /**
-   * Inicialização do módulo: Recupera sessões que estavam conectadas
-   */
   async onModuleInit() {
     this.logger.log('Recuperando sessões ativas do WhatsApp...');
     try {
@@ -129,12 +126,6 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
     }
   }
 
-  // ─── Métodos Públicos Requeridos ───────────────────────────────────────────
-
-  /**
-   * 1. createSession(companyId)
-   * Cria ou recupera uma conexão para o tenant
-   */
   async createSession(companyId: string) {
     if (this.clients.has(companyId)) {
       return { status: 'CONNECTED', qrCode: undefined };
@@ -153,17 +144,18 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
     return { status: 'CONNECTING' };
   }
 
-  /**
-   * 2. terminateSession(companyId)
-   * Encerra e limpa recursos da conexão
-   */
   async terminateSession(companyId: string): Promise<boolean> {
     const client = this.clients.get(companyId);
     
     try {
       if (client) {
+        // Envolve em try/catch para ignorar ProtocolErrors se o browser já fechou
         await client.logout().catch(() => null);
-        await client.close().catch(() => null);
+        await client.close().catch((err) => {
+          if (!err.message.includes('Target already closed')) {
+            this.logger.warn(`[WA-CLOSE][${companyId}] Erro ao fechar: ${err.message}`);
+          }
+        });
       }
       
       this.cleanupMemory(companyId);
@@ -180,18 +172,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
     }
   }
 
-  /**
-   * 3. getStatus(companyId)
-   * Retorno síncrono do estado atual
-   */
   getStatus(companyId: string): WhatsappStatus {
     return this.statuses.get(companyId) || 'DISCONNECTED';
   }
 
-  /**
-   * 4. sendTextMessage(companyId, externalId, message)
-   * Envia via fila BullMQ para garantir entrega e proteção contra bans
-   */
   async sendTextMessage(companyId: string, externalId: string, message: string) {
     const status = this.getStatus(companyId);
     if (status !== 'CONNECTED') {
@@ -201,7 +185,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
     try {
       const job = await this.whatsappQueue.add('sendAutoReply', {
         companyId,
-        from: externalId, // No processador interpretamos como destino
+        from: externalId,
         message,
       }, {
         attempts: 3,
@@ -216,65 +200,9 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
     }
   }
 
-  async sendBulkMessages(data: {
-    companyId: string;
-    numbers: string[];
-    message: string;
-    delayRange?: [number, number];
-  }) {
-    const { companyId, numbers, message, delayRange = [20000, 40000] } = data;
-    const client = this.clients.get(companyId);
-
-    if (!client) {
-      throw new BadRequestException('WhatsApp não conectado');
-    }
-
-    this.logger.log(`[BULK][${companyId}] Iniciando disparo para ${numbers.length} números.`);
-
-    // Executa em background para não travar a requisição HTTP
-    (async () => {
-      for (const number of numbers) {
-        try {
-          // Garante formato correto (+55...)
-          const formatted = number.includes('@') ? number : `${number.replace(/\D/g, '')}@c.us`;
-          await client.sendText(formatted, message);
-          
-          const delay = Math.floor(Math.random() * (delayRange[1] - delayRange[0] + 1)) + delayRange[0];
-          this.logger.log(`[BULK][${companyId}] Enviado para ${number}. Aguardando ${delay}ms...`);
-          await new Promise(resolve => setTimeout(resolve, delay));
-        } catch (err) {
-          this.logger.error(`[BULK-ERR][${companyId}] Falha ao enviar para ${number}: ${err.message}`);
-        }
-      }
-      this.logger.log(`[BULK][${companyId}] Disparo finalizado.`);
-    })();
-
-    return { success: true, count: numbers.length };
-  }
-
-  async getProfile(companyId: string) {
-    const client = this.clients.get(companyId);
-    if (!client) return null;
-    try {
-      return await client.getHostDevice();
-    } catch {
-      return null;
-    }
-  }
-
-  async checkLiveStatus(companyId: string) {
-    const client = this.clients.get(companyId);
-    if (!client) return false;
-    try {
-      return await client.isConnected();
-    } catch {
-      return false;
-    }
-  }
-
   // ─── Lógica de Engine (Privada) ─────────────────────────────────────────────
 
-  private async bootstrapClient(companyId: string): Promise<WhatsappClient> {
+  private async bootstrapClient(companyId: string): Promise<WhatsappClient | null> {
     const neonStore = new NeonTokenStore(this.prisma, companyId, this.logger);
 
     try {
@@ -283,37 +211,33 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
       const client = await (create as any)({
         session: `company-${companyId}`,
         tokenStore: neonStore,
-        headless: true, // Obrigatório para Render.com
+        headless: 'new', // Recomendado para versões recentes do Puppeteer
         logQR: false,
         updatesLog: false,
-        autoClose: 60000,
+        autoClose: 0,    // PATCH: Desabilitado para evitar "Auto Close Called" fatal
         waitForLogin: true,
         disableWelcome: true,
         folderNameToken: SESSION_BASE_DIR,
-        waVersion: '2.2412.54', // Estabiliza WAPI
+        waVersion: '2.2412.54',
         catchQR: (base64Qr: string) => {
           const uri = base64Qr.startsWith('data:') ? base64Qr : `data:image/png;base64,${base64Qr}`;
           this.qrCodes.set(companyId, uri);
           this.statuses.set(companyId, 'QR_READY');
-          this.logger.log(`[WA-QR][${companyId}] QR Code disponível para scan.`);
         },
         statusFind: (statusSession: string) => {
           this.handleStatusChange(companyId, statusSession);
         },
         puppeteerOptions: {
-          // Evita crash se o binário específico não existir. No Render, o Puppeteer 
-          // geralmente instala o Chromium na cache local, e remover o path fixo permite 
-          // que ele encontre o binário automaticamente.
           executablePath: process.env.CHROME_PATH || undefined, 
           args: [
             `--user-agent=${WHATSAPP_USER_AGENT}`,
-            '--no-sandbox',                // Essencial: permite rodar em containers sem privilégios de root
-            '--disable-setuid-sandbox',     // Reforça a segurança no isolamento do processo
-            '--disable-dev-shm-usage',      // Usa /tmp em vez de /dev/shm para evitar crash por falta de memória compartilhada
-            '--disable-gpu',                // Desabilita aceleração de hardware (não disponível em servidores cloud)
-            '--no-zygote',                  // Previne problemas de fork em ambientes restritos
-            '--single-process',             // Economiza memória, rodando o browser em um único processo
-            '--disable-extensions',         // Evita overhead de carregar extensões desnecessárias
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--no-zygote',
+            '--single-process',
+            '--disable-extensions',
           ],
         },
       } as any);
@@ -326,11 +250,20 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
       
       return client;
     } catch (error) {
-      this.logger.error(`[WA-FATAL][${companyId}] Falha na inicialização: ${error.message}`);
+      const msg = error.message;
+      
+      // PATCH: Silencia erros de fechamento automático ou protocolo do Puppeteer
+      if (msg.includes('Auto Close Called') || msg.includes('Target.closeTarget')) {
+        this.logger.warn(`[WA-INIT-RESET][${companyId}] Inicialização interrompida: ${msg}. Tentando resetar...`);
+        this.handleRetry(companyId);
+        return null;
+      }
+
+      this.logger.error(`[WA-FATAL][${companyId}] Falha na inicialização: ${msg}`);
       this.statuses.set(companyId, 'DISCONNECTED');
       this.initializations.delete(companyId);
       this.cleanupMemory(companyId);
-      throw error;
+      return null;
     }
   }
 
@@ -346,18 +279,21 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
       case 'notLogged':
         this.statuses.set(companyId, 'QR_READY');
         break;
+      case 'autocloseCalled':
+      case 'qrReadError':
+      case 'disconnectedMobile':
+        this.logger.warn(`[WA-RETRY][${companyId}] Estado crítico detectado: ${status}. Reiniciando em 10s...`);
+        this.handleRetry(companyId);
+        break;
       case 'connecting':
       case 'browserClose':
         this.statuses.set(companyId, 'CONNECTING');
-        break;
-      case 'authenficated':
-        this.statuses.set(companyId, 'AUTHENTICATING');
         break;
       default:
         this.statuses.set(companyId, 'DISCONNECTED');
     }
 
-    // Persiste status no banco
+    // Persiste status no banco se conectado
     if (this.statuses.get(companyId) === 'CONNECTED') {
       (this.prisma.company as any).update({
         where: { id: companyId },
@@ -366,11 +302,21 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
     }
   }
 
+  /**
+   * PATCH: Lógica de retry resiliente para evitar Unhandled Rejections
+   */
+  private handleRetry(companyId: string) {
+    this.cleanupMemory(companyId);
+    setTimeout(() => {
+      this.createSession(companyId).catch(err => 
+        this.logger.error(`[WA-RETRY-FAILED][${companyId}] Erro ao reiniciar: ${err.message}`)
+      );
+    }, 10000); // 10s de intervalo para respiro do container
+  }
+
   private setupMessageListener(client: WhatsappClient, companyId: string) {
     client.onMessage(async (message: any) => {
       if (message.isGroupMsg) return;
-      
-      // Enfileira para processamento inteligente
       await this.whatsappQueue.add('processIncomingMessage', {
         companyId,
         from: message.from,
@@ -384,8 +330,6 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
       if ((state as any) === 'DISCONNECTED') await this.terminateSession(companyId);
     });
   }
-
-  // ─── Helpers ──────────────────────────────────────────────────────────────
 
   getQrCode(companyId: string) {
     return this.qrCodes.get(companyId);
@@ -402,9 +346,13 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
   async onApplicationShutdown() { await this.shutdownAll(); }
 
   private async shutdownAll() {
-    this.logger.log('Limpando instâncias do WhatsApp antes do encerramento...');
+    this.logger.log('Encerrando instâncias do WhatsApp...');
     for (const [id, client] of this.clients.entries()) {
-      await client.close().catch(() => null);
+      try {
+        await client.close();
+      } catch {
+        // Ignora erros no shutdown
+      }
     }
   }
 }
