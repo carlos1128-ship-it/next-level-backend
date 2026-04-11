@@ -13,6 +13,7 @@ function normalizeDatabaseUrl(raw: string | undefined): string | undefined {
       return raw;
     }
 
+    // OTIMIZACAO: Ajustar parametros de conexao para producao
     if (!url.searchParams.has('sslmode')) {
       url.searchParams.set('sslmode', 'require');
     }
@@ -21,12 +22,17 @@ function normalizeDatabaseUrl(raw: string | undefined): string | undefined {
       url.searchParams.set('connect_timeout', '30');
     }
 
+    // OTIMIZACAO: Limitar conexoes para evitar exhaustion no Render (free tier)
     if (!url.searchParams.has('connection_limit')) {
-      url.searchParams.set('connection_limit', '5');
+      url.searchParams.set('connection_limit', '3'); // Reduzido de 5 para 3
     }
 
     if (!url.searchParams.has('pool_timeout')) {
       url.searchParams.set('pool_timeout', '30');
+    }
+
+    if (!url.searchParams.has('pgbouncer')) {
+      url.searchParams.set('pgbouncer', 'true'); // Otimizado para connection pooling
     }
 
     return url.toString();
@@ -61,8 +67,26 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   private readonly logger = new Logger(PrismaService.name);
   private readonly columnAvailabilityCache = new Map<string, boolean>();
   private readonly columnAvailabilityWarned = new Set<string>();
+  private static connectionInitialized = false;
+  private static connectionPromise: Promise<void> | null = null;
 
   async onModuleInit(): Promise<void> {
+    // OTIMIZACAO: Singleton de conexao para evitar multiplas inicializacoes
+    if (PrismaService.connectionInitialized) {
+      this.logger.log('Conexao ja inicializada, reutilizando instancia singleton');
+      return;
+    }
+
+    if (PrismaService.connectionPromise) {
+      this.logger.log('Conexao em andamento, aguardando...');
+      return PrismaService.connectionPromise;
+    }
+
+    PrismaService.connectionPromise = this.initializeConnection();
+    await PrismaService.connectionPromise;
+  }
+
+  private async initializeConnection(): Promise<void> {
     const startTime = Date.now();
     const maxAttempts = resolveRetryCount();
     const retryDelayMs = resolveRetryDelayMs();
@@ -75,6 +99,8 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         await this.$queryRaw`SELECT 1`;
         const elapsed = Date.now() - startTime;
         this.logger.log(`Conexao com banco validada em ${elapsed}ms`);
+        PrismaService.connectionInitialized = true;
+        PrismaService.connectionPromise = null;
         return;
       } catch (error) {
         const isLastAttempt = attempt === maxAttempts;
@@ -86,6 +112,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         );
 
         if (isLastAttempt) {
+          PrismaService.connectionPromise = null;
           throw error;
         }
 
@@ -95,6 +122,8 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   }
 
   async onModuleDestroy(): Promise<void> {
+    PrismaService.connectionInitialized = false;
+    PrismaService.connectionPromise = null;
     await this.$disconnect();
   }
 

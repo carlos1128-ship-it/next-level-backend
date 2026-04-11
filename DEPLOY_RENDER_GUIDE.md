@@ -59,6 +59,9 @@ TRUST_PROXY=1
 ### ⚠️ Variáveis para Evitar Loop de Puppeteer
 ```
 WPPCONNECT_HEADLESS=true
+WHATSAPP_RESTORE_SESSIONS_ON_BOOT=true
+WHATSAPP_BOOT_RESTORE_DELAY_MS=15000
+WHATSAPP_RETRY_DELAY_MS=20000
 ```
 
 Observacao:
@@ -89,6 +92,20 @@ Observacao:
 - Prisma retry reduzido (4.5s máximo)
 - Logs de timing para identificar gargalos
 - Binding `0.0.0.0` garante detecção imediata
+- Restore das sessões WhatsApp adiado para depois do boot do app
+
+### Log mostra `Auto close configured to 180s`
+**Causa**: O deploy ainda está com a versão antiga da configuração do WPPConnect
+**Solução**:
+- O backend agora desabilita `autoClose` e `deviceSyncTimeout`
+- Refaça o deploy e confirme se o log desapareceu
+
+### Sessão entra em `disconnectedMobile` e logo reinicia
+**Causa**: Queda transitória do cliente ou pareamento exigindo QR novo
+**Solução aplicada**:
+- Retry seguro sem `logout` automático
+- Sem limpeza destrutiva da pasta da sessão em toda desconexão transitória
+- Cleanup pesado só em erro real de lock/processo travado
 
 ## 📊 Logs Esperados no Deploy Bem-Sucedido
 

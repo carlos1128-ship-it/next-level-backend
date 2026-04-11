@@ -57,6 +57,14 @@ NODE_ENV=production
 PORT=3333
 ```
 
+Recomendadas para o ciclo de vida do WhatsApp em producao:
+
+```env
+WHATSAPP_RESTORE_SESSIONS_ON_BOOT=true
+WHATSAPP_BOOT_RESTORE_DELAY_MS=15000
+WHATSAPP_RETRY_DELAY_MS=20000
+```
+
 Para o banco Neon, o backend ja normaliza:
 
 - `sslmode=require`
@@ -86,3 +94,15 @@ Se aparecer `browser is already running`:
 1. Reinicie o servico
 2. Se possivel, limpe `/tmp/.wppconnect`
 3. O backend ja faz cleanup pesado e retry com espera maior
+
+Se aparecer `Auto close configured to 180s`:
+
+1. O deploy ainda esta com uma versao antiga do backend
+2. O codigo atual desabilita `autoClose` e `deviceSyncTimeout`
+3. Faca um novo deploy e confirme que esse log desapareceu
+
+Se a sessao cair para `disconnectedMobile` e voltar para QR:
+
+1. Isso deve gerar retry seguro, sem logout forzado
+2. O backend nao deve mais apagar a sessao em toda desconexao transitoria
+3. Se ainda houver loop, revise as env vars acima e o path `/tmp/.wppconnect`
