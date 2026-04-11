@@ -18,7 +18,8 @@ import {
   create,
   Whatsapp as WhatsappClient,
 } from '@wppconnect-team/wppconnect';
-import { mkdir, rm } from 'node:fs/promises';
+import * as fs from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   SessionToken,
@@ -339,7 +340,8 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
         disableWelcome: true,
         folderNameToken: SESSION_BASE_DIR,
         waVersion: '2.2412.54',
-        catchQR: (base64Qr: string) => {
+        catchQR: (base64Qr: string, _asciiQr: string, attempts?: number) => {
+          this.logger.log(`[QR-CODE][${companyId}] Gerado. Tentativa: ${attempts ?? 1}`);
           const uri = base64Qr.startsWith('data:') ? base64Qr : `data:image/png;base64,${base64Qr}`;
           this.qrCodes.set(companyId, uri);
           this.statuses.set(companyId, 'QR_READY');
@@ -352,6 +354,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
             process.env.PUPPETEER_EXECUTABLE_PATH ||
             process.env.CHROME_PATH ||
             undefined,
+          userDataDir: this.getSessionDir(companyId),
           args: [
             `--user-agent=${WHATSAPP_USER_AGENT}`,
             ...RENDER_PUPPETEER_ARGS,
@@ -406,7 +409,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
       case 'autocloseCalled':
       case 'qrReadError':
       case 'disconnectedMobile':
-        this.logger.warn(`[WA-RETRY][${companyId}] Estado crítico detectado: ${status}. Reiniciando em 10s...`);
+        this.logger.warn(`[WA-RETRY][${companyId}] Estado crítico detectado: ${status}. Reiniciando em 20s...`);
         this.handleRetry(companyId);
         break;
       case 'connecting':
@@ -436,11 +439,13 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
    */
   private handleRetry(companyId: string) {
     this.cleanupMemory(companyId);
+    void this.forceCleanup(companyId);
     setTimeout(() => {
+      void this.forceCleanup(companyId);
       this.createSession(companyId).catch(err => 
         this.logger.error(`[WA-RETRY-FAILED][${companyId}] Erro ao reiniciar: ${err.message}`)
       );
-    }, 10000); // 10s de intervalo para respiro do container
+    }, 20000); // 20s para o Chromium liberar sockets e arquivos
   }
 
   private setupMessageListener(client: WhatsappClient, companyId: string) {
@@ -487,10 +492,37 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
   }
 
   private async cleanupStaleSessionFiles(companyId: string) {
-    await rm(this.getSessionDir(companyId), { recursive: true, force: true }).catch((error) => {
+    await this.forceCleanup(companyId);
+  }
+
+  private async forceCleanup(companyId: string) {
+    const sessionPath = this.getSessionDir(companyId);
+    this.logger.log(`[WA-CLEANUP][${companyId}] Iniciando limpeza pesada em ${sessionPath}`);
+
+    try {
+      if (fs.existsSync(sessionPath)) {
+        fs.rmSync(sessionPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 1000 });
+        this.logger.log(`[WA-CLEANUP][${companyId}] Pasta da sessão removida.`);
+      }
+      return;
+    } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`[WA-CLEANUP][${companyId}] Falha ao limpar sessão: ${msg}`);
-    });
+      this.logger.warn(`[WA-CLEANUP][${companyId}] Falha inicial ao apagar sessão: ${msg}`);
+    }
+
+    try {
+      if (!fs.existsSync(sessionPath)) {
+        return;
+      }
+
+      const tempPath = `${sessionPath}-old-${Date.now()}`;
+      fs.renameSync(sessionPath, tempPath);
+      fs.rmSync(tempPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 1000 });
+      this.logger.log(`[WA-CLEANUP][${companyId}] Sessão renomeada e removida com sucesso.`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      this.logger.error(`[WA-FATAL][${companyId}] Não foi possível limpar a pasta da sessão: ${msg}`);
+    }
   }
 
   private shouldResetSessionArtifacts(message: string) {
