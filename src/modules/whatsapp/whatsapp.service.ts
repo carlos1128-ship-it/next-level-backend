@@ -200,6 +200,61 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
     }
   }
 
+  async sendBulkMessages(data: {
+    companyId: string;
+    numbers: string[];
+    message: string;
+    delayRange?: [number, number];
+  }) {
+    const { companyId, numbers, message, delayRange = [20000, 40000] } = data;
+    const client = this.clients.get(companyId);
+
+    if (!client) {
+      throw new BadRequestException('WhatsApp não conectado');
+    }
+
+    this.logger.log(`[BULK][${companyId}] Iniciando disparo para ${numbers.length} números.`);
+
+    // Executa em background para não travar a requisição HTTP
+    (async () => {
+      for (const number of numbers) {
+        try {
+          const formatted = number.includes('@') ? number : `${number.replace(/\D/g, '')}@c.us`;
+          await client.sendText(formatted, message);
+          
+          const delay = Math.floor(Math.random() * (delayRange[1] - delayRange[0] + 1)) + delayRange[0];
+          this.logger.log(`[BULK][${companyId}] Enviado para ${number}. Aguardando ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        } catch (err) {
+          this.logger.error(`[BULK-ERR][${companyId}] Falha ao enviar para ${number}: ${err.message}`);
+        }
+      }
+      this.logger.log(`[BULK][${companyId}] Disparo finalizado.`);
+    })();
+
+    return { success: true, count: numbers.length };
+  }
+
+  async getProfile(companyId: string) {
+    const client = this.clients.get(companyId);
+    if (!client) return null;
+    try {
+      return await client.getHostDevice();
+    } catch {
+      return null;
+    }
+  }
+
+  async checkLiveStatus(companyId: string) {
+    const client = this.clients.get(companyId);
+    if (!client) return false;
+    try {
+      return await client.isConnected();
+    } catch {
+      return false;
+    }
+  }
+
   // ─── Lógica de Engine (Privada) ─────────────────────────────────────────────
 
   private async bootstrapClient(companyId: string): Promise<WhatsappClient | null> {
