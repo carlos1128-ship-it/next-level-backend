@@ -6,10 +6,14 @@ RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
     ca-certificates \
+    apt-transport-https \
     procps \
     libxss1 \
-    chromium \
     --no-install-recommends \
+    && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
+    && sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list' \
+    && apt-get update \
+    && apt-get install -y google-chrome-stable --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
@@ -32,7 +36,7 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV PORT=3333
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
 
 RUN apt-get update && apt-get install -y \
     openssl \
@@ -40,10 +44,14 @@ RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
     ca-certificates \
+    apt-transport-https \
     procps \
     libxss1 \
-    chromium \
     --no-install-recommends \
+    && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
+    && sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list' \
+    && apt-get update \
+    && apt-get install -y google-chrome-stable --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/package*.json ./
