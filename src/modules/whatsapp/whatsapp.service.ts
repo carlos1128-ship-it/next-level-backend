@@ -127,6 +127,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
   private readonly initializations = new Map<string, Promise<WhatsappClient | null>>();
   private readonly qrCodes = new Map<string, string>();
   private readonly statuses = new Map<string, WhatsappStatus>();
+  private readonly retryTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -152,8 +153,13 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
   }
 
   async createSession(companyId: string) {
+    this.cancelRetry(companyId);
+
     if (this.clients.has(companyId)) {
-      return { status: 'CONNECTED', qrCode: undefined };
+      return {
+        status: this.getStatus(companyId),
+        qrCode: this.qrCodes.get(companyId),
+      };
     }
 
     if (this.initializations.has(companyId)) {
@@ -171,6 +177,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
 
   async terminateSession(companyId: string): Promise<boolean> {
     const client = this.clients.get(companyId);
+    this.cancelRetry(companyId);
     
     try {
       if (client) {
@@ -203,19 +210,21 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
 
   async sendTextMessage(companyId: string, externalId: string, message: string) {
     const status = this.getStatus(companyId);
-    if (status !== 'CONNECTED') {
+    if (status !== 'CONNECTED' && status !== 'AUTHENTICATING') {
       throw new BadRequestException(`WhatsApp não conectado para empresa ${companyId}`);
     }
 
     try {
-      const job = await this.whatsappQueue.add('sendAutoReply', {
+      const job = await this.whatsappQueue.add('sendText', {
         companyId,
-        from: externalId,
+        to: externalId,
         message,
       }, {
         attempts: 3,
         backoff: { type: 'exponential', delay: 2000 },
-        priority: 1
+        priority: 1,
+        removeOnComplete: true,
+        removeOnFail: false,
       });
 
       return { success: true, messageId: job.id?.toString() };
@@ -315,9 +324,14 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
     try {
       const connected = await client.isConnected();
       if (connected) {
+        this.cancelRetry(companyId);
         this.statuses.set(companyId, 'CONNECTED');
         await this.syncConnectedProfile(companyId, client);
       } else {
+        const currentStatus = this.getStatus(companyId);
+        if (currentStatus === 'QR_READY' || currentStatus === 'AUTHENTICATING' || this.initializations.has(companyId)) {
+          return false;
+        }
         this.statuses.set(companyId, 'DISCONNECTED');
         await (this.prisma.company as any).update({
           where: { id: companyId },
@@ -350,12 +364,12 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
         waitForLogin: true,
         disableWelcome: true,
         folderNameToken: SESSION_BASE_DIR,
-        waVersion: '2.2412.54',
         catchQR: (base64Qr: string, _asciiQr: string, attempts?: number) => {
           this.logger.log(`[QR-CODE][${companyId}] Gerado. Tentativa: ${attempts ?? 1}`);
           const uri = base64Qr.startsWith('data:') ? base64Qr : `data:image/png;base64,${base64Qr}`;
           this.qrCodes.set(companyId, uri);
           this.statuses.set(companyId, 'QR_READY');
+          this.cancelRetry(companyId);
         },
         statusFind: (statusSession: string) => {
           this.handleStatusChange(companyId, statusSession);
@@ -390,7 +404,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
       // PATCH: Silencia erros de fechamento automático ou protocolo do Puppeteer
       if (msg.includes('Auto Close Called') || msg.includes('Target.closeTarget')) {
         this.logger.warn(`[WA-INIT-RESET][${companyId}] Inicialização interrompida: ${msg}. Tentando resetar...`);
-        this.handleRetry(companyId);
+        this.scheduleRetry(companyId, 'bootstrap-interrupted');
         return null;
       }
 
@@ -409,16 +423,27 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
       case 'isLogged':
       case 'qrReadSuccess':
       case 'chatsAvailable':
+        this.cancelRetry(companyId);
         this.statuses.set(companyId, 'CONNECTED');
         break;
+      case 'inChat':
+      case 'initWhatsapp':
+      case 'openBrowser':
+      case 'connectBrowserWs':
+      case 'waitChat':
+        this.cancelRetry(companyId);
+        this.statuses.set(companyId, 'AUTHENTICATING');
+        break;
       case 'notLogged':
+        this.cancelRetry(companyId);
         this.statuses.set(companyId, 'QR_READY');
         break;
       case 'autocloseCalled':
       case 'qrReadError':
       case 'disconnectedMobile':
         this.logger.warn(`[WA-RETRY][${companyId}] Estado crítico detectado: ${status}. Reiniciando em 20s...`);
-        this.handleRetry(companyId);
+        this.statuses.set(companyId, 'CONNECTING');
+        this.scheduleRetry(companyId, status);
         break;
       case 'connecting':
       case 'browserClose':
@@ -445,25 +470,64 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
   /**
    * PATCH: Lógica de retry resiliente para evitar Unhandled Rejections
    */
-  private handleRetry(companyId: string) {
+  private scheduleRetry(companyId: string, reason: string) {
+    if (this.retryTimers.has(companyId)) {
+      return;
+    }
+
+    const retryTimer = setTimeout(() => {
+      this.retryTimers.delete(companyId);
+      void this.retrySession(companyId, reason);
+    }, 20000);
+
+    this.retryTimers.set(companyId, retryTimer);
+  }
+
+  private cancelRetry(companyId: string) {
+    const retryTimer = this.retryTimers.get(companyId);
+    if (!retryTimer) {
+      return;
+    }
+
+    clearTimeout(retryTimer);
+    this.retryTimers.delete(companyId);
+  }
+
+  private async retrySession(companyId: string, reason: string) {
+    const currentStatus = this.getStatus(companyId);
+    if (currentStatus === 'CONNECTED' || currentStatus === 'QR_READY' || currentStatus === 'AUTHENTICATING') {
+      this.logger.log(`[WA-RETRY-SKIP][${companyId}] Sessão se recuperou (${currentStatus}). Retry por ${reason} cancelado.`);
+      return;
+    }
+
+    this.logger.warn(`[WA-RETRY-RUN][${companyId}] Reiniciando sessão após ${reason}.`);
+
+    const client = this.clients.get(companyId);
+    if (client) {
+      await client.close().catch((error) => {
+        const msg = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`[WA-CLOSE][${companyId}] Falha ao fechar cliente no retry: ${msg}`);
+      });
+    }
+
     this.cleanupMemory(companyId);
-    void this.forceCleanup(companyId);
-    setTimeout(() => {
-      void this.forceCleanup(companyId);
-      this.createSession(companyId).catch(err => 
-        this.logger.error(`[WA-RETRY-FAILED][${companyId}] Erro ao reiniciar: ${err.message}`)
-      );
-    }, 20000); // 20s para o Chromium liberar sockets e arquivos
+    await this.forceCleanup(companyId);
+    await this.createSession(companyId).catch(err =>
+      this.logger.error(`[WA-RETRY-FAILED][${companyId}] Erro ao reiniciar: ${err.message}`),
+    );
   }
 
   private setupMessageListener(client: WhatsappClient, companyId: string) {
     client.onMessage(async (message: any) => {
-      if (message.isGroupMsg) return;
+      if (message.isGroupMsg || message.fromMe || !message.body) return;
       await this.whatsappQueue.add('processIncomingMessage', {
         companyId,
         from: message.from,
         message: message.body,
         name: (message as any).sender?.pushname || (message as any).sender?.name,
+      }, {
+        removeOnComplete: true,
+        removeOnFail: false,
       });
     });
 
@@ -654,6 +718,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
 
   private async shutdownAll() {
     this.logger.log('Encerrando instâncias do WhatsApp...');
+    for (const retryTimer of this.retryTimers.values()) {
+      clearTimeout(retryTimer);
+    }
+    this.retryTimers.clear();
     for (const [id, client] of this.clients.entries()) {
       try {
         await client.close();

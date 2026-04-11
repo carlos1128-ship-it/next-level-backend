@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common';
 import { AnalysisService } from './analysis.service';
-import { PrismaService } from '../../prisma/prisma.service';
-import { AlertsService } from '../alerts/alerts.service';
+import { AlertsModule } from '../alerts/alerts.module';
 
 @Module({
-  providers: [AnalysisService, PrismaService, AlertsService],
+  imports: [AlertsModule],
+  providers: [AnalysisService],
 })
 export class AnalysisModule {}

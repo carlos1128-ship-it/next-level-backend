@@ -1,11 +1,14 @@
 {
   "name": "next-level-backend",
   "version": "1.0.0",
+  "engines": {
+    "node": "20.x"
+  },
   "private": true,
   "scripts": {
     "dev": "nest start --watch",
     "build": "nest build",
-    "start": "node dist/main.js",
+    "start": "node dist/main",
     "start:prod": "prisma migrate deploy && node dist/main.js",
     "smoke": "powershell -ExecutionPolicy Bypass -File scripts/smoke-test.ps1",
     "test:integration": "powershell -ExecutionPolicy Bypass -File scripts/integration-test.ps1",

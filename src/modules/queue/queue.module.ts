@@ -2,8 +2,6 @@ import { DynamicModule, Logger, Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import {
   WEBHOOKS_QUEUE_ENABLED,
-  createRedisConnection,
-  getRedisUrl,
   isRedisConfigured,
 } from './queue.constants';
 
@@ -11,7 +9,6 @@ import {
 export class QueueModule {
   static register(): DynamicModule {
     const logger = new Logger(QueueModule.name);
-    const redisUrl = getRedisUrl();
     const queueEnabled = isRedisConfigured();
 
     if (!queueEnabled) {
@@ -26,9 +23,6 @@ export class QueueModule {
     return {
       module: QueueModule,
       imports: [
-        BullModule.forRoot({
-          connection: createRedisConnection(redisUrl),
-        }),
         BullModule.registerQueue({
           name: 'webhooks_queue',
           defaultJobOptions: {

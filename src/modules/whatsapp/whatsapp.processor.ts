@@ -1,9 +1,8 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Job } from 'bullmq';
-import { PrismaService } from '../../prisma/prisma.service';
-import { ChatService } from '../ai/chat.service';
 import { WhatsappService } from './whatsapp.service';
 
 @Processor('whatsapp-queue')
@@ -11,9 +10,8 @@ export class WhatsappProcessor extends WorkerHost {
   private readonly logger = new Logger(WhatsappProcessor.name);
 
   constructor(
-    private readonly prisma: PrismaService,
-    private readonly chatService: ChatService,
     private readonly moduleRef: ModuleRef,
+    private readonly eventEmitter: EventEmitter2,
   ) {
     super();
   }
@@ -24,43 +22,42 @@ export class WhatsappProcessor extends WorkerHost {
     switch (job.name) {
       case 'processIncomingMessage':
         return this.handleIncomingMessage(companyId, message, from, name);
-      case 'sendAutoReply':
-        return this.handleAutoReply(companyId, message, from);
+      case 'sendText':
+        return this.handleSendText(job);
       case 'sendBulkMessage':
         return this.handleBulkMessage(job);
       default:
         this.logger.warn(`Job desconhecido: ${job.name}`);
+        return null;
     }
   }
 
   private async handleIncomingMessage(companyId: string, text: string, from: string, name: string) {
     this.logger.log(`[PROCESS][${companyId}] Mensagem de ${from}: ${text.substring(0, 50)}...`);
-    // Lógica para repassar para o AttendantService se necessário (via EventEmitter)
+
+    await this.eventEmitter.emitAsync('whatsapp.message.received', {
+      companyId,
+      from,
+      text,
+      name,
+    });
+
+    return { delivered: true };
   }
 
-  private async handleAutoReply(companyId: string, text: string, from: string) {
-    try {
-      const company = await this.prisma.company.findUnique({
-        where: { id: companyId },
-        select: { userId: true },
-      });
+  private async handleSendText(job: Job<any, any, string>) {
+    const { companyId, to, message } = job.data as {
+      companyId: string;
+      to: string;
+      message: string;
+    };
 
-      if (!(company as any)?.userId) return;
+    const client = this.getClient(companyId);
+    const target = this.normalizeRecipient(to);
 
-      const aiResponse = await this.chatService.chat((company as any).userId, {
-        companyId,
-        message: text,
-      });
-
-      if (aiResponse.response) {
-        // Nota: O disparo real de volta para o WhatsappService deve ser feito via Evento ou Injeção circular
-        this.logger.log(`[AI-REPLY][${companyId}] Resposta gerada para ${from}`);
-        return { response: aiResponse.response, to: from };
-      }
-    } catch (error) {
-      this.logger.error(`[AI-ERROR][${companyId}] Falha na resposta automática: ${error.message}`);
-      throw error;
-    }
+    await client.sendText(target, message);
+    this.logger.log(`[SEND][${companyId}] Mensagem enviada para ${target}`);
+    return { success: true, to: target };
   }
 
   private async handleBulkMessage(job: Job<any, any, string>) {
@@ -70,6 +67,15 @@ export class WhatsappProcessor extends WorkerHost {
       message: string;
     };
 
+    const client = this.getClient(companyId);
+    const target = this.normalizeRecipient(phoneNumber);
+
+    await client.sendText(target, message);
+    this.logger.log(`[BULK][${companyId}] Mensagem enviada para ${target}`);
+    return { success: true, to: target };
+  }
+
+  private getClient(companyId: string) {
     const whatsappService = this.moduleRef.get(WhatsappService, { strict: false });
     const client = whatsappService?.getClient(companyId);
 
@@ -77,12 +83,13 @@ export class WhatsappProcessor extends WorkerHost {
       throw new Error(`WhatsApp não conectado para ${companyId}`);
     }
 
-    const rawPhone = String(phoneNumber || '').trim();
-    const sanitized = rawPhone.replace(/\D/g, '');
-    const target = rawPhone.includes('@') ? rawPhone : `${sanitized}@c.us`;
+    return client;
+  }
 
-    await client.sendText(target, message);
-    this.logger.log(`[BULK][${companyId}] Mensagem enviada para ${phoneNumber}`);
-    return { success: true, to: target };
+  private normalizeRecipient(recipient: string) {
+    const rawRecipient = String(recipient || '').trim();
+    return rawRecipient.includes('@')
+      ? rawRecipient
+      : `${rawRecipient.replace(/\D/g, '')}@c.us`;
   }
 }
