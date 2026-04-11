@@ -53,6 +53,12 @@ const RENDER_PUPPETEER_ARGS = [
   '--disable-gpu',
   '--disable-extensions',
 ];
+const BROWSER_PATH_CANDIDATES = [
+  '/usr/bin/google-chrome-stable',
+  '/usr/bin/google-chrome',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+];
 
 // ─── NeonTokenStore ───────────────────────────────────────────────────────────
 
@@ -350,10 +356,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
           this.handleStatusChange(companyId, statusSession);
         },
         puppeteerOptions: {
-          executablePath:
-            process.env.PUPPETEER_EXECUTABLE_PATH ||
-            process.env.CHROME_PATH ||
-            undefined,
+          executablePath: this.resolveBrowserExecutablePath(),
           userDataDir: this.getSessionDir(companyId),
           args: [
             `--user-agent=${WHATSAPP_USER_AGENT}`,
@@ -485,6 +488,21 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
 
   private async ensureSessionBaseDir() {
     await mkdir(SESSION_BASE_DIR, { recursive: true }).catch(() => null);
+  }
+
+  private resolveBrowserExecutablePath() {
+    const configuredPaths = [
+      process.env.PUPPETEER_EXECUTABLE_PATH,
+      process.env.CHROME_PATH,
+    ].filter((value): value is string => Boolean(value?.trim()));
+
+    for (const candidate of [...configuredPaths, ...BROWSER_PATH_CANDIDATES]) {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+
+    return configuredPaths[0] || undefined;
   }
 
   private getSessionDir(companyId: string) {
