@@ -1,8 +1,10 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { Job } from 'bullmq';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ChatService } from '../ai/chat.service';
+import { WhatsappService } from './whatsapp.service';
 
 @Processor('whatsapp-queue')
 export class WhatsappProcessor extends WorkerHost {
@@ -11,6 +13,7 @@ export class WhatsappProcessor extends WorkerHost {
   constructor(
     private readonly prisma: PrismaService,
     private readonly chatService: ChatService,
+    private readonly moduleRef: ModuleRef,
   ) {
     super();
   }
@@ -23,6 +26,8 @@ export class WhatsappProcessor extends WorkerHost {
         return this.handleIncomingMessage(companyId, message, from, name);
       case 'sendAutoReply':
         return this.handleAutoReply(companyId, message, from);
+      case 'sendBulkMessage':
+        return this.handleBulkMessage(job);
       default:
         this.logger.warn(`Job desconhecido: ${job.name}`);
     }
@@ -56,5 +61,28 @@ export class WhatsappProcessor extends WorkerHost {
       this.logger.error(`[AI-ERROR][${companyId}] Falha na resposta automática: ${error.message}`);
       throw error;
     }
+  }
+
+  private async handleBulkMessage(job: Job<any, any, string>) {
+    const { companyId, phoneNumber, message } = job.data as {
+      companyId: string;
+      phoneNumber: string;
+      message: string;
+    };
+
+    const whatsappService = this.moduleRef.get(WhatsappService, { strict: false });
+    const client = whatsappService?.getClient(companyId);
+
+    if (!client) {
+      throw new Error(`WhatsApp não conectado para ${companyId}`);
+    }
+
+    const rawPhone = String(phoneNumber || '').trim();
+    const sanitized = rawPhone.replace(/\D/g, '');
+    const target = rawPhone.includes('@') ? rawPhone : `${sanitized}@c.us`;
+
+    await client.sendText(target, message);
+    this.logger.log(`[BULK][${companyId}] Mensagem enviada para ${phoneNumber}`);
+    return { success: true, to: target };
   }
 }

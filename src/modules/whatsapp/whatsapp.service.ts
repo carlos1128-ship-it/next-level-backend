@@ -18,6 +18,8 @@ import {
   create,
   Whatsapp as WhatsappClient,
 } from '@wppconnect-team/wppconnect';
+import { mkdir, rm } from 'node:fs/promises';
+import path from 'node:path';
 import type {
   SessionToken,
   TokenStore,
@@ -39,6 +41,17 @@ export type WhatsappStatus =
 const SESSION_BASE_DIR = '/tmp/.wppconnect';
 const WHATSAPP_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+const RENDER_PUPPETEER_ARGS = [
+  '--no-sandbox',
+  '--disable-setuid-sandbox',
+  '--disable-dev-shm-usage',
+  '--disable-accelerated-2d-canvas',
+  '--no-first-run',
+  '--no-zygote',
+  '--single-process',
+  '--disable-gpu',
+  '--disable-extensions',
+];
 
 // ─── NeonTokenStore ───────────────────────────────────────────────────────────
 
@@ -207,49 +220,99 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
     delayRange?: [number, number];
   }) {
     const { companyId, numbers, message, delayRange = [20000, 40000] } = data;
-    const client = this.clients.get(companyId);
 
-    if (!client) {
+    if (!this.clients.has(companyId)) {
       throw new BadRequestException('WhatsApp não conectado');
     }
 
     this.logger.log(`[BULK][${companyId}] Iniciando disparo para ${numbers.length} números.`);
 
-    // Executa em background para não travar a requisição HTTP
-    (async () => {
-      for (const number of numbers) {
-        try {
-          const formatted = number.includes('@') ? number : `${number.replace(/\D/g, '')}@c.us`;
-          await client.sendText(formatted, message);
-          
-          const delay = Math.floor(Math.random() * (delayRange[1] - delayRange[0] + 1)) + delayRange[0];
-          this.logger.log(`[BULK][${companyId}] Enviado para ${number}. Aguardando ${delay}ms...`);
-          await new Promise(resolve => setTimeout(resolve, delay));
-        } catch (err) {
-          this.logger.error(`[BULK-ERR][${companyId}] Falha ao enviar para ${number}: ${err.message}`);
-        }
-      }
-      this.logger.log(`[BULK][${companyId}] Disparo finalizado.`);
-    })();
+    let cumulativeDelay = 0;
 
-    return { success: true, count: numbers.length };
+    for (const number of numbers) {
+      const randomDelay =
+        Math.floor(Math.random() * (delayRange[1] - delayRange[0] + 1)) + delayRange[0];
+
+      await this.whatsappQueue.add(
+        'sendBulkMessage',
+        {
+          companyId,
+          phoneNumber: number,
+          message,
+        },
+        {
+          delay: cumulativeDelay,
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 5000 },
+          removeOnComplete: true,
+          removeOnFail: false,
+        },
+      );
+
+      cumulativeDelay += randomDelay;
+    }
+
+    return { success: true, count: numbers.length, queued: true };
   }
 
   async getProfile(companyId: string) {
     const client = this.clients.get(companyId);
-    if (!client) return null;
-    try {
-      return await client.getHostDevice();
-    } catch {
-      return null;
+    const company = await this.prisma.company.findUnique({
+      where: { id: companyId },
+      select: {
+        whatsappStatus: true,
+        whatsappWid: true,
+        whatsappName: true,
+        whatsappAvatar: true,
+      } as any,
+    });
+
+    let hostDevice: any = null;
+    if (client) {
+      try {
+        hostDevice = await client.getHostDevice();
+      } catch {
+        hostDevice = null;
+      }
     }
+
+    const liveWid =
+      hostDevice?.wid?._serialized ||
+      (hostDevice?.wid?.user ? `${hostDevice.wid.user}@c.us` : null);
+
+    return {
+      status: this.getStatus(companyId) || (company as any)?.whatsappStatus || 'DISCONNECTED',
+      wid: liveWid || (company as any)?.whatsappWid || null,
+      phoneNumber:
+        hostDevice?.wid?.user ||
+        ((company as any)?.whatsappWid ? String((company as any).whatsappWid).replace('@c.us', '') : null),
+      name:
+        hostDevice?.pushname ||
+        hostDevice?.formattedName ||
+        hostDevice?.name ||
+        (company as any)?.whatsappName ||
+        null,
+      profilePicUrl: (company as any)?.whatsappAvatar || null,
+      raw: hostDevice,
+    };
   }
 
   async checkLiveStatus(companyId: string) {
     const client = this.clients.get(companyId);
     if (!client) return false;
     try {
-      return await client.isConnected();
+      const connected = await client.isConnected();
+      if (connected) {
+        this.statuses.set(companyId, 'CONNECTED');
+        await this.syncConnectedProfile(companyId, client);
+      } else {
+        this.statuses.set(companyId, 'DISCONNECTED');
+        await (this.prisma.company as any).update({
+          where: { id: companyId },
+          data: { whatsappStatus: 'DISCONNECTED' },
+        }).catch(() => null);
+      }
+      return connected;
     } catch {
       return false;
     }
@@ -257,14 +320,16 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
 
   // ─── Lógica de Engine (Privada) ─────────────────────────────────────────────
 
-  private async bootstrapClient(companyId: string): Promise<WhatsappClient | null> {
+  private async bootstrapClient(companyId: string, recovered = false): Promise<WhatsappClient | null> {
     const neonStore = new NeonTokenStore(this.prisma, companyId, this.logger);
+    const sessionName = `company-${companyId}`;
 
     try {
       this.logger.log(`[WA-INIT][${companyId}] Inicializando motor WPPConnect...`);
+      await this.ensureSessionBaseDir();
       
       const client = await (create as any)({
-        session: `company-${companyId}`,
+        session: sessionName,
         tokenStore: neonStore,
         headless: 'new', // Recomendado para versões recentes do Puppeteer
         logQR: false,
@@ -283,16 +348,13 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
           this.handleStatusChange(companyId, statusSession);
         },
         puppeteerOptions: {
-          executablePath: process.env.CHROME_PATH || undefined, 
+          executablePath:
+            process.env.PUPPETEER_EXECUTABLE_PATH ||
+            process.env.CHROME_PATH ||
+            undefined,
           args: [
             `--user-agent=${WHATSAPP_USER_AGENT}`,
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-gpu',
-            '--no-zygote',
-            '--single-process',
-            '--disable-extensions',
+            ...RENDER_PUPPETEER_ARGS,
           ],
         },
       } as any);
@@ -302,10 +364,17 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
       this.qrCodes.delete(companyId);
       
       this.setupMessageListener(client, companyId);
+      await this.syncConnectedProfile(companyId, client);
       
       return client;
     } catch (error) {
-      const msg = error.message;
+      const msg = error instanceof Error ? error.message : String(error);
+
+      if (!recovered && this.shouldResetSessionArtifacts(msg)) {
+        this.logger.warn(`[WA-LOCK][${companyId}] Sessão travada detectada (${msg}). Limpando artefatos e tentando novamente...`);
+        await this.cleanupStaleSessionFiles(companyId);
+        return this.bootstrapClient(companyId, true);
+      }
       
       // PATCH: Silencia erros de fechamento automático ou protocolo do Puppeteer
       if (msg.includes('Auto Close Called') || msg.includes('Target.closeTarget')) {
@@ -354,6 +423,11 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
         where: { id: companyId },
         data: { whatsappStatus: 'CONNECTED' },
       }).catch(() => null);
+
+      const client = this.clients.get(companyId);
+      if (client) {
+        void this.syncConnectedProfile(companyId, client);
+      }
     }
   }
 
@@ -381,7 +455,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
     });
 
     client.onStateChange(async (state) => {
-      if ((state as any) === 'CONNECTED') this.statuses.set(companyId, 'CONNECTED');
+      if ((state as any) === 'CONNECTED') {
+        this.statuses.set(companyId, 'CONNECTED');
+        await this.syncConnectedProfile(companyId, client);
+      }
       if ((state as any) === 'DISCONNECTED') await this.terminateSession(companyId);
     });
   }
@@ -390,11 +467,87 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy, OnApplica
     return this.qrCodes.get(companyId);
   }
 
+  getClient(companyId: string) {
+    return this.clients.get(companyId) || null;
+  }
+
   private cleanupMemory(companyId: string) {
     this.clients.delete(companyId);
     this.initializations.delete(companyId);
     this.qrCodes.delete(companyId);
     this.statuses.delete(companyId);
+  }
+
+  private async ensureSessionBaseDir() {
+    await mkdir(SESSION_BASE_DIR, { recursive: true }).catch(() => null);
+  }
+
+  private getSessionDir(companyId: string) {
+    return path.posix.join(SESSION_BASE_DIR, `company-${companyId}`);
+  }
+
+  private async cleanupStaleSessionFiles(companyId: string) {
+    await rm(this.getSessionDir(companyId), { recursive: true, force: true }).catch((error) => {
+      const msg = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`[WA-CLEANUP][${companyId}] Falha ao limpar sessão: ${msg}`);
+    });
+  }
+
+  private shouldResetSessionArtifacts(message: string) {
+    const normalized = message.toLowerCase();
+    return (
+      normalized.includes('browser is already running') ||
+      normalized.includes('singletonlock') ||
+      normalized.includes('singletonsocket') ||
+      normalized.includes('singletoncookie') ||
+      normalized.includes('lock file') ||
+      normalized.includes('target closed') ||
+      normalized.includes('failed to launch the browser process')
+    );
+  }
+
+  private async syncConnectedProfile(companyId: string, client: WhatsappClient) {
+    try {
+      const hostDevice = await client.getHostDevice() as any;
+      const wid =
+        hostDevice?.wid?._serialized ||
+        (hostDevice?.wid?.user ? `${hostDevice.wid.user}@c.us` : null);
+      const phoneNumber = hostDevice?.wid?.user || null;
+      const displayName =
+        hostDevice?.pushname || hostDevice?.formattedName || hostDevice?.name || phoneNumber;
+
+      let avatarUrl: string | null = null;
+      if (wid) {
+        try {
+          const profilePic = await client.getProfilePicFromServer(wid);
+          avatarUrl =
+            (profilePic as any)?.eurl ||
+            (profilePic as any)?.imgFull ||
+            (profilePic as any)?.img ||
+            null;
+        } catch {
+          avatarUrl = null;
+        }
+      }
+
+      await (this.prisma.company as any).update({
+        where: { id: companyId },
+        data: {
+          whatsappStatus: 'CONNECTED',
+          whatsappSessionName: `company-${companyId}`,
+          whatsappWid: wid,
+          whatsappName: displayName,
+          whatsappAvatar: avatarUrl,
+        },
+      }).catch(() => null);
+
+      this.logger.log(
+        `[WA-PROFILE][${companyId}] Perfil sincronizado (${displayName || 'sem nome'} / ${phoneNumber || 'sem numero'})`,
+      );
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`[WA-PROFILE][${companyId}] Falha ao sincronizar perfil: ${msg}`);
+    }
   }
 
   async onModuleDestroy() { await this.shutdownAll(); }

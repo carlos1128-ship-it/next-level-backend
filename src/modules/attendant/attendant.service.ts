@@ -176,7 +176,10 @@ export class AttendantService {
 
   async getWhatsappQrCode(companyId: string) {
     const base64 = this.whatsappService.getQrCode(companyId);
-    return { qrCode: base64, status: base64 ? 'WAITING_QR' : 'CONNECTING' };
+    return {
+      qrCode: base64 ?? null,
+      status: this.whatsappService.getStatus(companyId),
+    };
   }
 
   async terminateWhatsappSession(companyId: string) {
