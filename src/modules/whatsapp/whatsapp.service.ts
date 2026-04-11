@@ -66,7 +66,7 @@ class NeonTokenStore implements TokenStore {
     private readonly prisma: PrismaService,
     private readonly companyId: string,
     private readonly logger: Logger,
-  ) {}
+  ) { }
 
   async getToken(_sessionName: string): Promise<SessionToken | undefined> {
     try {
@@ -117,8 +117,7 @@ class NeonTokenStore implements TokenStore {
 
 @Injectable()
 export class WhatsappService
-  implements OnModuleInit, OnModuleDestroy, OnApplicationShutdown
-{
+  implements OnModuleInit, OnModuleDestroy, OnApplicationShutdown {
   private readonly logger = new Logger(WhatsappService.name);
   private readonly clients = new Map<string, WhatsappClient>();
   private readonly initializations = new Map<string, Promise<WhatsappClient | null>>();
@@ -131,7 +130,7 @@ export class WhatsappService
   constructor(
     private readonly prisma: PrismaService,
     @InjectQueue('whatsapp-queue') private readonly whatsappQueue: Queue,
-  ) {}
+  ) { }
 
   async onModuleInit() {
     if (!this.shouldRestoreSessionsOnBoot()) {
@@ -210,6 +209,122 @@ export class WhatsappService
 
   getClient(companyId: string) {
     return this.clients.get(companyId) || null;
+  }
+
+  /**
+   * Health check detalhado por sessão — usado pela aba "Atendente Virtual"
+   * para verificar estado REAL da conexão, não apenas cache local.
+   */
+  async getHealthStatus(companyId: string) {
+    const client = this.clients.get(companyId);
+    const memoryStatus = this.statuses.get(companyId) || 'DISCONNECTED';
+    const qrCode = this.qrCodes.get(companyId) || null;
+    const hasInitialization = this.initializations.has(companyId);
+    const hasRetryTimer = this.retryTimers.has(companyId);
+
+    let isConnected = false;
+    let phoneNumber: string | null = null;
+    let pushname: string | null = null;
+    let lastError: string | null = null;
+    let liveStatus = memoryStatus;
+
+    if (client) {
+      try {
+        isConnected = await client.isConnected();
+        const hostDevice = await client.getHostDevice() as any;
+        phoneNumber = hostDevice?.wid?.user || null;
+        pushname = hostDevice?.pushname || null;
+
+        // Se o cliente está conectado no WPPConnect mas o status de memória é diferente,
+        // corrigir o status para evitar dessincronização entre abas
+        if (!isConnected && memoryStatus === 'CONNECTED') {
+          this.logger.warn(`[WA-HEALTH][${companyId}] Cliente desconectado mas status era CONNECTED. Corrigindo.`);
+          liveStatus = 'DISCONNECTED';
+          this.statuses.set(companyId, 'DISCONNECTED');
+        } else if (isConnected && memoryStatus !== 'CONNECTED') {
+          this.logger.log(`[WA-HEALTH][${companyId}] Cliente conectado mas status era ${memoryStatus}. Corrigindo.`);
+          liveStatus = 'CONNECTED';
+          this.statuses.set(companyId, 'CONNECTED');
+        }
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+        isConnected = false;
+      }
+    }
+
+    // Buscar dados do banco para comparação
+    const company = await this.prisma.company.findUnique({
+      where: { id: companyId },
+      select: {
+        whatsappStatus: true,
+        whatsappWid: true,
+        whatsappName: true,
+        whatsappAvatar: true,
+        whatsappEnabled: true,
+        lastConnectedAt: true,
+      } as any,
+    }).catch(() => null);
+
+    const dbStatus = (company as any)?.whatsappStatus || 'DISCONNECTED';
+    const dbEnabled = (company as any)?.whatsappEnabled || false;
+    const dbLastConnected = (company as any)?.lastConnectedAt || null;
+
+    // Status final é o mais "conectado" entre memória e banco
+    const finalStatus = isConnected ? 'CONNECTED' : liveStatus;
+
+    return {
+      companyId,
+      // Status real (live)
+      status: finalStatus,
+      connected: finalStatus === 'CONNECTED' && isConnected,
+      // Detalhes técnicos
+      qrCode,
+      phoneNumber,
+      pushname,
+      hasClient: !!client,
+      hasInitialization,
+      hasRetryTimer,
+      lastError,
+      // Dados do banco para comparação
+      dbStatus,
+      dbEnabled,
+      dbLastConnected,
+      // Flags de saúde
+      healthy: isConnected && finalStatus === 'CONNECTED',
+      needsReconnect: !isConnected && dbStatus === 'CONNECTED',
+      awaitingQR: !isConnected && (finalStatus === 'QR_READY' || finalStatus === 'CONNECTING'),
+    };
+  }
+
+  /**
+   * Endpoint de cleanup forçado — usado ao trocar de empresa no frontend.
+   * Desconecta, limpa memória E arquivos de sessão.
+   */
+  async forceCleanupSession(companyId: string) {
+    this.logger.log(`[WA-CLEANUP-EXTERNAL][${companyId}] Cleanup externo solicitado.`);
+
+    // Cancelar retries pendentes
+    this.cancelRetry(companyId);
+
+    // Fechar cliente se existir
+    const client = this.clients.get(companyId);
+    if (client) {
+      await this.closeClient(companyId, { logout: false, context: 'external-cleanup' });
+    }
+
+    // Limpar memória
+    this.cleanupMemory(companyId, 'DISCONNECTED');
+
+    // Limpar arquivos de sessão
+    await this.forceCleanup(companyId);
+
+    // Atualizar banco
+    await (this.prisma.company as any).update({
+      where: { id: companyId },
+      data: { whatsappStatus: 'DISCONNECTED' },
+    }).catch(() => null);
+
+    return { success: true, companyId, status: 'DISCONNECTED' };
   }
 
   async sendTextMessage(companyId: string, externalId: string, message: string) {
@@ -372,20 +487,45 @@ export class WhatsappService
     this.logger.log('Restoring active WhatsApp sessions...');
 
     try {
+      // MELHORIA: Restaurar APENAS sessões marcadas como enabled E com lastConnectedAt < 24h
+      // Isso evita restore agressivo de sessões antigas ou inválidas
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
       const activeCompanies = await (this.prisma.company as any).findMany({
-        where: { whatsappStatus: 'CONNECTED' },
+        where: {
+          whatsappStatus: 'CONNECTED',
+          // Apenas sessões recentes (últimas 24h) para evitar restore de sessões órfãs
+          lastConnectedAt: { gte: twentyFourHoursAgo },
+        },
         select: { id: true },
       });
 
-      for (const { id } of activeCompanies) {
-        this.createSession(id).catch((err) =>
-          this.logger.warn(`Failed to restore session ${id}: ${err.message}`),
-        );
+      this.logger.log(`Found ${activeCompanies.length} valid sessions to restore (last 24h)`);
+
+      // MELHORIA: Restaurar com delay escalonado para evitar sobrecarga
+      for (let i = 0; i < activeCompanies.length; i++) {
+        const { id } = activeCompanies[i];
+        // Delay de 1s entre cada sessão para não sobrecarregar o Render
+        setTimeout(() => {
+          this.logger.log(`[WA-RESTORE][${id}] Restoring session (${i + 1}/${activeCompanies.length})`);
+          this.createSession(id).catch((err) =>
+            this.logger.warn(`[WA-RESTORE][${id}] Failed to restore: ${err.message}`),
+          );
+        }, i * 1000);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Failed to list active companies for WhatsApp restore: ${msg}`);
     }
+  }
+
+  private shouldRestoreSessionsOnBoot() {
+    // MELHORIA: Flag para pular restore em ambientes de staging/desenvolvimento
+    if (process.env.WHATSAPP_SKIP_RESTORE_ON_BOOT === 'true') {
+      this.logger.log('WhatsApp session restore skipped (WHATSAPP_SKIP_RESTORE_ON_BOOT=true)');
+      return false;
+    }
+    return process.env.WHATSAPP_RESTORE_SESSIONS_ON_BOOT !== 'false';
   }
 
   private async bootstrapClient(companyId: string, recovered = false): Promise<WhatsappClient | null> {
@@ -494,6 +634,14 @@ export class WhatsappService
       case 'disconnectedMobile':
         this.setStatus(companyId, 'UNPAIRED');
         this.scheduleRetry(companyId, status);
+        break;
+      case 'sessionUnpaired':
+        // MELHORIA: Session Unpaired NÃO deve derrubar o processo.
+        // Apenas registrar log e permitir retry externo (QR Code manual).
+        this.logger.warn(
+          `[WA-UNPAIRED][${companyId}] Sessão despareada. Aguardando reconexão manual ou QR Code.`,
+        );
+        this.setStatus(companyId, 'UNPAIRED', false); // false = não persistir no banco
         break;
       case 'connecting':
       case 'browserClose':
@@ -802,10 +950,6 @@ export class WhatsappService
       where: { id: companyId },
       data: { whatsappStatus: status },
     }).catch(() => null);
-  }
-
-  private shouldRestoreSessionsOnBoot() {
-    return process.env.WHATSAPP_RESTORE_SESSIONS_ON_BOOT !== 'false';
   }
 
   private resolveRetryDelayMs() {

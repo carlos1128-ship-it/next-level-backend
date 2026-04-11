@@ -28,7 +28,7 @@ export class AttendantService {
     private readonly whatsappService: WhatsappService,
     private readonly instagramService: InstagramService,
     private readonly alertsService: AlertsService,
-  ) {}
+  ) { }
 
   private async resolveCompanyIdForUser(userId: string, companyId?: string | null) {
     const normalizedCompanyId = companyId?.trim();
@@ -197,6 +197,21 @@ export class AttendantService {
     };
   }
 
+  /**
+   * Health check detalhado — sincroniza estado real entre memória e banco.
+   * Usado pela aba "Atendente Virtual" para evitar dessincronização.
+   */
+  async getWhatsappHealth(companyId: string) {
+    return this.whatsappService.getHealthStatus(companyId);
+  }
+
+  /**
+   * Cleanup forçado ao trocar de empresa.
+   */
+  async cleanupWhatsappSession(companyId: string) {
+    return this.whatsappService.forceCleanupSession(companyId);
+  }
+
   @OnEvent('whatsapp.message.received')
   async handleWhatsappMessage(payload: {
     companyId: string;
@@ -337,8 +352,8 @@ export class AttendantService {
   }) {
     const historyLines = input.history.length
       ? input.history
-          .map((m) => `${m.role === AiChatRole.USER ? 'Cliente' : input.botName}: ${m.content}`)
-          .join('\n')
+        .map((m) => `${m.role === AiChatRole.USER ? 'Cliente' : input.botName}: ${m.content}`)
+        .join('\n')
       : null;
 
     return [
@@ -383,9 +398,9 @@ export class AttendantService {
 
     const productLines = products.length
       ? products.map(
-          (p) =>
-            `- ${p.name} (categoria: ${p.category ?? 'n/d'}) | preço: R$ ${Number(p.price).toFixed(2)} | estoque: disponível`,
-        )
+        (p) =>
+          `- ${p.name} (categoria: ${p.category ?? 'n/d'}) | preço: R$ ${Number(p.price).toFixed(2)} | estoque: disponível`,
+      )
       : ['Nenhum produto específico encontrado; peça detalhes.'];
 
     const promoLines = promos.length

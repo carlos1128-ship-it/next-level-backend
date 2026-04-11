@@ -6,7 +6,7 @@ import { UpdateBotConfigDto } from './dto/update-bot-config.dto';
 @Controller('attendant')
 @UseGuards(ActiveCompanyGuard)
 export class AttendantController {
-  constructor(private readonly attendantService: AttendantService) {}
+  constructor(private readonly attendantService: AttendantService) { }
 
   @Get('config')
   getConfig(@Req() req: { user: { companyId?: string | null } }, @Query('companyId') companyId?: string) {
@@ -79,6 +79,31 @@ export class AttendantController {
   ) {
     const resolved = companyId || req.user.companyId;
     return this.attendantService.getWhatsappStatus(resolved!);
+  }
+
+  /**
+   * Health check detalhado — usado pela aba Atendente Virtual
+   * para verificar estado REAL da conexão WhatsApp.
+   */
+  @Get('whatsapp/health')
+  getWhatsappHealth(
+    @Req() req: { user: { companyId?: string | null } },
+    @Query('companyId') companyId?: string,
+  ) {
+    const resolved = companyId || req.user.companyId;
+    return this.attendantService.getWhatsappHealth(resolved!);
+  }
+
+  /**
+   * Cleanup forçado ao trocar de empresa.
+   */
+  @Post('whatsapp/cleanup')
+  cleanupWhatsappSession(
+    @Req() req: { user: { companyId?: string | null } },
+    @Query('companyId') companyId?: string,
+  ) {
+    const resolved = companyId || req.user.companyId;
+    return this.attendantService.cleanupWhatsappSession(resolved!);
   }
 
   @Delete('whatsapp/session/:companyId')

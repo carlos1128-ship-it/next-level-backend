@@ -1,11 +1,11 @@
-import { Controller, Get, Post, Param, Body, Logger } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, Logger, Query } from '@nestjs/common';
 import { WhatsappService } from './whatsapp.service';
 
 @Controller('whatsapp/session')
 export class WhatsappController {
   private readonly logger = new Logger(WhatsappController.name);
 
-  constructor(private readonly whatsappService: WhatsappService) {}
+  constructor(private readonly whatsappService: WhatsappService) { }
 
   @Post(':companyId/start')
   async start(@Param('companyId') companyId: string) {
@@ -17,9 +17,9 @@ export class WhatsappController {
   async getQrCode(@Param('companyId') companyId: string) {
     const qr = this.whatsappService.getQrCode(companyId);
     const status = this.whatsappService.getStatus(companyId);
-    return { 
-      qrcode: qr || null, 
-      status 
+    return {
+      qrcode: qr || null,
+      status
     };
   }
 
@@ -27,6 +27,25 @@ export class WhatsappController {
   async getStatus(@Param('companyId') companyId: string) {
     const status = this.whatsappService.getStatus(companyId);
     return { status };
+  }
+
+  /**
+   * Health check detalhado — usado pela aba "Atendente Virtual"
+   * Retorna estado REAL da sessão, incluindo verificação live com o WPPConnect.
+   */
+  @Get(':companyId/health')
+  async getHealth(@Param('companyId') companyId: string) {
+    return this.whatsappService.getHealthStatus(companyId);
+  }
+
+  /**
+   * Cleanup forçado — usado ao trocar de empresa no frontend.
+   * Desconecta, limpa memória e arquivos de sessão.
+   */
+  @Post(':companyId/cleanup')
+  async cleanup(@Param('companyId') companyId: string) {
+    this.logger.log(`[HTTP][CLEANUP] Company: ${companyId}`);
+    return this.whatsappService.forceCleanupSession(companyId);
   }
 
   @Post(':companyId/disconnect')
