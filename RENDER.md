@@ -2,38 +2,36 @@
 
 Para que a integração do WhatsApp funcione corretamente no Render, siga estas etapas:
 
-## 1. Blueprint / Configuração do Serviço
-Certifique-se de que seu serviço de backend no Render tenha memória suficiente (recomenda-se pelo menos 1GB para rodar Puppeteer confortavelmente).
-
-## 2. Environment Variables
-Adicione as seguintes variáveis no painel do Render:
+## 1. Environment Variables (Environment -> Secret Files ou Env Vars)
+Adicione as seguintes variáveis no painel do Render para garantir a estabilidade:
 
 ```env
-# Path para o Chrome instalado no Render
-CHROME_PATH=/usr/bin/google-chrome
+# REDIS: Otimizado para rede interna do Render
+# Use a Internal Redis URL do seu painel
+REDIS_URL=redis://red-d7cojmt7vvec73ehb5vg:6379
 
-# URL do Redis para o BullMQ (Pode ser o Redis do próprio Render)
-REDIS_URL=rediss://default:senha@host:port
-
-# Otimização Prisma (Caso use Neon)
-# DATABASE_URL já deve estar configurada, mas garanta que o pool esteja otimizado.
+# CHROME (Opcional): O Puppeteer agora detecta automaticamente o binário na cache.
+# Se receber "Browser not found", use o caminho extraído do log:
+# CHROME_PATH=/opt/render/project/src/.cache/puppeteer/chrome/linux-146.0.7680.153/chrome-linux64/chrome
 ```
 
-## 3. Persistent Disk (Opcional, mas Recomendado)
-Para evitar que as sessões do WhatsApp expirem a cada deploy:
-1. Adicione um **Disk** no Render.
-2. Monte-o em `/opt/render/project/sessions`.
-3. No `whatsapp.service.ts`, altere `SESSION_BASE_DIR` para este caminho.
-*Nota: Atualmente usamos `/tmp/.wppconnect` que é efêmero (reseta a cada restart).*
+## 2. Build Config (Settings -> Build & Deploy)
+O comando de build deve garantir que o Chrome seja baixado para a cache do ambiente:
 
-## 4. Build Settings
-A integração usa `google-chrome` que não vem por padrão em algumas imagens. Use o build command que garanta as dependências:
+**Build Command:**
+`npm install && npx puppeteer browsers install chrome && npm run build`
 
-```bash
-# Exemplo de build command
-npm install && npx playwright install-deps chromium && npm run build
-```
-Ou adicione as dependências do Puppeteer via Dockerfile se estiver usando Docker.
+## 3. Persistent Sessions (Recomendado)
+Para evitar que os usuários tenham que ler o QR Code a cada deploy:
+1. Adicione um **Render Disk**.
+2. Mount Path: `/tmp/.wppconnect`
+3. Tamanho: 1GB é suficiente.
+*Isso garante que a pasta de sessões persista entre deploys e restarts.*
 
-## 5. BullMQ Dashboard
-Acesse as métricas da fila via `/queues` se habilitar o UI do BullBoard.
+## 4. Otimizações de Rede
+O código já está configurado com `family: 4` no BullMQ para evitar erros de `ECONNREFUSED` que ocorrem na rede IPv6 interna do Render.
+
+## 5. Troubleshooting de Browser
+Se o serviço iniciar, mas o WhatsApp falhar com erro de protocolo:
+1. Verifique se o Render Plan tem pelo menos **1GB de RAM**. Planos de 512MB podem falhar ao abrir o navegador.
+2. Observe os logs: procure pela linha `chrome@xxx /opt/render/...` para confirmar o caminho do binário.
