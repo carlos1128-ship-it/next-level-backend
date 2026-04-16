@@ -90,12 +90,9 @@ model Company {
   defaultTaxRate Decimal? @db.Decimal(5, 2)
   metaPhoneNumberId String?
   metaWabaId        String?
-  whatsappSessionName  String?
-  whatsappWid          String?
-  whatsappName         String?
-  whatsappAvatar       String? @db.Text
-  whatsappStatus       String?
-  whatsappSessionToken String? @db.Text  // Serialized wppconnect token for session persistence across restarts
+  metaAccessToken   String? @db.Text
+  webhookVerifyToken String?
+  instagramAccountId String?
   shopeeShopId       String?
   shopeeUser         String?
   shopeePass         String?

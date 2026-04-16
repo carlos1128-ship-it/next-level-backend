@@ -36,8 +36,6 @@
     "@nestjs/schedule": "^6.1.1",
     "@prisma/client": "^5.22.0",
     "@types/passport-google-oauth20": "^2.0.17",
-    "@types/puppeteer": "^5.4.7",
-    "@wppconnect-team/wppconnect": "^1.41.1",
     "axios": "^1.13.6",
     "bcrypt": "^6.0.0",
     "bullmq": "^5.7.0",
@@ -51,9 +49,6 @@
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
     "passport-jwt": "^4.0.1",
-    "puppeteer": "^24.40.0",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.0",
     "zod": "^4.3.6"

@@ -9,7 +9,7 @@ import {
 import { AiService } from '../ai/ai.service';
 import { RagService } from '../ai/rag.service';
 import { PrismaService } from '../../prisma/prisma.service';
-import { WhatsappService } from '../whatsapp/whatsapp.service';
+import { MetaIntegrationService } from '../meta/meta.service';
 import { InstagramService } from '../integrations/instagram.service';
 import { AlertsService } from '../alerts/alerts.service';
 
@@ -25,7 +25,7 @@ export class AttendantService {
     private readonly prisma: PrismaService,
     private readonly aiService: AiService,
     private readonly ragService: RagService,
-    private readonly whatsappService: WhatsappService,
+    private readonly metaIntegrationService: MetaIntegrationService,
     private readonly instagramService: InstagramService,
     private readonly alertsService: AlertsService,
   ) { }
@@ -171,27 +171,26 @@ export class AttendantService {
   // ─── Core Message Processing ───────────────────────────────────────────────
 
   async createWhatsappSession(companyId: string) {
-    return this.whatsappService.createSession(companyId);
+    return { status: 'CONNECTED', message: 'Meta Cloud API is stateless.' };
   }
 
   async getWhatsappQrCode(companyId: string) {
-    const base64 = this.whatsappService.getQrCode(companyId);
+    const health = await this.metaIntegrationService.getHealthStatus(companyId);
     return {
-      qrCode: base64 ?? null,
-      status: this.whatsappService.getStatus(companyId),
+      qrCode: null,
+      status: health.status,
     };
   }
 
   async terminateWhatsappSession(companyId: string) {
-    return this.whatsappService.terminateSession(companyId);
+    return { success: true, message: 'Session management handled by Meta.' };
   }
 
   async getWhatsappStatus(companyId: string) {
-    const status = this.whatsappService.getStatus(companyId);
-    const qrCode = this.whatsappService.getQrCode(companyId);
+    const health = await this.metaIntegrationService.getHealthStatus(companyId);
     return {
-      status,
-      qrCode,
+      status: health.status,
+      qrCode: null,
       quotaUsed: 0,
       quotaLimit: 10000,
     };
@@ -202,14 +201,14 @@ export class AttendantService {
    * Usado pela aba "Atendente Virtual" para evitar dessincronização.
    */
   async getWhatsappHealth(companyId: string) {
-    return this.whatsappService.getHealthStatus(companyId);
+    return this.metaIntegrationService.getHealthStatus(companyId);
   }
 
   /**
    * Cleanup forçado ao trocar de empresa.
    */
   async cleanupWhatsappSession(companyId: string) {
-    return this.whatsappService.forceCleanupSession(companyId);
+    return { success: true };
   }
 
   @OnEvent('whatsapp.message.received')
@@ -321,7 +320,7 @@ export class AttendantService {
       if (provider === IntegrationProvider.INSTAGRAM) {
         await this.instagramService.sendDm(companyId, externalId, reply);
       } else {
-        await this.whatsappService.sendTextMessage(companyId, externalId, reply);
+        await this.metaIntegrationService.sendTextMessage(companyId, externalId, reply);
       }
     } catch (sendError) {
       this.logger.error(`Falha ao enviar resposta via ${provider}: ${(sendError as Error)?.message}`);

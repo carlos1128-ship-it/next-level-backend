@@ -2,7 +2,7 @@ import { Global, Module } from '@nestjs/common';
 import { IntegrationsService } from './integrations.service';
 import { IntegrationsController } from './integrations.controller';
 import { IntegrationsOAuthController } from './integrations-oauth.controller';
-import { WhatsappModule } from '../whatsapp/whatsapp.module';
+import { MetaIntegrationModule } from '../meta/meta.module';
 import { InstagramService } from './instagram.service';
 import { MetaGraphService } from './meta-graph.service';
 import { ShopeeScraperService } from './shopee-scraper.service';
@@ -12,7 +12,7 @@ import { AiModule } from '../ai/ai.module';
 
 @Global()
 @Module({
-  imports: [DashboardModule, AiModule, WhatsappModule],
+  imports: [DashboardModule, AiModule, MetaIntegrationModule],
   controllers: [IntegrationsController, IntegrationsOAuthController],
   providers: [
     IntegrationsService, 
@@ -22,7 +22,7 @@ import { AiModule } from '../ai/ai.module';
   ],
   exports: [
     IntegrationsService, 
-    WhatsappModule,
+    MetaIntegrationModule,
     InstagramService, 
     MetaGraphService,
     ShopeeScraperService

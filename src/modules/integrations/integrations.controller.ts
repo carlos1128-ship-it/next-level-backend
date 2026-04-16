@@ -12,7 +12,8 @@ import { ActiveCompanyGuard } from '../../common/guards/active-company.guard';
 import { ConnectIntegrationDto } from './dto/connect-integration.dto';
 import { IntegrationsService } from './integrations.service';
 import { ShopeeScraperService } from './shopee-scraper.service';
-import { WhatsappService } from '../whatsapp/whatsapp.service';
+import { MetaIntegrationService } from '../meta/meta.service';
+import { SaveMetaConfigDto } from '../meta/dto/save-meta-config.dto';
 
 @Controller('integrations')
 @UseGuards(ActiveCompanyGuard)
@@ -20,18 +21,15 @@ export class IntegrationsController {
   constructor(
     private readonly integrationsService: IntegrationsService,
     private readonly shopeeScraper: ShopeeScraperService,
-    private readonly whatsappService: WhatsappService
+    private readonly metaIntegrationService: MetaIntegrationService
   ) {}
 
   @Get('whatsapp/profile')
   async whatsappProfile(
     @Query('companyId') companyId: string,
   ) {
-    // Smart Reconciliation: Check live status and sync DB if needed before returning profile
-    await this.whatsappService.checkLiveStatus(companyId).catch(() => null);
-    
-    const profile = await this.whatsappService.getProfile(companyId);
-    return { data: profile };
+    const health = await this.metaIntegrationService.getHealthStatus(companyId);
+    return { data: { name: 'WhatsApp Business API', connected: health.status === 'CONNECTED' } };
   }
 
   @Post('whatsapp/bulk-send')
@@ -39,11 +37,20 @@ export class IntegrationsController {
     @Query('companyId') companyId: string,
     @Body() body: { numbers: string[]; message: string }
   ) {
-    return this.whatsappService.sendBulkMessages({
+    return this.metaIntegrationService.sendBulkMessages({
       companyId,
       numbers: body.numbers,
       message: body.message,
     });
+  }
+
+  /** Save Meta Cloud API credentials for a company (WhatsApp + optionally Instagram). */
+  @Post('whatsapp/config')
+  async saveMetaConfig(
+    @Query('companyId') companyId: string,
+    @Body() dto: SaveMetaConfigDto,
+  ) {
+    return this.metaIntegrationService.saveConfig(companyId, dto);
   }
 
   @Get('shopee/orders')

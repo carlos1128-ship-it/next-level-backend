@@ -7,7 +7,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { AiService } from '../ai/ai.service';
 import { RagService } from '../ai/rag.service';
-import { WhatsappService } from '../whatsapp/whatsapp.service';
+import { MetaIntegrationService } from '../meta/meta.service';
 
 type ActionPayload = {
   message: string;
@@ -28,7 +28,7 @@ export class StrategyService {
     private readonly prisma: PrismaService,
     private readonly aiService: AiService,
     private readonly ragService: RagService,
-    private readonly whatsappService: WhatsappService,
+    private readonly metaIntegrationService: MetaIntegrationService,
   ) {}
 
   async suggestRevenueRecoveryPlan(companyId: string, dropPercent: number) {
@@ -194,7 +194,7 @@ export class StrategyService {
     for (const customer of toSend) {
       const personalized = payload.message.replace('{{nome}}', customer.name || 'cliente');
       try {
-        await this.whatsappService.sendTextMessage(companyId, customer.phone!, personalized);
+        await this.metaIntegrationService.sendTextMessage(companyId, customer.phone!, personalized);
       } catch (error) {
         this.logger.warn(
           `Falha ao enviar WhatsApp para ${customer.phone}: ${(error as Error)?.message}`,
