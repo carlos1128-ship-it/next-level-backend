@@ -10,6 +10,7 @@ export class MetaOAuthController {
   @Get('url')
   getOAuthUrl(@Query('companyId') companyId: string) {
     const url = this.metaOAuthService.getOAuthUrl(companyId);
+    console.log('[MetaOAuthController] Sending URL to frontend:', url);
     return { url };
   }
 

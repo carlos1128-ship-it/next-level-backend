@@ -9,14 +9,28 @@ export class MetaOAuthService {
 
   // Step 1: Generate the OAuth URL to redirect the client to Facebook
   getOAuthUrl(companyId: string): string {
+    const clientId = process.env.META_APP_ID;
+    const backendUrl = process.env.BACKEND_URL;
+
+    console.log('[MetaOAuth] Generating URL for company:', companyId);
+    console.log('[MetaOAuth] META_APP_ID:', clientId ? 'DEFINED' : 'UNDEFINED');
+    console.log('[MetaOAuth] BACKEND_URL:', backendUrl);
+
+    if (!clientId) {
+      throw new Error('META_APP_ID is not defined in environment variables');
+    }
+
     const params = new URLSearchParams({
-      client_id: process.env.META_APP_ID!,
-      redirect_uri: `${process.env.BACKEND_URL}/api/meta/oauth/callback`,
+      client_id: clientId,
+      redirect_uri: `${backendUrl}/api/meta/oauth/callback`,
       scope: 'whatsapp_business_management,whatsapp_business_messaging,business_management',
       response_type: 'code',
       state: companyId, // used to identify which company is connecting
     });
-    return `https://www.facebook.com/v19.0/dialog/oauth?${params}`;
+
+    const url = `https://www.facebook.com/v19.0/dialog/oauth?${params}`;
+    console.log('[MetaOAuth] Redirection URL:', url);
+    return url;
   }
 
   // Step 2: Exchange the code for a short-lived token
