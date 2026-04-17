@@ -44,14 +44,7 @@ export class IntegrationsController {
     });
   }
 
-  /** Save Meta Cloud API credentials for a company (WhatsApp + optionally Instagram). */
-  @Post('whatsapp/config')
-  async saveMetaConfig(
-    @Query('companyId') companyId: string,
-    @Body() dto: SaveMetaConfigDto,
-  ) {
-    return this.metaIntegrationService.saveConfig(companyId, dto);
-  }
+  // saveMetaConfig moved to WhatsappConfigController in MetaIntegrationModule
 
   @Get('shopee/orders')
   async shopeeOrders(

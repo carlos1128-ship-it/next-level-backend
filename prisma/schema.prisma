@@ -90,8 +90,10 @@ model Company {
   defaultTaxRate Decimal? @db.Decimal(5, 2)
   metaPhoneNumberId String?
   metaWabaId        String?
+  whatsappBusinessId String?
   metaAccessToken   String? @db.Text
   webhookVerifyToken String?
+  phoneNumber       String?
   instagramAccountId String?
   shopeeShopId       String?
   shopeeUser         String?

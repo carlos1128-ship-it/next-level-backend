@@ -1,6 +1,7 @@
 export class SaveMetaConfigDto {
   accessToken: string;
-  phoneNumberId: string;
-  webhookVerifyToken: string;
+  phoneNumber?: string;
+  phoneNumberId?: string;
+  webhookVerifyToken?: string;
   instagramAccountId?: string;
 }

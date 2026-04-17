@@ -2,16 +2,64 @@ import {
   Controller,
   Get,
   Post,
+  Delete,
   Body,
   Query,
   Res,
   Logger,
   HttpStatus,
+  UseGuards,
 } from '@nestjs/common';
 import { Response } from 'express';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../../prisma/prisma.service';
 import { IntegrationProvider } from '@prisma/client';
+import { ActiveCompanyGuard } from '../../common/guards/active-company.guard';
+import { MetaIntegrationService } from './meta.service';
+import { SaveMetaConfigDto } from './dto/save-meta-config.dto';
+
+@Controller('whatsapp')
+@UseGuards(ActiveCompanyGuard)
+export class WhatsappConfigController {
+  constructor(private readonly metaIntegrationService: MetaIntegrationService) {}
+
+  @Post('config')
+  async saveMetaConfig(
+    @Query('companyId') companyId: string,
+    @Body() dto: SaveMetaConfigDto,
+  ) {
+    return this.metaIntegrationService.saveConfig(companyId, dto);
+  }
+
+  @Delete('config')
+  async deleteMetaConfig(
+    @Query('companyId') companyId: string,
+  ) {
+    return this.metaIntegrationService.deleteConfig(companyId);
+  }
+}
+
+@Controller('meta')
+@UseGuards(ActiveCompanyGuard)
+export class MetaStatusController {
+  constructor(private readonly prisma: PrismaService) {}
+
+  @Get('status')
+  async getConnectionStatus(@Query('companyId') companyId: string) {
+    const company = await this.prisma.company.findUnique({
+      where: { id: companyId },
+      select: {
+        metaPhoneNumberId: true,
+        metaAccessToken: true,
+      },
+    });
+
+    return {
+      connected: !!(company?.metaPhoneNumberId && company?.metaAccessToken),
+      phoneNumberId: company?.metaPhoneNumberId ?? null,
+    };
+  }
+}
 
 @Controller('webhooks/meta')
 export class MetaIntegrationController {

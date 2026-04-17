@@ -27,16 +27,75 @@ export class MetaIntegrationService {
   }
 
   async saveConfig(companyId: string, dto: SaveMetaConfigDto) {
-    await this.prisma.company.update({
+    let phoneNumberId = dto.phoneNumberId;
+    let webhookVerifyToken = dto.webhookVerifyToken;
+
+    if (!webhookVerifyToken) {
+      const crypto = require('crypto');
+      webhookVerifyToken = crypto.randomUUID();
+    }
+
+    if (!phoneNumberId && dto.phoneNumber) {
+      try {
+        const response = await axios.get(`${this.META_API_URL}/me/phone_numbers`, {
+          headers: { Authorization: `Bearer ${dto.accessToken}` },
+        });
+        const numbers = response.data?.data || [];
+        if (numbers.length > 0) {
+          // Cleanup provided phone
+          const cleanProvided = dto.phoneNumber.replace(/\D/g, '');
+          const matched = numbers.find((n: any) => n.display_phone_number?.replace(/\D/g, '') === cleanProvided);
+          
+          if (matched) {
+            phoneNumberId = matched.id;
+          } else {
+            phoneNumberId = numbers[0].id;
+          }
+        }
+      } catch (error: any) {
+        this.logger.warn(`Failed to auto-fetch phone_numbers: ${error.message}`);
+        // We might fail, but let's let it proceed to let user know it failed later or fail here
+        // If no ID is found, we'll just not update it or save with empty
+      }
+    }
+
+    if (!phoneNumberId) {
+      throw new BadRequestException('Não foi possível encontrar o Phone Number ID com o token fornecido.');
+    }
+
+    return this.prisma.company.update({
       where: { id: companyId },
       data: {
         metaAccessToken: dto.accessToken,
-        metaPhoneNumberId: dto.phoneNumberId,
-        webhookVerifyToken: dto.webhookVerifyToken,
-        ...(dto.instagramAccountId && { instagramAccountId: dto.instagramAccountId }),
+        metaPhoneNumberId: phoneNumberId,
+        webhookVerifyToken: webhookVerifyToken,
+        phoneNumber: dto.phoneNumber,
+        instagramAccountId: dto.instagramAccountId,
       },
     });
-    return { success: true };
+  }
+
+  async deleteConfig(companyId: string) {
+    return this.prisma.company.update({
+      where: { id: companyId },
+      data: {
+        metaAccessToken: null,
+        metaPhoneNumberId: null,
+        webhookVerifyToken: null,
+      },
+    });
+  }
+
+  async getHealthStatus(companyId: string) {
+    const company = await this.prisma.company.findUnique({
+      where: { id: companyId },
+      select: { metaPhoneNumberId: true, metaAccessToken: true },
+    });
+
+    if (company?.metaPhoneNumberId && company?.metaAccessToken) {
+      return { status: 'CONNECTED' };
+    }
+    return { status: 'DISCONNECTED' };
   }
 
   async sendTextMessage(companyId: string, phone: string, text: string) {
@@ -118,14 +177,5 @@ export class MetaIntegrationService {
       }
     }
     return results;
-  }
-
-  async getHealthStatus(companyId: string) {
-    try {
-      await this.getCompanyConfig(companyId);
-      return { status: 'CONNECTED', message: 'Meta API configured successfully.' };
-    } catch (error) {
-      return { status: 'DISCONNECTED', message: 'Not configured.' };
-    }
   }
 }
