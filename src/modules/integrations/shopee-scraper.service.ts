@@ -26,19 +26,25 @@
  */
 
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
-// puppeteer-extra wraps puppeteer and applies registered plugins at launch time
-import puppeteer from 'puppeteer-extra';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
-// Import types from puppeteer directly — they are type-only, not runtime imports
-import type { Browser, Page, Cookie, HTTPResponse } from 'puppeteer';
+/**
+ * IMPORTANT: puppeteer, puppeteer-extra and puppeteer-extra-plugin-stealth
+ * have been removed from package.json as part of the Meta Cloud API migration.
+ * The Shopee scraper is preserved here for future re-enablement but is
+ * non-operational in the current deployment. All browser-specific calls
+ * are guarded and will throw a descriptive error at runtime.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Browser = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Page = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Cookie = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type HTTPResponse = any;
 import { PrismaService } from '../../prisma/prisma.service';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import * as path from 'path';
 import * as fs from 'fs';
-
-// Register the stealth plugin once at module level (not inside methods)
-// to avoid registering it multiple times during the service lifecycle.
-puppeteer.use(StealthPlugin());
 
 // ─── Domain Interfaces ────────────────────────────────────────────────────────
 
@@ -522,10 +528,12 @@ export class ShopeeScraperService {
 
   /** Creates a Puppeteer browser with Render-optimized flags */
   private async launchBrowser(): Promise<Browser> {
-    return puppeteer.launch({
-      headless: true,
-      args: PUPPETEER_LAUNCH_ARGS,
-    }) as unknown as Browser;
+    // puppeteer-extra is not installed in the current deployment.
+    // To re-enable: add puppeteer-extra and puppeteer-extra-plugin-stealth
+    // to package.json dependencies and restore the imports at the top of this file.
+    throw new BadRequestException(
+      'O scraper da Shopee está temporariamente indisponível nesta versão do servidor. Entre em contato com o suporte.',
+    );
   }
 
   /** Fills the login form, handling both login key variants */
