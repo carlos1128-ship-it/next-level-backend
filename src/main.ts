@@ -64,7 +64,12 @@ async function bootstrap() {
   });
 
   app.setGlobalPrefix('api', {
-    exclude: [{ path: 'webhook/whatsapp', method: RequestMethod.POST }],
+    exclude: [
+      { path: 'webhook/whatsapp', method: RequestMethod.POST },
+      // Meta Cloud API webhook — must be reachable WITHOUT /api prefix
+      { path: 'webhooks/meta', method: RequestMethod.GET },
+      { path: 'webhooks/meta', method: RequestMethod.POST },
+    ],
   });
   app.useGlobalPipes(
     new ZodValidationPipe(),
