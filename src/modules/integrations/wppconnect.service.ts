@@ -91,6 +91,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
   private readonly statuses = new Map<string, WhatsappStatus>();
   private readonly retryTimers = new Map<string, NodeJS.Timeout>();
   private readonly manualDisconnects = new Set<string>();
+  private readonly needsQrScan = new Set<string>();
   private readonly qrTimestamps = new Map<string, number>();
 
   constructor(
@@ -114,6 +115,8 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
   }
 
   async createSession(companyId: string, options?: { fresh?: boolean }) {
+    this.needsQrScan.delete(companyId);
+
     if (options?.fresh) {
       await this.clearPersistedSessionState(companyId);
     }
@@ -257,7 +260,10 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       dbEnabled: Boolean(dbCompany?.whatsappEnabled),
       dbLastConnected: dbCompany?.lastConnectedAt?.toISOString() || null,
       healthy: connected,
-      needsReconnect: !connected && dbCompany?.whatsappStatus === 'CONNECTED',
+      needsReconnect:
+        !connected &&
+        dbCompany?.whatsappStatus === 'CONNECTED' &&
+        !this.needsQrScan.has(companyId),
       awaitingQR: !connected && status === 'QR_READY',
       qrRequired: !connected && status === 'QR_REQUIRED',
     };
@@ -389,6 +395,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     client.onStateChange((state: string) => {
       if (state === 'CONNECTED') {
         this.cancelRetry(companyId);
+        this.needsQrScan.delete(companyId);
         this.qrCodes.delete(companyId);
         this.qrTimestamps.delete(companyId);
         this.setStatus(companyId, 'CONNECTED');
@@ -433,6 +440,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       case 'chatsAvailable':
       case 'qrReadSuccess':
         this.cancelRetry(companyId);
+        this.needsQrScan.delete(companyId);
         this.qrCodes.delete(companyId);
         this.qrTimestamps.delete(companyId);
         this.setStatus(companyId, 'CONNECTED');
@@ -455,6 +463,12 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       case 'serverClose':
       case 'browserClose':
       case 'autocloseCalled':
+        if (this.needsQrScan.has(companyId)) {
+          this.logger.warn(
+            `[WPP][${companyId}] ${statusSession} apos desconexao do usuario. Ignorando reconnect.`,
+          );
+          return;
+        }
         await this.handleClientDisconnect(companyId, sessionName, 'DISCONNECTED', 10000);
         return;
       case 'deleteToken':
@@ -692,6 +706,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     sessionName: string,
     rawStatus: string,
   ) {
+    this.needsQrScan.add(companyId);
     this.logger.warn(
       `[WPP][${companyId}] Dispositivo desconectado pelo usuario (${rawStatus}). Novo QR obrigatorio.`,
     );
