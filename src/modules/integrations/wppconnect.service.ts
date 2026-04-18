@@ -40,6 +40,8 @@ type HostDeviceShape = {
 
 const SESSION_BASE_DIR =
   process.env.WPPCONNECT_SESSION_DIR || '/tmp/.wppconnect';
+const TOKEN_BASE_DIR =
+  process.env.WPPCONNECT_TOKEN_DIR || path.join(process.cwd(), 'tokens');
 const DEFAULT_RETRY_DELAY_MS = 20000;
 const WHATSAPP_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
@@ -160,7 +162,11 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async createSession(companyId: string) {
+  async createSession(companyId: string, options?: { fresh?: boolean }) {
+    if (options?.fresh) {
+      await this.clearPersistedSessionState(companyId);
+    }
+
     await this.ensureSessionBaseDir();
     await this.prisma.company.update({
       where: { id: companyId },
@@ -170,7 +176,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    if (this.clients.has(companyId)) {
+    if (!options?.fresh && this.clients.has(companyId)) {
       return {
         status: this.getStatus(companyId),
         qrcode: this.getQrCode(companyId),
@@ -201,6 +207,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
 
     this.cleanupMemory(companyId);
     await this.forceCleanupFiles(companyId);
+    await this.forceCleanupTokenFiles(companyId);
     await this.prisma.company.update({
       where: { id: companyId },
       data: {
@@ -256,13 +263,22 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     });
 
     let connected = false;
+    let authenticated = false;
+    let connectionState: string | null = null;
     let phoneNumber: string | null = null;
     let pushname: string | null = null;
     let lastError: string | null = null;
 
     if (client) {
       try {
-        connected = await client.isConnected();
+        const [clientConnected, isAuthenticated, state] = await Promise.all([
+          client.isConnected(),
+          client.isAuthenticated(),
+          client.getConnectionState(),
+        ]);
+        authenticated = isAuthenticated;
+        connectionState = state ? String(state) : null;
+        connected = Boolean(clientConnected && isAuthenticated);
         const host = (await client.getHostDevice()) as HostDeviceShape | undefined;
         phoneNumber = this.extractPhoneNumber(host);
         pushname = this.extractDisplayName(host, phoneNumber);
@@ -277,6 +293,8 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       companyId,
       status,
       connected,
+      authenticated,
+      connectionState,
       qrCode: this.getQrCode(companyId),
       phoneNumber,
       pushname,
@@ -302,6 +320,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
 
     this.cleanupMemory(companyId);
     await this.forceCleanupFiles(companyId);
+    await this.forceCleanupTokenFiles(companyId);
     await this.prisma.company.update({
       where: { id: companyId },
       data: {
@@ -561,6 +580,10 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     return path.join(SESSION_BASE_DIR, `company-${companyId}`);
   }
 
+  private getTokenDir(companyId: string) {
+    return path.join(TOKEN_BASE_DIR, `company-${companyId}`);
+  }
+
   private async forceCleanupFiles(companyId: string) {
     const sessionDir = this.getSessionDir(companyId);
     if (!fs.existsSync(sessionDir)) {
@@ -573,6 +596,51 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       maxRetries: 5,
       retryDelay: 1000,
     });
+  }
+
+  private async forceCleanupTokenFiles(companyId: string) {
+    const tokenDir = this.getTokenDir(companyId);
+    if (!fs.existsSync(tokenDir)) {
+      return;
+    }
+
+    fs.rmSync(tokenDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 1000,
+    });
+  }
+
+  private async clearPersistedSessionState(companyId: string) {
+    this.manualDisconnects.add(companyId);
+    this.cancelRetry(companyId);
+
+    const client = this.clients.get(companyId);
+    if (client) {
+      await client.logout().catch(() => null);
+      await client.close().catch(() => null);
+    }
+
+    this.cleanupMemory(companyId);
+    await this.forceCleanupFiles(companyId);
+    await this.forceCleanupTokenFiles(companyId);
+
+    await this.prisma.company.update({
+      where: { id: companyId },
+      data: {
+        whatsappStatus: 'DISCONNECTED',
+        whatsappEnabled: false,
+        whatsappSessionName: null,
+        whatsappSessionToken: null,
+        whatsappWid: null,
+        whatsappName: null,
+        whatsappAvatar: null,
+      },
+    }).catch(() => null);
+    await this.syncIntegrationStatus(companyId, 'disconnected');
+
+    this.manualDisconnects.delete(companyId);
   }
 
   private normalizeRecipient(value: string) {

@@ -310,10 +310,10 @@ export class AttendantService {
   }
 
   async createWhatsappSession(companyId: string) {
-    const result = await this.wppconnectService.createSession(companyId);
+    const result = await this.wppconnectService.createSession(companyId, { fresh: true });
     return {
       ...result,
-      message: 'Fluxo rapido habilitado para QR Code.',
+      message: 'Fluxo rapido habilitado para QR Code com sessao nova.',
     };
   }
 
