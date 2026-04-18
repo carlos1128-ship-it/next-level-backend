@@ -352,6 +352,8 @@ export class AttendantService {
       ready: Boolean(qrCode),
       status: qrCode ? 'ready' : 'generating',
       connectionStatus: health.status,
+      lifecycleState: health.lifecycleState,
+      failureReason: health.failureReason,
       connected: health.connected,
       method: health.connected ? 'wppconnect' : null,
     };

@@ -16,6 +16,13 @@ type WhatsappStatus =
   | 'CONNECTED'
   | 'UNPAIRED';
 
+type SessionLifecycleState =
+  | 'idle'
+  | 'starting'
+  | 'qr_ready'
+  | 'connected'
+  | 'failed';
+
 type IncomingMessageShape = {
   isGroupMsg?: boolean;
   fromMe?: boolean;
@@ -46,6 +53,7 @@ const TOKEN_BASE_DIR =
   process.env.WPPCONNECT_TOKEN_DIR || '/tmp/tokens';
 const DEFAULT_RETRY_DELAY_MS = 20000;
 const QR_REUSE_WINDOW_MS = 60000;
+const QR_VALIDITY_MS = 5 * 60 * 1000;
 const WHATSAPP_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const CHROMIUM_ARGS = [
@@ -90,6 +98,8 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
   private readonly initializationSessions = new Map<string, string>();
   private readonly qrCodes = new Map<string, string>();
   private readonly statuses = new Map<string, WhatsappStatus>();
+  private readonly lifecycleStates = new Map<string, SessionLifecycleState>();
+  private readonly failureReasons = new Map<string, string | null>();
   private readonly retryTimers = new Map<string, NodeJS.Timeout>();
   private readonly manualDisconnects = new Set<string>();
   private readonly needsQrScan = new Set<string>();
@@ -129,8 +139,12 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       sessionName = await this.resolveSessionName(companyId);
     }
 
+    this.qrCodes.delete(companyId);
+    this.qrTimestamps.delete(companyId);
+    this.failureReasons.delete(companyId);
     this.sessionNames.set(companyId, sessionName);
     this.setStatus(companyId, 'CONNECTING');
+    this.setLifecycleState(companyId, 'starting');
     this.logger.log(`[WPP][${companyId}] Iniciando sessao: ${sessionName}`);
 
     await this.ensureSessionBaseDir();
@@ -149,6 +163,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         qrcode: this.getQrCode(companyId),
         qrCode: this.getQrCode(companyId),
         ready: Boolean(this.getQrCode(companyId)),
+        lifecycleState: this.getLifecycleState(companyId),
       };
     }
 
@@ -165,6 +180,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       qrcode: this.getQrCode(companyId),
       qrCode: this.getQrCode(companyId),
       ready: Boolean(this.getQrCode(companyId)),
+      lifecycleState: this.getLifecycleState(companyId),
     };
   }
 
@@ -205,7 +221,23 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
   }
 
   getQrCode(companyId: string) {
-    return this.qrCodes.get(companyId) || null;
+    const qrCode = this.qrCodes.get(companyId) || null;
+    const qrTimestamp = this.qrTimestamps.get(companyId) || 0;
+
+    if (!qrCode) {
+      return null;
+    }
+
+    if (Date.now() - qrTimestamp > QR_VALIDITY_MS) {
+      this.qrCodes.delete(companyId);
+      this.qrTimestamps.delete(companyId);
+      if (this.getLifecycleState(companyId) === 'qr_ready') {
+        this.setLifecycleState(companyId, 'failed', 'QR expirado');
+      }
+      return null;
+    }
+
+    return qrCode;
   }
 
   getClient(companyId: string) {
@@ -292,6 +324,8 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         !this.needsQrScan.has(companyId),
       awaitingQR,
       qrRequired,
+      lifecycleState: this.getLifecycleState(companyId),
+      failureReason: this.failureReasons.get(companyId) || null,
     };
   }
 
@@ -353,8 +387,8 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     const executablePath = this.resolveBrowserExecutablePath();
 
     try {
-      await this.forceCleanupFiles(companyId, sessionName);
       this.setStatus(companyId, 'CONNECTING');
+      this.setLifecycleState(companyId, 'starting');
 
       if (executablePath) {
         this.logger.log(`[WA-BROWSER][${companyId}] Usando browser em: ${executablePath}`);
@@ -403,6 +437,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
           this.qrCodes.set(companyId, qrCode);
           this.qrTimestamps.set(companyId, now);
           this.setStatus(companyId, 'QR_READY');
+          this.setLifecycleState(companyId, 'qr_ready');
           this.logger.log(
             `[WPP][${companyId}] QR gerado com sucesso. Tentativa ${attempts ?? 1}. Sessao ${sessionName}`,
           );
@@ -445,12 +480,18 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       this.attachEventListeners(client, companyId, sessionName);
       return client;
     } catch (error) {
+      if (!this.isActiveSession(companyId, sessionName)) {
+        this.clearInitialization(companyId, sessionName);
+        return null;
+      }
+
       this.clearInitialization(companyId, sessionName);
       this.cleanupMemory(companyId, { sessionName });
       this.setStatus(companyId, 'DISCONNECTED');
       await this.syncIntegrationStatus(companyId, 'disconnected', sessionName);
 
       const message = this.formatBootstrapError(error);
+      this.setLifecycleState(companyId, 'failed', message);
       this.logger.error(`[WA-FATAL][${companyId}] Falha ao iniciar WPPConnect: ${message}`);
       this.scheduleRetry(companyId);
       return null;
@@ -459,12 +500,17 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
 
   private attachEventListeners(client: WppWhatsapp, companyId: string, sessionName: string) {
     client.onStateChange((state: string) => {
+      if (!this.isActiveSession(companyId, sessionName)) {
+        return;
+      }
+
       if (state === 'CONNECTED') {
         this.cancelRetry(companyId);
         this.needsQrScan.delete(companyId);
         this.qrCodes.delete(companyId);
         this.qrTimestamps.delete(companyId);
         this.setStatus(companyId, 'CONNECTED');
+        this.setLifecycleState(companyId, 'connected', null);
         void this.syncConnectedProfile(companyId, client, sessionName);
         return;
       }
@@ -476,6 +522,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
 
     client.onMessage((message: IncomingMessageShape) => {
       if (
+        !this.isActiveSession(companyId, sessionName) ||
         message.isGroupMsg ||
         message.fromMe ||
         !message.body ||
@@ -511,6 +558,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         this.qrCodes.delete(companyId);
         this.qrTimestamps.delete(companyId);
         this.setStatus(companyId, 'CONNECTED');
+        this.setLifecycleState(companyId, 'connected', null);
         void this.syncIntegrationStatus(companyId, 'connected', sessionName);
         return;
       case 'notLogged':
@@ -522,6 +570,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       case 'waitChat':
       case 'connecting':
         this.setStatus(companyId, 'AUTHENTICATING');
+        this.setLifecycleState(companyId, 'starting');
         return;
       case 'sessionUnpaired':
         this.setStatus(companyId, 'UNPAIRED');
@@ -595,6 +644,8 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     this.qrCodes.delete(companyId);
     this.qrTimestamps.delete(companyId);
     this.statuses.delete(companyId);
+    this.lifecycleStates.delete(companyId);
+    this.failureReasons.delete(companyId);
 
     if (options?.clearSessionName) {
       this.sessionNames.delete(companyId);
@@ -618,6 +669,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
 
     this.cleanupMemory(companyId, { sessionName });
     this.setStatus(companyId, status);
+    this.setLifecycleState(companyId, 'failed', `Sessao encerrada: ${status}`);
     await this.syncIntegrationStatus(companyId, 'disconnected', sessionName);
     this.scheduleRetry(companyId, retryDelayMs);
   }
@@ -776,8 +828,10 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       `[WPP][${companyId}] Antes do novo teste, remova todos os aparelhos conectados no WhatsApp do celular.`,
     );
 
-    await this.clearSession(companyId);
+    await this.closeClientPreservingQr(companyId, sessionName);
     this.setStatus(companyId, 'QR_REQUIRED');
+    this.setLifecycleState(companyId, this.getQrCode(companyId) ? 'qr_ready' : 'failed', rawStatus);
+    this.failureReasons.set(companyId, rawStatus);
     await this.prisma.company.update({
       where: { id: companyId },
       data: {
@@ -795,6 +849,18 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       companyId,
       status: 'qrRequired',
     });
+  }
+
+  private async closeClientPreservingQr(companyId: string, sessionName: string) {
+    this.cancelRetry(companyId);
+    const client = this.clients.get(companyId);
+    if (client) {
+      await client.close().catch(() => null);
+    }
+
+    this.clients.delete(companyId);
+    this.clearInitialization(companyId, sessionName);
+    this.sessionNames.delete(companyId);
   }
 
   private normalizeRecipient(value: string) {
@@ -842,6 +908,29 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
 
   private buildCompanySessionPrefix(companyId: string) {
     return `company-${companyId}`;
+  }
+
+  private getLifecycleState(companyId: string): SessionLifecycleState {
+    return this.lifecycleStates.get(companyId) || 'idle';
+  }
+
+  private setLifecycleState(
+    companyId: string,
+    state: SessionLifecycleState,
+    failureReason?: string | null,
+  ) {
+    this.lifecycleStates.set(companyId, state);
+
+    if (typeof failureReason === 'undefined') {
+      return;
+    }
+
+    if (failureReason) {
+      this.failureReasons.set(companyId, failureReason);
+      return;
+    }
+
+    this.failureReasons.delete(companyId);
   }
 
   private buildFreshSessionName(companyId: string) {
