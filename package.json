@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "nest start --watch",
     "build": "nest build",
+    "build:render": "npx puppeteer browsers install chrome && npx prisma generate && npm run build",
     "start": "node dist/main",
     "start:prod": "prisma migrate deploy && node dist/main.js",
     "smoke": "powershell -ExecutionPolicy Bypass -File scripts/smoke-test.ps1",

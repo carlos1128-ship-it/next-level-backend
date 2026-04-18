@@ -94,7 +94,7 @@ npm run start
 No Render, configure:
 
 ```bash
-Build Command: npm install && npm run prisma:generate && npm run prisma:migrate:deploy && npm run build
+Build Command: npm install && npm run build:render
 Start Command: npm run start
 ```
 

@@ -56,6 +56,18 @@ const CHROMIUM_ARGS = [
   '--disable-default-apps',
   '--no-default-browser-check',
 ];
+const COMMON_BROWSER_PATHS = [
+  '/usr/bin/google-chrome-stable',
+  '/usr/bin/google-chrome',
+  '/usr/bin/chromium-browser',
+  '/usr/bin/chromium',
+];
+const PUPPETEER_CACHE_ROOTS = [
+  '/opt/render/.cache/puppeteer',
+  '/opt/render/project/.cache/puppeteer',
+  '/opt/render/project/src/.cache/puppeteer',
+  path.join(process.cwd(), '.cache', 'puppeteer'),
+];
 
 class NeonTokenStore implements tokenStore.TokenStore {
   constructor(
@@ -323,10 +335,20 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
   private async bootstrapClient(companyId: string): Promise<WppWhatsapp | null> {
     const sessionName = `company-${companyId}`;
     const tokenStorage = new NeonTokenStore(this.prisma, companyId, this.logger);
+    const executablePath = this.resolveBrowserExecutablePath();
 
     try {
       await this.forceCleanupFiles(companyId);
       this.setStatus(companyId, 'CONNECTING');
+
+      if (executablePath) {
+        this.logger.log(`[WA-BROWSER][${companyId}] Usando browser em: ${executablePath}`);
+      } else {
+        this.logger.warn(
+          `[WA-BROWSER][${companyId}] Nenhum executavel de Chrome/Chromium foi localizado. ` +
+            'Se estiver no Render Node runtime, adicione `npx puppeteer browsers install chrome` ao build.',
+        );
+      }
 
       const client = await create({
         session: sessionName,
@@ -352,7 +374,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         },
         puppeteerOptions: {
           headless: this.resolveHeadless(),
-          executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_PATH,
+          executablePath,
           userDataDir: this.getSessionDir(companyId),
           args: [`--user-agent=${WHATSAPP_USER_AGENT}`, ...CHROMIUM_ARGS],
         },
@@ -368,7 +390,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       this.setStatus(companyId, 'DISCONNECTED');
       await this.syncIntegrationStatus(companyId, 'disconnected', sessionName);
 
-      const message = error instanceof Error ? error.message : String(error);
+      const message = this.formatBootstrapError(error);
       this.logger.error(`[WA-FATAL][${companyId}] Falha ao iniciar WPPConnect: ${message}`);
       this.scheduleRetry(companyId);
       return null;
@@ -594,5 +616,104 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
 
   private extractDisplayName(host: HostDeviceShape | undefined, phoneNumber: string | null) {
     return host?.pushname || host?.formattedName || host?.name || phoneNumber || null;
+  }
+
+  private resolveBrowserExecutablePath() {
+    const envCandidates = [
+      process.env.PUPPETEER_EXECUTABLE_PATH,
+      process.env.CHROME_PATH,
+    ];
+
+    for (const candidate of [...envCandidates, ...COMMON_BROWSER_PATHS]) {
+      if (candidate && fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+
+    const puppeteerExecutable = this.resolvePuppeteerExecutablePath();
+    if (puppeteerExecutable) {
+      return puppeteerExecutable;
+    }
+
+    return this.findBrowserInCache();
+  }
+
+  private resolvePuppeteerExecutablePath() {
+    try {
+      // Usa o caminho calculado pelo proprio Puppeteer quando o browser foi baixado no build.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const puppeteer = require('puppeteer') as { executablePath?: () => string };
+      const executablePath = puppeteer.executablePath?.();
+      if (executablePath && fs.existsSync(executablePath)) {
+        return executablePath;
+      }
+    } catch {
+      return undefined;
+    }
+
+    return undefined;
+  }
+
+  private findBrowserInCache() {
+    for (const cacheRoot of PUPPETEER_CACHE_ROOTS) {
+      if (!fs.existsSync(cacheRoot)) {
+        continue;
+      }
+
+      const executable = this.findExecutableRecursively(cacheRoot, 4);
+      if (executable) {
+        return executable;
+      }
+    }
+
+    return undefined;
+  }
+
+  private findExecutableRecursively(directory: string, depth: number): string | undefined {
+    if (depth < 0 || !fs.existsSync(directory)) {
+      return undefined;
+    }
+
+    const executableName =
+      process.platform === 'win32' ? 'chrome.exe' : undefined;
+    const linuxCandidates = ['chrome', 'chrome-headless-shell'];
+
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const fullPath = path.join(directory, entry.name);
+
+      if (entry.isFile()) {
+        const isLinuxMatch = linuxCandidates.includes(entry.name);
+        const isWindowsMatch = executableName ? entry.name === executableName : false;
+        if (isLinuxMatch || isWindowsMatch) {
+          return fullPath;
+        }
+        continue;
+      }
+
+      if (!entry.isDirectory()) {
+        continue;
+      }
+
+      const nestedMatch = this.findExecutableRecursively(fullPath, depth - 1);
+      if (nestedMatch) {
+        return nestedMatch;
+      }
+    }
+
+    return undefined;
+  }
+
+  private formatBootstrapError(error: unknown) {
+    const baseMessage = error instanceof Error ? error.message : String(error);
+
+    if (!baseMessage.includes('Could not find Chrome')) {
+      return baseMessage;
+    }
+
+    return (
+      `${baseMessage} | Diagnostico: o backend subiu, mas o browser nao foi instalado no runtime. ` +
+      'No Render em modo Node, use `npx puppeteer browsers install chrome` no Build Command; ' +
+      'em modo Docker, confirme se o servico esta usando o Dockerfile e um Chrome/Chromium valido.'
+    );
   }
 }
