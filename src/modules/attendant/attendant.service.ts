@@ -8,6 +8,7 @@ import { MetaIntegrationService } from '../meta/meta.service';
 import { InstagramService } from '../integrations/instagram.service';
 import { WppconnectService } from '../integrations/wppconnect.service';
 import { AlertsService } from '../alerts/alerts.service';
+import { AttendantGateway } from './attendant.gateway';
 
 const HISTORY_LIMIT = 10;
 const HUMAN_PAUSE_HOURS = 24;
@@ -24,6 +25,7 @@ export class AttendantService {
     private readonly instagramService: InstagramService,
     private readonly wppconnectService: WppconnectService,
     private readonly alertsService: AlertsService,
+    private readonly attendantGateway: AttendantGateway,
   ) {}
 
   @OnEvent('webhooks.received')
@@ -85,6 +87,11 @@ export class AttendantService {
       payload.text,
       payload.name,
     );
+  }
+
+  @OnEvent('whatsapp.status.updated')
+  handleWhatsappStatusUpdate(payload: { companyId: string; status: string }) {
+    this.attendantGateway.emitWhatsappStatus(payload.companyId, payload.status);
   }
 
   async getBotConfig(companyId: string) {
@@ -226,7 +233,7 @@ export class AttendantService {
     const conversation = await this.ensureConversation(conversationId, companyId);
     const pausedUntil = this.addHours(new Date(), HUMAN_PAUSE_HOURS);
 
-    return this.prisma.conversation.update({
+    const updated = await this.prisma.conversation.update({
       where: { id: conversation.id },
       data: {
         isPaused: true,
@@ -234,12 +241,17 @@ export class AttendantService {
         status: 'Humano assumiu',
       },
     });
+
+    await this.emitConversationUpdate(companyId, updated.id, {
+      event: 'conversation.paused',
+    });
+    return updated;
   }
 
   async resumeConversation(conversationId: string, companyId: string) {
     const conversation = await this.ensureConversation(conversationId, companyId);
 
-    return this.prisma.conversation.update({
+    const updated = await this.prisma.conversation.update({
       where: { id: conversation.id },
       data: {
         isPaused: false,
@@ -247,6 +259,11 @@ export class AttendantService {
         status: 'Aguardando',
       },
     });
+
+    await this.emitConversationUpdate(companyId, updated.id, {
+      event: 'conversation.resumed',
+    });
+    return updated;
   }
 
   async sendHumanMessage(
@@ -276,7 +293,7 @@ export class AttendantService {
       },
     });
 
-    return this.prisma.conversation.update({
+    const updated = await this.prisma.conversation.update({
       where: { id: conversation.id },
       data: {
         isPaused: true,
@@ -290,6 +307,11 @@ export class AttendantService {
         },
       },
     });
+
+    await this.emitConversationUpdate(companyId, updated.id, {
+      event: 'human.message.sent',
+    });
+    return updated;
   }
 
   async getRoi(companyId: string) {
@@ -441,6 +463,10 @@ export class AttendantService {
         role: 'user',
       },
     });
+    await this.emitConversationUpdate(companyId, conversation.id, {
+      event: 'message.received',
+      incomingMessage: text,
+    });
 
     const paused =
       conversation.isPaused &&
@@ -454,6 +480,10 @@ export class AttendantService {
           status: paused ? 'Humano assumiu' : 'Aguardando',
           lastMessageAt: new Date(),
         },
+      });
+      await this.emitConversationUpdate(companyId, conversation.id, {
+        event: paused ? 'conversation.paused' : 'agent.offline',
+        incomingMessage: text,
       });
       return;
     }
@@ -538,6 +568,12 @@ export class AttendantService {
         status: 'IA respondeu',
         lastMessageAt: new Date(),
       },
+    });
+    await this.emitConversationUpdate(companyId, conversation.id, {
+      event: 'ai.replied',
+      incomingMessage: text,
+      aiResponse: reply,
+      badge: 'IA respondeu',
     });
   }
 
@@ -735,5 +771,32 @@ export class AttendantService {
     const next = new Date(date);
     next.setHours(next.getHours() + hours);
     return next;
+  }
+
+  private async emitConversationUpdate(
+    companyId: string,
+    conversationId: string,
+    extras?: Record<string, unknown>,
+  ) {
+    const conversation = await this.prisma.conversation.findFirst({
+      where: { id: conversationId, companyId },
+      include: {
+        messages: {
+          orderBy: { timestamp: 'asc' },
+          take: HISTORY_LIMIT,
+        },
+      },
+    });
+
+    if (!conversation) {
+      return;
+    }
+
+    this.attendantGateway.emitConversationEvent(companyId, {
+      companyId,
+      conversation,
+      timestamp: new Date().toISOString(),
+      ...extras,
+    });
   }
 }

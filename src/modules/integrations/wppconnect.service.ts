@@ -20,6 +20,7 @@ type IncomingMessageShape = {
   fromMe?: boolean;
   body?: string;
   from?: string;
+  type?: string;
   sender?: {
     pushname?: string;
     name?: string;
@@ -43,6 +44,7 @@ const SESSION_BASE_DIR =
 const TOKEN_BASE_DIR =
   process.env.WPPCONNECT_TOKEN_DIR || '/tmp/tokens';
 const DEFAULT_RETRY_DELAY_MS = 20000;
+const FAST_RECONNECT_DELAY_MS = 5000;
 const QR_REUSE_WINDOW_MS = 60000;
 const WHATSAPP_WEB_VERSION = '2.2412.54';
 const WHATSAPP_USER_AGENT =
@@ -357,10 +359,12 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
           this.eventEmitter.emit('whatsapp.qr.generated', { companyId, qrCode });
         },
         statusFind: (statusSession: string) => {
-          this.handleStatusChange(companyId, statusSession, sessionName);
+          void this.handleStatusChange(companyId, statusSession, sessionName);
         },
         puppeteerOptions: {
           headless: this.resolveHeadless(),
+          protocolTimeout: 120000,
+          args: CHROMIUM_ARGS,
           executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || executablePath || undefined,
         },
       });
@@ -394,14 +398,18 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (state === 'DISCONNECTED' && !this.manualDisconnects.has(companyId)) {
-        this.setStatus(companyId, 'DISCONNECTED');
-        void this.syncIntegrationStatus(companyId, 'disconnected', sessionName);
-        this.scheduleRetry(companyId);
+        void this.handleClientDisconnect(companyId, sessionName, 'DISCONNECTED');
       }
     });
 
     client.onMessage((message: IncomingMessageShape) => {
-      if (message.isGroupMsg || message.fromMe || !message.body || !message.from) {
+      if (
+        message.isGroupMsg ||
+        message.fromMe ||
+        !message.body ||
+        !message.from ||
+        (message.type && message.type !== 'chat')
+      ) {
         return;
       }
 
@@ -414,7 +422,13 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private handleStatusChange(companyId: string, statusSession: string, sessionName: string) {
+  private async handleStatusChange(companyId: string, statusSession: string, sessionName: string) {
+    this.logger.log(`[WPP][${companyId}] Status: ${statusSession}`);
+    this.eventEmitter.emit('whatsapp.status.updated', {
+      companyId,
+      status: statusSession,
+    });
+
     switch (statusSession) {
       case 'isLogged':
       case 'chatsAvailable':
@@ -425,6 +439,11 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         void this.syncIntegrationStatus(companyId, 'connected', sessionName);
         return;
       case 'notLogged':
+        if (fs.existsSync(this.getTokenDir(companyId))) {
+          await this.handleClientDisconnect(companyId, sessionName, 'DISCONNECTED', FAST_RECONNECT_DELAY_MS);
+          return;
+        }
+
         this.setStatus(companyId, 'QR_READY');
         void this.syncIntegrationStatus(companyId, 'awaiting_qr_scan', sessionName);
         return;
@@ -437,19 +456,23 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         return;
       case 'sessionUnpaired':
         this.setStatus(companyId, 'UNPAIRED');
+        await this.handleClientDisconnect(companyId, sessionName, 'UNPAIRED', FAST_RECONNECT_DELAY_MS);
+        return;
+      case 'serverClose':
+      case 'deleteToken':
+      case 'desconnectedMobile':
+        await this.handleClientDisconnect(companyId, sessionName, 'DISCONNECTED', FAST_RECONNECT_DELAY_MS);
         return;
       case 'autocloseCalled':
       case 'browserClose':
       case 'phoneNotConnected':
       case 'qrReadError':
       default:
-        this.setStatus(companyId, 'DISCONNECTED');
-        void this.syncIntegrationStatus(companyId, 'disconnected', sessionName);
-        this.scheduleRetry(companyId);
+        await this.handleClientDisconnect(companyId, sessionName, 'DISCONNECTED');
     }
   }
 
-  private scheduleRetry(companyId: string) {
+  private scheduleRetry(companyId: string, delayMs = this.resolveRetryDelayMs()) {
     if (this.retryTimers.has(companyId) || this.manualDisconnects.has(companyId)) {
       return;
     }
@@ -459,7 +482,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       if (!this.clients.has(companyId) && !this.initializations.has(companyId)) {
         this.initializations.set(companyId, this.bootstrapClient(companyId));
       }
-    }, this.resolveRetryDelayMs());
+    }, delayMs);
 
     this.retryTimers.set(companyId, timer);
   }
@@ -477,6 +500,27 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     this.qrCodes.delete(companyId);
     this.qrTimestamps.delete(companyId);
     this.statuses.delete(companyId);
+  }
+
+  private async handleClientDisconnect(
+    companyId: string,
+    sessionName: string,
+    status: WhatsappStatus,
+    retryDelayMs = this.resolveRetryDelayMs(),
+  ) {
+    if (this.manualDisconnects.has(companyId)) {
+      return;
+    }
+
+    const client = this.clients.get(companyId);
+    if (client) {
+      await client.close().catch(() => null);
+    }
+
+    this.cleanupMemory(companyId);
+    this.setStatus(companyId, status);
+    await this.syncIntegrationStatus(companyId, 'disconnected', sessionName);
+    this.scheduleRetry(companyId, retryDelayMs);
   }
 
   private async syncConnectedProfile(companyId: string, client: WppWhatsapp, sessionName: string) {
