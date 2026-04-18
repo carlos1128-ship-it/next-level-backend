@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { create, tokenStore, Whatsapp as WppWhatsapp } from '@wppconnect-team/wppconnect';
+import { create, Whatsapp as WppWhatsapp } from '@wppconnect-team/wppconnect';
 import { IntegrationProvider } from '@prisma/client';
 import * as fs from 'node:fs';
 import { mkdir } from 'node:fs/promises';
@@ -43,6 +43,8 @@ const SESSION_BASE_DIR =
 const TOKEN_BASE_DIR =
   process.env.WPPCONNECT_TOKEN_DIR || path.join(process.cwd(), 'tokens');
 const DEFAULT_RETRY_DELAY_MS = 20000;
+const QR_REUSE_WINDOW_MS = 60000;
+const AUTO_CLOSE_MS = 120000;
 const WHATSAPP_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const CHROMIUM_ARGS = [
@@ -71,67 +73,6 @@ const PUPPETEER_CACHE_ROOTS = [
   path.join(process.cwd(), '.cache', 'puppeteer'),
 ];
 
-class NeonTokenStore implements tokenStore.TokenStore {
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly companyId: string,
-    private readonly logger: Logger,
-  ) {}
-
-  async getToken() {
-    try {
-      const company = await this.prisma.company.findUnique({
-        where: { id: this.companyId },
-        select: { whatsappSessionToken: true },
-      });
-
-      if (!company?.whatsappSessionToken) {
-        return undefined;
-      }
-
-      return JSON.parse(company.whatsappSessionToken) as tokenStore.SessionToken;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`[WA-TOKEN][${this.companyId}] Falha ao ler token: ${message}`);
-      return undefined;
-    }
-  }
-
-  async setToken(_sessionName: string, tokenData: tokenStore.SessionToken | null) {
-    try {
-      await this.prisma.company.update({
-        where: { id: this.companyId },
-        data: {
-          whatsappSessionToken: tokenData ? JSON.stringify(tokenData) : null,
-        },
-      });
-      return true;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(`[WA-TOKEN][${this.companyId}] Falha ao salvar token: ${message}`);
-      return false;
-    }
-  }
-
-  async removeToken() {
-    try {
-      await this.prisma.company.update({
-        where: { id: this.companyId },
-        data: { whatsappSessionToken: null },
-      });
-      return true;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(`[WA-TOKEN][${this.companyId}] Falha ao remover token: ${message}`);
-      return false;
-    }
-  }
-
-  async listTokens() {
-    return [`company-${this.companyId}`];
-  }
-}
-
 @Injectable()
 export class WppconnectService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WppconnectService.name);
@@ -141,6 +82,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
   private readonly statuses = new Map<string, WhatsappStatus>();
   private readonly retryTimers = new Map<string, NodeJS.Timeout>();
   private readonly manualDisconnects = new Set<string>();
+  private readonly qrTimestamps = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -338,13 +280,16 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     const companies = await this.prisma.company.findMany({
       where: {
         whatsappStatus: 'CONNECTED',
-        whatsappSessionToken: { not: null },
         lastConnectedAt: { gte: recentThreshold },
       },
       select: { id: true },
     });
 
     for (const [index, company] of companies.entries()) {
+      const tokenDir = this.getTokenDir(company.id);
+      if (!fs.existsSync(tokenDir)) {
+        continue;
+      }
       setTimeout(() => {
         void this.createSession(company.id);
       }, index * 1000);
@@ -353,7 +298,6 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
 
   private async bootstrapClient(companyId: string): Promise<WppWhatsapp | null> {
     const sessionName = `company-${companyId}`;
-    const tokenStorage = new NeonTokenStore(this.prisma, companyId, this.logger);
     const executablePath = this.resolveBrowserExecutablePath();
 
     try {
@@ -371,19 +315,33 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
 
       const client = await create({
         session: sessionName,
-        tokenStore: tokenStorage,
+        tokenStore: 'file',
         headless: this.resolveHeadless(),
+        devtools: false,
+        useChrome: false,
+        debug: false,
         logQR: false,
         updatesLog: false,
-        autoClose: 0,
+        browserWS: '',
+        browserArgs: CHROMIUM_ARGS,
+        autoClose: AUTO_CLOSE_MS,
         waitForLogin: false,
         disableWelcome: true,
-        folderNameToken: SESSION_BASE_DIR,
+        folderNameToken: TOKEN_BASE_DIR,
         catchQR: (base64Qr) => {
+          const now = Date.now();
+          const previousQr = this.qrCodes.get(companyId);
+          const previousTimestamp = this.qrTimestamps.get(companyId) || 0;
           const qrCode = base64Qr.startsWith('data:')
             ? base64Qr
             : `data:image/png;base64,${base64Qr}`;
+
+          if (previousQr && now - previousTimestamp < QR_REUSE_WINDOW_MS) {
+            return;
+          }
+
           this.qrCodes.set(companyId, qrCode);
+          this.qrTimestamps.set(companyId, now);
           this.setStatus(companyId, 'QR_READY');
           void this.syncIntegrationStatus(companyId, 'awaiting_qr_scan', sessionName);
           this.eventEmitter.emit('whatsapp.qr.generated', { companyId, qrCode });
@@ -421,6 +379,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       if (state === 'CONNECTED') {
         this.cancelRetry(companyId);
         this.qrCodes.delete(companyId);
+        this.qrTimestamps.delete(companyId);
         this.setStatus(companyId, 'CONNECTED');
         void this.syncConnectedProfile(companyId, client, sessionName);
         return;
@@ -508,6 +467,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     this.clients.delete(companyId);
     this.initializations.delete(companyId);
     this.qrCodes.delete(companyId);
+    this.qrTimestamps.delete(companyId);
     this.statuses.delete(companyId);
   }
 
