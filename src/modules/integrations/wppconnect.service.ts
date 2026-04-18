@@ -11,6 +11,7 @@ type WhatsappStatus =
   | 'DISCONNECTED'
   | 'CONNECTING'
   | 'QR_READY'
+  | 'QR_REQUIRED'
   | 'AUTHENTICATING'
   | 'CONNECTED'
   | 'UNPAIRED';
@@ -44,9 +45,7 @@ const SESSION_BASE_DIR =
 const TOKEN_BASE_DIR =
   process.env.WPPCONNECT_TOKEN_DIR || '/tmp/tokens';
 const DEFAULT_RETRY_DELAY_MS = 20000;
-const FAST_RECONNECT_DELAY_MS = 5000;
 const QR_REUSE_WINDOW_MS = 60000;
-const WHATSAPP_WEB_VERSION = '2.2412.54';
 const WHATSAPP_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const CHROMIUM_ARGS = [
@@ -260,6 +259,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       healthy: connected,
       needsReconnect: !connected && dbCompany?.whatsappStatus === 'CONNECTED',
       awaitingQR: !connected && status === 'QR_READY',
+      qrRequired: !connected && status === 'QR_REQUIRED',
     };
   }
 
@@ -339,7 +339,6 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         disableWelcome: true,
         folderNameToken: TOKEN_BASE_DIR,
         mkdirFolderToken: TOKEN_BASE_DIR,
-        whatsappVersion: WHATSAPP_WEB_VERSION,
         catchQR: (base64Qr) => {
           const now = Date.now();
           const previousQr = this.qrCodes.get(companyId);
@@ -435,17 +434,12 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       case 'qrReadSuccess':
         this.cancelRetry(companyId);
         this.qrCodes.delete(companyId);
+        this.qrTimestamps.delete(companyId);
         this.setStatus(companyId, 'CONNECTED');
         void this.syncIntegrationStatus(companyId, 'connected', sessionName);
         return;
       case 'notLogged':
-        if (fs.existsSync(this.getTokenDir(companyId))) {
-          await this.handleClientDisconnect(companyId, sessionName, 'DISCONNECTED', FAST_RECONNECT_DELAY_MS);
-          return;
-        }
-
-        this.setStatus(companyId, 'QR_READY');
-        void this.syncIntegrationStatus(companyId, 'awaiting_qr_scan', sessionName);
+        await this.handleQrRequired(companyId, sessionName, statusSession);
         return;
       case 'initWhatsapp':
       case 'openBrowser':
@@ -456,19 +450,22 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         return;
       case 'sessionUnpaired':
         this.setStatus(companyId, 'UNPAIRED');
-        await this.handleClientDisconnect(companyId, sessionName, 'UNPAIRED', FAST_RECONNECT_DELAY_MS);
+        await this.handleQrRequired(companyId, sessionName, statusSession);
         return;
       case 'serverClose':
+      case 'browserClose':
+      case 'autocloseCalled':
+        await this.handleClientDisconnect(companyId, sessionName, 'DISCONNECTED', 10000);
+        return;
       case 'deleteToken':
       case 'desconnectedMobile':
-        await this.handleClientDisconnect(companyId, sessionName, 'DISCONNECTED', FAST_RECONNECT_DELAY_MS);
+      case 'disconnectedMobile':
+        await this.handleQrRequired(companyId, sessionName, statusSession);
         return;
-      case 'autocloseCalled':
-      case 'browserClose':
       case 'phoneNotConnected':
       case 'qrReadError':
       default:
-        await this.handleClientDisconnect(companyId, sessionName, 'DISCONNECTED');
+        await this.handleClientDisconnect(companyId, sessionName, 'DISCONNECTED', 10000);
     }
   }
 
@@ -521,6 +518,41 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     this.setStatus(companyId, status);
     await this.syncIntegrationStatus(companyId, 'disconnected', sessionName);
     this.scheduleRetry(companyId, retryDelayMs);
+  }
+
+  async clearSession(companyId: string) {
+    try {
+      this.manualDisconnects.add(companyId);
+      this.cancelRetry(companyId);
+
+      const client = this.clients.get(companyId);
+      if (client) {
+        await client.close().catch(() => null);
+      }
+
+      this.cleanupMemory(companyId);
+
+      const paths = [
+        path.join(TOKEN_BASE_DIR, `company-${companyId}`),
+        path.join(TOKEN_BASE_DIR, companyId),
+        path.join(process.cwd(), 'tokens', `company-${companyId}`),
+        path.join(SESSION_BASE_DIR, `company-${companyId}`),
+      ];
+
+      for (const currentPath of paths) {
+        if (!fs.existsSync(currentPath)) {
+          continue;
+        }
+
+        fs.rmSync(currentPath, { recursive: true, force: true });
+        this.logger.warn(`[WPP][${companyId}] Sessao limpa em ${currentPath}`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`[WPP][${companyId}] Erro ao limpar sessao: ${message}`);
+    } finally {
+      this.manualDisconnects.delete(companyId);
+    }
   }
 
   private async syncConnectedProfile(companyId: string, client: WppWhatsapp, sessionName: string) {
@@ -653,6 +685,36 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     await this.syncIntegrationStatus(companyId, 'disconnected');
 
     this.manualDisconnects.delete(companyId);
+  }
+
+  private async handleQrRequired(
+    companyId: string,
+    sessionName: string,
+    rawStatus: string,
+  ) {
+    this.logger.warn(
+      `[WPP][${companyId}] Dispositivo desconectado pelo usuario (${rawStatus}). Novo QR obrigatorio.`,
+    );
+
+    await this.clearSession(companyId);
+    this.setStatus(companyId, 'QR_REQUIRED');
+    await this.prisma.company.update({
+      where: { id: companyId },
+      data: {
+        whatsappStatus: 'QR_REQUIRED',
+        whatsappEnabled: false,
+        whatsappSessionName: null,
+        whatsappSessionToken: null,
+        whatsappWid: null,
+        whatsappName: null,
+        whatsappAvatar: null,
+      },
+    }).catch(() => null);
+    await this.syncIntegrationStatus(companyId, 'awaiting_qr_scan', sessionName);
+    this.eventEmitter.emit('whatsapp.status.updated', {
+      companyId,
+      status: 'qrRequired',
+    });
   }
 
   private normalizeRecipient(value: string) {

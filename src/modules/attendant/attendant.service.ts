@@ -366,11 +366,15 @@ export class AttendantService {
         ? 'CONNECTED'
         : wppHealth.awaitingQR
           ? 'AWAITING_QR_SCAN'
+          : wppHealth.qrRequired
+            ? 'QR_REQUIRED'
           : wppHealth.status,
       qrcode: wppHealth.qrCode,
       qrCode: wppHealth.qrCode,
       connected: wppHealth.connected,
       method: wppHealth.connected ? 'wppconnect' : null,
+      phoneNumber: wppHealth.phoneNumber,
+      qrRequired: wppHealth.qrRequired,
       updatedAt: wppHealth.dbLastConnected,
       quotaUsed: 0,
       quotaLimit: 10000,
@@ -418,10 +422,13 @@ export class AttendantService {
         ? 'CONNECTED'
         : awaitingQr
           ? 'AWAITING_QR_SCAN'
+          : wppHealth.qrRequired
+            ? 'QR_REQUIRED'
           : 'DISCONNECTED',
       phoneNumberId: company?.metaPhoneNumberId ?? null,
       phoneNumber: connectedViaMeta ? metaHealth.phoneNumber : wppHealth.phoneNumber,
       qrCode: connectedViaMeta ? null : wppHealth.qrCode,
+      qrRequired: wppHealth.qrRequired,
       sessionId: null,
       updatedAt: connectedViaMeta ? metaHealth.dbLastConnected : wppHealth.dbLastConnected,
     };
