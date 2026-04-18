@@ -340,17 +340,17 @@ export class AttendantService {
   }
 
   async getWhatsappQrCode(companyId: string) {
-    let health = await this.wppconnectService.getHealthStatus(companyId);
-
-    for (let attempt = 0; attempt < 8 && !health.qrCode && !health.connected; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      health = await this.wppconnectService.getHealthStatus(companyId);
-    }
+    const [health, qrcode] = await Promise.all([
+      this.wppconnectService.getHealthStatus(companyId),
+      Promise.resolve(this.wppconnectService.getQrCode(companyId)),
+    ]);
 
     return {
-      qrcode: health.qrCode,
-      qrCode: health.qrCode,
-      status: health.status,
+      qrcode: qrcode || health.qrCode,
+      qrCode: qrcode || health.qrCode,
+      status: qrcode || health.qrCode ? 'ready' : 'generating',
+      connectionStatus: health.status,
+      connected: health.connected,
       method: health.connected ? 'wppconnect' : null,
     };
   }
