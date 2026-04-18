@@ -46,11 +46,12 @@ export class MetaStatusController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly wppconnectService: WppconnectService,
+    private readonly metaIntegrationService: MetaIntegrationService,
   ) {}
 
   @Get('status')
   async getConnectionStatus(@Query('companyId') companyId: string) {
-    const [company, wppHealth] = await Promise.all([
+    const [company, wppHealth, metaHealth] = await Promise.all([
       this.prisma.company.findUnique({
         where: { id: companyId },
         select: {
@@ -60,16 +61,17 @@ export class MetaStatusController {
         },
       }),
       this.wppconnectService.getHealthStatus(companyId),
+      this.metaIntegrationService.getHealthStatus(companyId),
     ]);
 
-    const connectedViaMeta = !!(company?.metaPhoneNumberId && company?.metaAccessToken);
+    const connectedViaMeta = metaHealth.connected;
     const connectedViaWpp = !connectedViaMeta && wppHealth.connected;
 
     return {
       connected: connectedViaMeta || connectedViaWpp,
       method: connectedViaMeta ? 'meta' : connectedViaWpp ? 'wppconnect' : null,
       phoneNumberId: company?.metaPhoneNumberId ?? null,
-      phoneNumber: connectedViaMeta ? company?.phoneNumber ?? null : wppHealth.phoneNumber,
+      phoneNumber: connectedViaMeta ? metaHealth.phoneNumber : wppHealth.phoneNumber,
       status:
         connectedViaMeta || connectedViaWpp
           ? 'CONNECTED'

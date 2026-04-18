@@ -338,33 +338,28 @@ export class AttendantService {
   }
 
   async getWhatsappStatus(companyId: string) {
-    const connectionStatus = await this.getConnectionStatus(companyId);
+    const wppHealth = await this.wppconnectService.getHealthStatus(companyId);
     return {
-      status: connectionStatus.status,
-      qrcode: connectionStatus.qrCode,
-      qrCode: connectionStatus.qrCode,
-      connected: connectionStatus.connected,
-      method: connectionStatus.method,
-      updatedAt: connectionStatus.updatedAt,
+      status: wppHealth.connected
+        ? 'CONNECTED'
+        : wppHealth.awaitingQR
+          ? 'AWAITING_QR_SCAN'
+          : wppHealth.status,
+      qrcode: wppHealth.qrCode,
+      qrCode: wppHealth.qrCode,
+      connected: wppHealth.connected,
+      method: wppHealth.connected ? 'wppconnect' : null,
+      updatedAt: wppHealth.dbLastConnected,
       quotaUsed: 0,
       quotaLimit: 10000,
     };
   }
 
   async getWhatsappHealth(companyId: string) {
-    const connectionStatus = await this.getConnectionStatus(companyId);
-    if (connectionStatus.method === 'meta') {
-      const metaHealth = await this.metaIntegrationService.getHealthStatus(companyId);
-      return {
-        ...metaHealth,
-        method: 'meta',
-      };
-    }
-
     const wppHealth = await this.wppconnectService.getHealthStatus(companyId);
     return {
       ...wppHealth,
-      method: connectionStatus.method,
+      method: wppHealth.connected ? 'wppconnect' : null,
     };
   }
 
@@ -373,7 +368,7 @@ export class AttendantService {
   }
 
   async getConnectionStatus(companyId: string) {
-    const [company, wppHealth] = await Promise.all([
+    const [company, wppHealth, metaHealth] = await Promise.all([
       this.prisma.company.findUnique({
         where: { id: companyId },
         select: {
@@ -383,11 +378,10 @@ export class AttendantService {
         },
       }),
       this.wppconnectService.getHealthStatus(companyId),
+      this.metaIntegrationService.getHealthStatus(companyId),
     ]);
 
-    const connectedViaMeta = Boolean(
-      company?.metaPhoneNumberId && company?.metaAccessToken,
-    );
+    const connectedViaMeta = metaHealth.connected;
     const connectedViaWpp = !connectedViaMeta && wppHealth.connected;
     const awaitingQr = !connectedViaMeta && wppHealth.awaitingQR;
 
@@ -404,10 +398,10 @@ export class AttendantService {
           ? 'AWAITING_QR_SCAN'
           : 'DISCONNECTED',
       phoneNumberId: company?.metaPhoneNumberId ?? null,
-      phoneNumber: connectedViaMeta ? company?.phoneNumber ?? null : wppHealth.phoneNumber,
+      phoneNumber: connectedViaMeta ? metaHealth.phoneNumber : wppHealth.phoneNumber,
       qrCode: connectedViaMeta ? null : wppHealth.qrCode,
       sessionId: null,
-      updatedAt: wppHealth.dbLastConnected,
+      updatedAt: connectedViaMeta ? metaHealth.dbLastConnected : wppHealth.dbLastConnected,
     };
   }
 

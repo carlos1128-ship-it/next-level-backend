@@ -96,7 +96,41 @@ export class MetaIntegrationService {
       select: { metaPhoneNumberId: true, metaAccessToken: true, phoneNumber: true },
     });
 
-    const connected = Boolean(company?.metaPhoneNumberId && company?.metaAccessToken);
+    if (!company?.metaPhoneNumberId || !company?.metaAccessToken) {
+      return {
+        status: 'DISCONNECTED',
+        connected: false,
+        qrCode: null,
+        phoneNumber: company?.phoneNumber ?? null,
+        pushname: null,
+        hasClient: false,
+        hasInitialization: false,
+        hasRetryTimer: false,
+        lastError: null,
+        dbStatus: 'disconnected',
+        dbEnabled: false,
+        dbLastConnected: null,
+        healthy: false,
+        needsReconnect: true,
+        awaitingQR: false,
+      };
+    }
+
+    let connected = false;
+    let lastError: string | null = null;
+
+    try {
+      await axios.get(`${this.META_API_URL}/${company.metaPhoneNumberId}`, {
+        headers: { Authorization: `Bearer ${company.metaAccessToken}` },
+        params: {
+          fields: 'id,display_phone_number,verified_name,quality_rating',
+        },
+      });
+      connected = true;
+    } catch (error: any) {
+      lastError = error?.response?.data?.error?.message || error.message || 'Falha ao validar Meta API';
+      this.logger.warn(`Meta health check falhou para ${companyId}: ${lastError}`);
+    }
 
     return {
       status: connected ? 'CONNECTED' : 'DISCONNECTED',
@@ -107,9 +141,9 @@ export class MetaIntegrationService {
       hasClient: connected,
       hasInitialization: connected,
       hasRetryTimer: false,
-      lastError: null,
+      lastError,
       dbStatus: connected ? 'connected' : 'disconnected',
-      dbEnabled: true,
+      dbEnabled: connected,
       dbLastConnected: connected ? new Date().toISOString() : null,
       healthy: connected,
       needsReconnect: !connected,
