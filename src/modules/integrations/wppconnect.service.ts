@@ -118,7 +118,9 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     this.needsQrScan.delete(companyId);
 
     if (options?.fresh) {
+      this.logger.warn(`[WPP][${companyId}] Forcando nova sessao com limpeza total de tokens.`);
       await this.clearPersistedSessionState(companyId);
+      await this.sleep(1000);
     }
 
     await this.ensureSessionBaseDir();
@@ -545,22 +547,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       }
 
       this.cleanupMemory(companyId);
-
-      const paths = [
-        path.join(TOKEN_BASE_DIR, `company-${companyId}`),
-        path.join(TOKEN_BASE_DIR, companyId),
-        path.join(process.cwd(), 'tokens', `company-${companyId}`),
-        path.join(SESSION_BASE_DIR, `company-${companyId}`),
-      ];
-
-      for (const currentPath of paths) {
-        if (!fs.existsSync(currentPath)) {
-          continue;
-        }
-
-        fs.rmSync(currentPath, { recursive: true, force: true });
-        this.logger.warn(`[WPP][${companyId}] Sessao limpa em ${currentPath}`);
-      }
+      this.deletePersistedSessionPaths(companyId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`[WPP][${companyId}] Erro ao limpar sessao: ${message}`);
@@ -681,8 +668,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.cleanupMemory(companyId);
-    await this.forceCleanupFiles(companyId);
-    await this.forceCleanupTokenFiles(companyId);
+    this.deletePersistedSessionPaths(companyId);
 
     await this.prisma.company.update({
       where: { id: companyId },
@@ -699,6 +685,30 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     await this.syncIntegrationStatus(companyId, 'disconnected');
 
     this.manualDisconnects.delete(companyId);
+  }
+
+  private deletePersistedSessionPaths(companyId: string) {
+    const paths = [
+      path.join(TOKEN_BASE_DIR, `company-${companyId}`),
+      path.join(TOKEN_BASE_DIR, companyId),
+      path.join(SESSION_BASE_DIR, `company-${companyId}`),
+      path.join(process.cwd(), 'tokens', `company-${companyId}`),
+      path.join(process.cwd(), 'tokens', companyId),
+    ];
+
+    for (const currentPath of paths) {
+      try {
+        if (!fs.existsSync(currentPath)) {
+          continue;
+        }
+
+        fs.rmSync(currentPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+        this.logger.warn(`[WPP][${companyId}] Deleted token at: ${currentPath}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`[WPP][${companyId}] Nao foi possivel deletar ${currentPath}: ${message}`);
+      }
+    }
   }
 
   private async handleQrRequired(
@@ -872,5 +882,9 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       'No Render em modo Node, use `npx puppeteer browsers install chrome` no Build Command; ' +
       'em modo Docker, confirme se o servico esta usando o Dockerfile e um Chrome/Chromium valido.'
     );
+  }
+
+  private sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
