@@ -41,10 +41,10 @@ type HostDeviceShape = {
 const SESSION_BASE_DIR =
   process.env.WPPCONNECT_SESSION_DIR || '/tmp/.wppconnect';
 const TOKEN_BASE_DIR =
-  process.env.WPPCONNECT_TOKEN_DIR || path.join(process.cwd(), 'tokens');
+  process.env.WPPCONNECT_TOKEN_DIR || '/tmp/tokens';
 const DEFAULT_RETRY_DELAY_MS = 20000;
 const QR_REUSE_WINDOW_MS = 60000;
-const AUTO_CLOSE_MS = 120000;
+const WHATSAPP_WEB_VERSION = '2.2412.54';
 const WHATSAPP_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const CHROMIUM_ARGS = [
@@ -58,6 +58,14 @@ const CHROMIUM_ARGS = [
   '--disable-gpu',
   '--disable-extensions',
   '--disable-default-apps',
+  '--disable-software-rasterizer',
+  '--disable-background-networking',
+  '--disable-sync',
+  '--disable-translate',
+  '--hide-scrollbars',
+  '--metrics-recording-only',
+  '--mute-audio',
+  '--safebrowsing-disable-auto-update',
   '--no-default-browser-check',
 ];
 const COMMON_BROWSER_PATHS = [
@@ -324,10 +332,12 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         updatesLog: false,
         browserWS: '',
         browserArgs: CHROMIUM_ARGS,
-        autoClose: AUTO_CLOSE_MS,
+        autoClose: 0,
         waitForLogin: false,
         disableWelcome: true,
         folderNameToken: TOKEN_BASE_DIR,
+        mkdirFolderToken: TOKEN_BASE_DIR,
+        whatsappVersion: WHATSAPP_WEB_VERSION,
         catchQR: (base64Qr) => {
           const now = Date.now();
           const previousQr = this.qrCodes.get(companyId);
@@ -351,9 +361,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         },
         puppeteerOptions: {
           headless: this.resolveHeadless(),
-          executablePath,
-          userDataDir: this.getSessionDir(companyId),
-          args: [`--user-agent=${WHATSAPP_USER_AGENT}`, ...CHROMIUM_ARGS],
+          executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || executablePath || undefined,
         },
       });
 
