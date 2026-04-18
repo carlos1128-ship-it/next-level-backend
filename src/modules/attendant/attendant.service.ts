@@ -344,11 +344,13 @@ export class AttendantService {
       this.wppconnectService.getHealthStatus(companyId),
       Promise.resolve(this.wppconnectService.getQrCode(companyId)),
     ]);
+    const qrCode = qrcode || health.qrCode;
 
     return {
-      qrcode: qrcode || health.qrCode,
-      qrCode: qrcode || health.qrCode,
-      status: qrcode || health.qrCode ? 'ready' : 'generating',
+      qrcode: qrCode,
+      qrCode,
+      ready: Boolean(qrCode),
+      status: qrCode ? 'ready' : 'generating',
       connectionStatus: health.status,
       connected: health.connected,
       method: health.connected ? 'wppconnect' : null,
@@ -442,7 +444,9 @@ export class AttendantService {
     name?: string | null,
   ) {
     const config = await this.getOrCreateAgentConfig(companyId);
-    const conversation = await this.prisma.conversation.upsert({
+    this.logger.log(`[BOT][${companyId}] Mensagem recebida de ${externalId}: ${text}`);
+
+    let conversation = await this.prisma.conversation.upsert({
       where: {
         companyId_contactNumber: {
           companyId,
@@ -475,27 +479,59 @@ export class AttendantService {
       incomingMessage: text,
     });
 
+    const now = new Date();
     const paused =
       conversation.isPaused &&
-      conversation.pausedUntil &&
-      conversation.pausedUntil > new Date();
+      (!conversation.pausedUntil || conversation.pausedUntil > now);
 
-    if (paused || !config.isOnline) {
+    if (paused) {
+      this.logger.warn(`[BOT][${companyId}] Bot pausado para ${externalId}.`);
       await this.prisma.conversation.update({
         where: { id: conversation.id },
         data: {
-          status: paused ? 'Humano assumiu' : 'Aguardando',
+          status: 'Humano assumiu',
           lastMessageAt: new Date(),
         },
       });
       await this.emitConversationUpdate(companyId, conversation.id, {
-        event: paused ? 'conversation.paused' : 'agent.offline',
+        event: 'conversation.paused',
+        incomingMessage: text,
+      });
+      return;
+    }
+
+    if (conversation.isPaused && conversation.pausedUntil && conversation.pausedUntil <= now) {
+      conversation = await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: {
+          isPaused: false,
+          pausedUntil: null,
+          status: 'Aguardando',
+          lastMessageAt: now,
+        },
+      });
+      this.logger.log(`[BOT][${companyId}] Pausa expirada para ${externalId}.`);
+    }
+
+    if (!config.isOnline) {
+      this.logger.warn(`[BOT][${companyId}] Bot offline para ${externalId}.`);
+      await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: {
+          status: 'Aguardando',
+          lastMessageAt: new Date(),
+        },
+      });
+      await this.emitConversationUpdate(companyId, conversation.id, {
+        event: 'agent.offline',
         incomingMessage: text,
       });
       return;
     }
 
     if (this.hasHumanEscalationSignal(text)) {
+      const transferMessage = 'Um momento. Vou chamar um atendente humano.';
+      this.logger.warn(`[BOT][${companyId}] Cliente ${externalId} pediu humano.`);
       await this.pauseConversation(conversation.id, companyId);
       await this.alertsService.createAlert({
         companyId,
@@ -503,6 +539,20 @@ export class AttendantService {
         severity: 'critical',
         message: `Cliente ${name || externalId} pediu atendimento humano.`,
       });
+      try {
+        await this.dispatchOutboundMessage(companyId, externalId, transferMessage, provider);
+        await this.prisma.message.create({
+          data: {
+            conversationId: conversation.id,
+            content: transferMessage,
+            role: 'assistant',
+          },
+        });
+      } catch (error) {
+        this.logger.error(
+          `Falha ao enviar mensagem de transferencia: ${(error as Error)?.message || 'erro desconhecido'}`,
+        );
+      }
       return;
     }
 
@@ -533,6 +583,9 @@ export class AttendantService {
     });
 
     let reply = config.welcomeMessage;
+    this.logger.log(
+      `[BOT][${companyId}] Gerando resposta para ${externalId} com ${history.length} mensagens.`,
+    );
 
     try {
       const rag = await this.ragService.buildContext(companyId, text);
@@ -546,6 +599,43 @@ export class AttendantService {
       this.logger.warn(
         `Falha ao gerar resposta da IA: ${(error as Error)?.message || 'erro desconhecido'}`,
       );
+    }
+
+    if (reply.toUpperCase().includes('PAUSAR_BOT')) {
+      const transferMessage = 'Um momento. Vou chamar um atendente humano.';
+      this.logger.warn(`[BOT][${companyId}] IA pediu atendimento humano para ${externalId}.`);
+
+      await this.pauseConversation(conversation.id, companyId);
+      await this.alertsService.createAlert({
+        companyId,
+        type: 'BOT_HANDOFF',
+        severity: 'critical',
+        message: `Cliente ${name || externalId} precisa de atendimento humano.`,
+      }).catch(() => null);
+
+      try {
+        await this.dispatchOutboundMessage(companyId, externalId, transferMessage, provider);
+      } catch (error) {
+        this.logger.error(
+          `Falha ao enviar mensagem de transferencia: ${(error as Error)?.message || 'erro desconhecido'}`,
+        );
+        return;
+      }
+
+      await this.prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          content: transferMessage,
+          role: 'assistant',
+        },
+      });
+      await this.emitConversationUpdate(companyId, conversation.id, {
+        event: 'ai.handoff',
+        incomingMessage: text,
+        aiResponse: transferMessage,
+        badge: 'Humano acionado',
+      });
+      return;
     }
 
     try {
@@ -582,6 +672,7 @@ export class AttendantService {
       aiResponse: reply,
       badge: 'IA respondeu',
     });
+    this.logger.log(`[BOT][${companyId}] Resposta enviada para ${externalId}.`);
   }
 
   private async dispatchOutboundMessage(
@@ -624,6 +715,7 @@ export class AttendantService {
       'Fale sempre em portugues do Brasil.',
       'Sempre diga que voce e uma assistente virtual.',
       'Nunca invente preco. Se faltar valor, diga que vai confirmar com um humano.',
+      'Se o cliente pedir atendimento humano, responda somente com PAUSAR_BOT.',
       'Se o cliente demonstrar frustracao, oriente que o atendimento sera transferido.',
       `Mensagem de boas-vindas: ${input.welcomeMessage}`,
       `Instrucoes da empresa: ${input.instructions}`,

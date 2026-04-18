@@ -87,12 +87,14 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WppconnectService.name);
   private readonly clients = new Map<string, WppWhatsapp>();
   private readonly initializations = new Map<string, Promise<WppWhatsapp | null>>();
+  private readonly initializationSessions = new Map<string, string>();
   private readonly qrCodes = new Map<string, string>();
   private readonly statuses = new Map<string, WhatsappStatus>();
   private readonly retryTimers = new Map<string, NodeJS.Timeout>();
   private readonly manualDisconnects = new Set<string>();
   private readonly needsQrScan = new Set<string>();
   private readonly qrTimestamps = new Map<string, number>();
+  private readonly sessionNames = new Map<string, string>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -110,18 +112,26 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
 
     for (const [companyId, client] of this.clients.entries()) {
       await client.close().catch(() => null);
-      this.cleanupMemory(companyId);
+      this.cleanupMemory(companyId, { clearSessionName: true });
     }
   }
 
   async createSession(companyId: string, options?: { fresh?: boolean }) {
     this.needsQrScan.delete(companyId);
+    let sessionName: string;
 
     if (options?.fresh) {
       this.logger.warn(`[WPP][${companyId}] Forcando nova sessao com limpeza total de tokens.`);
       await this.clearPersistedSessionState(companyId);
-      await this.sleep(1000);
+      await this.sleep(2000);
+      sessionName = this.buildFreshSessionName(companyId);
+    } else {
+      sessionName = await this.resolveSessionName(companyId);
     }
+
+    this.sessionNames.set(companyId, sessionName);
+    this.setStatus(companyId, 'CONNECTING');
+    this.logger.log(`[WPP][${companyId}] Iniciando sessao: ${sessionName}`);
 
     await this.ensureSessionBaseDir();
     await this.prisma.company.update({
@@ -129,6 +139,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       data: {
         whatsappEnabled: true,
         whatsappStatus: 'CONNECTING',
+        whatsappSessionName: sessionName,
       },
     });
 
@@ -137,17 +148,23 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         status: this.getStatus(companyId),
         qrcode: this.getQrCode(companyId),
         qrCode: this.getQrCode(companyId),
+        ready: Boolean(this.getQrCode(companyId)),
       };
     }
 
-    if (!this.initializations.has(companyId)) {
-      this.initializations.set(companyId, this.bootstrapClient(companyId));
+    if (
+      !this.initializations.has(companyId) ||
+      this.initializationSessions.get(companyId) !== sessionName
+    ) {
+      this.initializationSessions.set(companyId, sessionName);
+      this.initializations.set(companyId, this.bootstrapClient(companyId, sessionName));
     }
 
     return {
       status: this.getStatus(companyId),
       qrcode: this.getQrCode(companyId),
       qrCode: this.getQrCode(companyId),
+      ready: Boolean(this.getQrCode(companyId)),
     };
   }
 
@@ -161,7 +178,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       await client.close().catch(() => null);
     }
 
-    this.cleanupMemory(companyId);
+    this.cleanupMemory(companyId, { clearSessionName: true });
     await this.forceCleanupFiles(companyId);
     await this.forceCleanupTokenFiles(companyId);
     await this.prisma.company.update({
@@ -243,7 +260,14 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
+    const qrCode = this.getQrCode(companyId);
     const status = connected ? 'CONNECTED' : this.getStatus(companyId);
+    const qrRequired =
+      !connected &&
+      (this.needsQrScan.has(companyId) ||
+        status === 'QR_REQUIRED' ||
+        status === 'UNPAIRED');
+    const awaitingQR = !connected && (status === 'QR_READY' || Boolean(qrCode));
 
     return {
       companyId,
@@ -251,7 +275,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       connected,
       authenticated,
       connectionState,
-      qrCode: this.getQrCode(companyId),
+      qrCode,
       phoneNumber,
       pushname,
       hasClient: Boolean(client),
@@ -266,8 +290,8 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         !connected &&
         dbCompany?.whatsappStatus === 'CONNECTED' &&
         !this.needsQrScan.has(companyId),
-      awaitingQR: !connected && status === 'QR_READY',
-      qrRequired: !connected && status === 'QR_REQUIRED',
+      awaitingQR,
+      qrRequired,
     };
   }
 
@@ -278,13 +302,19 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       await client.close().catch(() => null);
     }
 
-    this.cleanupMemory(companyId);
+    this.cleanupMemory(companyId, { clearSessionName: true });
     await this.forceCleanupFiles(companyId);
     await this.forceCleanupTokenFiles(companyId);
     await this.prisma.company.update({
       where: { id: companyId },
       data: {
         whatsappStatus: 'DISCONNECTED',
+        whatsappEnabled: false,
+        whatsappSessionName: null,
+        whatsappSessionToken: null,
+        whatsappWid: null,
+        whatsappName: null,
+        whatsappAvatar: null,
       },
     }).catch(() => null);
     await this.syncIntegrationStatus(companyId, 'disconnected');
@@ -300,26 +330,30 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         whatsappStatus: 'CONNECTED',
         lastConnectedAt: { gte: recentThreshold },
       },
-      select: { id: true },
+      select: { id: true, whatsappSessionName: true },
     });
 
     for (const [index, company] of companies.entries()) {
-      const tokenDir = this.getTokenDir(company.id);
-      if (!fs.existsSync(tokenDir)) {
+      const sessionName =
+        company.whatsappSessionName || this.buildCompanySessionPrefix(company.id);
+      if (!this.hasPersistedSessionData(company.id, sessionName)) {
+        this.logger.warn(
+          `[WPP][${company.id}] Sessao marcada como conectada, mas sem tokens locais. Ignorando restauracao.`,
+        );
         continue;
       }
+      this.sessionNames.set(company.id, sessionName);
       setTimeout(() => {
         void this.createSession(company.id);
       }, index * 1000);
     }
   }
 
-  private async bootstrapClient(companyId: string): Promise<WppWhatsapp | null> {
-    const sessionName = `company-${companyId}`;
+  private async bootstrapClient(companyId: string, sessionName: string): Promise<WppWhatsapp | null> {
     const executablePath = this.resolveBrowserExecutablePath();
 
     try {
-      await this.forceCleanupFiles(companyId);
+      await this.forceCleanupFiles(companyId, sessionName);
       this.setStatus(companyId, 'CONNECTING');
 
       if (executablePath) {
@@ -338,8 +372,8 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         devtools: false,
         useChrome: false,
         debug: false,
-        logQR: false,
-        updatesLog: false,
+        logQR: true,
+        updatesLog: true,
         browserWS: '',
         browserArgs: CHROMIUM_ARGS,
         autoClose: 0,
@@ -347,7 +381,14 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         disableWelcome: true,
         folderNameToken: TOKEN_BASE_DIR,
         mkdirFolderToken: TOKEN_BASE_DIR,
-        catchQR: (base64Qr) => {
+        catchQR: (base64Qr, _asciiQR, attempts) => {
+          if (!this.isActiveSession(companyId, sessionName)) {
+            this.logger.warn(
+              `[WPP][${companyId}] Ignorando QR de sessao antiga: ${sessionName}`,
+            );
+            return;
+          }
+
           const now = Date.now();
           const previousQr = this.qrCodes.get(companyId);
           const previousTimestamp = this.qrTimestamps.get(companyId) || 0;
@@ -362,10 +403,24 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
           this.qrCodes.set(companyId, qrCode);
           this.qrTimestamps.set(companyId, now);
           this.setStatus(companyId, 'QR_READY');
+          this.logger.log(
+            `[WPP][${companyId}] QR gerado com sucesso. Tentativa ${attempts ?? 1}. Sessao ${sessionName}`,
+          );
           void this.syncIntegrationStatus(companyId, 'awaiting_qr_scan', sessionName);
-          this.eventEmitter.emit('whatsapp.qr.generated', { companyId, qrCode });
+          this.eventEmitter.emit('whatsapp.qr.generated', {
+            companyId,
+            qrCode,
+            attempts: attempts ?? 1,
+            sessionName,
+          });
         },
         statusFind: (statusSession: string) => {
+          if (!this.isActiveSession(companyId, sessionName)) {
+            this.logger.warn(
+              `[WPP][${companyId}] Ignorando status de sessao antiga ${sessionName}: ${statusSession}`,
+            );
+            return;
+          }
           void this.handleStatusChange(companyId, statusSession, sessionName);
         },
         puppeteerOptions: {
@@ -376,13 +431,22 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         },
       });
 
+      if (!this.isActiveSession(companyId, sessionName)) {
+        this.logger.warn(
+          `[WPP][${companyId}] Cliente antigo iniciado fora de hora. Fechando sessao ${sessionName}.`,
+        );
+        await client.close().catch(() => null);
+        this.clearInitialization(companyId, sessionName);
+        return null;
+      }
+
       this.clients.set(companyId, client);
-      this.initializations.delete(companyId);
+      this.clearInitialization(companyId, sessionName);
       this.attachEventListeners(client, companyId, sessionName);
       return client;
     } catch (error) {
-      this.initializations.delete(companyId);
-      this.cleanupMemory(companyId);
+      this.clearInitialization(companyId, sessionName);
+      this.cleanupMemory(companyId, { sessionName });
       this.setStatus(companyId, 'DISCONNECTED');
       await this.syncIntegrationStatus(companyId, 'disconnected', sessionName);
 
@@ -439,6 +503,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
 
     switch (statusSession) {
       case 'isLogged':
+      case 'inChat':
       case 'chatsAvailable':
       case 'qrReadSuccess':
         this.cancelRetry(companyId);
@@ -493,7 +558,10 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     const timer = setTimeout(() => {
       this.retryTimers.delete(companyId);
       if (!this.clients.has(companyId) && !this.initializations.has(companyId)) {
-        this.initializations.set(companyId, this.bootstrapClient(companyId));
+        const sessionName =
+          this.sessionNames.get(companyId) || this.buildCompanySessionPrefix(companyId);
+        this.initializationSessions.set(companyId, sessionName);
+        this.initializations.set(companyId, this.bootstrapClient(companyId, sessionName));
       }
     }, delayMs);
 
@@ -507,12 +575,30 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     this.retryTimers.delete(companyId);
   }
 
-  private cleanupMemory(companyId: string) {
+  private cleanupMemory(
+    companyId: string,
+    options?: {
+      sessionName?: string;
+      clearSessionName?: boolean;
+    },
+  ) {
+    if (
+      options?.sessionName &&
+      this.sessionNames.has(companyId) &&
+      this.sessionNames.get(companyId) !== options.sessionName
+    ) {
+      return;
+    }
+
     this.clients.delete(companyId);
-    this.initializations.delete(companyId);
+    this.clearInitialization(companyId, options?.sessionName);
     this.qrCodes.delete(companyId);
     this.qrTimestamps.delete(companyId);
     this.statuses.delete(companyId);
+
+    if (options?.clearSessionName) {
+      this.sessionNames.delete(companyId);
+    }
   }
 
   private async handleClientDisconnect(
@@ -530,7 +616,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       await client.close().catch(() => null);
     }
 
-    this.cleanupMemory(companyId);
+    this.cleanupMemory(companyId, { sessionName });
     this.setStatus(companyId, status);
     await this.syncIntegrationStatus(companyId, 'disconnected', sessionName);
     this.scheduleRetry(companyId, retryDelayMs);
@@ -546,7 +632,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         await client.close().catch(() => null);
       }
 
-      this.cleanupMemory(companyId);
+      this.cleanupMemory(companyId, { clearSessionName: true });
       this.deletePersistedSessionPaths(companyId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -621,40 +707,22 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     await mkdir(SESSION_BASE_DIR, { recursive: true }).catch(() => null);
   }
 
-  private getSessionDir(companyId: string) {
-    return path.join(SESSION_BASE_DIR, `company-${companyId}`);
+  private async forceCleanupFiles(companyId: string, sessionName?: string) {
+    const directories = this.collectPersistedDirectories(
+      this.getSessionRoots(),
+      companyId,
+      sessionName,
+    );
+    this.removeDirectories(companyId, directories, 'sessao');
   }
 
-  private getTokenDir(companyId: string) {
-    return path.join(TOKEN_BASE_DIR, `company-${companyId}`);
-  }
-
-  private async forceCleanupFiles(companyId: string) {
-    const sessionDir = this.getSessionDir(companyId);
-    if (!fs.existsSync(sessionDir)) {
-      return;
-    }
-
-    fs.rmSync(sessionDir, {
-      recursive: true,
-      force: true,
-      maxRetries: 5,
-      retryDelay: 1000,
-    });
-  }
-
-  private async forceCleanupTokenFiles(companyId: string) {
-    const tokenDir = this.getTokenDir(companyId);
-    if (!fs.existsSync(tokenDir)) {
-      return;
-    }
-
-    fs.rmSync(tokenDir, {
-      recursive: true,
-      force: true,
-      maxRetries: 5,
-      retryDelay: 1000,
-    });
+  private async forceCleanupTokenFiles(companyId: string, sessionName?: string) {
+    const directories = this.collectPersistedDirectories(
+      this.getTokenRoots(),
+      companyId,
+      sessionName,
+    );
+    this.removeDirectories(companyId, directories, 'token');
   }
 
   private async clearPersistedSessionState(companyId: string) {
@@ -667,7 +735,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       await client.close().catch(() => null);
     }
 
-    this.cleanupMemory(companyId);
+    this.cleanupMemory(companyId, { clearSessionName: true });
     this.deletePersistedSessionPaths(companyId);
 
     await this.prisma.company.update({
@@ -687,28 +755,12 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     this.manualDisconnects.delete(companyId);
   }
 
-  private deletePersistedSessionPaths(companyId: string) {
-    const paths = [
-      path.join(TOKEN_BASE_DIR, `company-${companyId}`),
-      path.join(TOKEN_BASE_DIR, companyId),
-      path.join(SESSION_BASE_DIR, `company-${companyId}`),
-      path.join(process.cwd(), 'tokens', `company-${companyId}`),
-      path.join(process.cwd(), 'tokens', companyId),
+  private deletePersistedSessionPaths(companyId: string, sessionName?: string) {
+    const allDirectories = [
+      ...this.collectPersistedDirectories(this.getTokenRoots(), companyId, sessionName),
+      ...this.collectPersistedDirectories(this.getSessionRoots(), companyId, sessionName),
     ];
-
-    for (const currentPath of paths) {
-      try {
-        if (!fs.existsSync(currentPath)) {
-          continue;
-        }
-
-        fs.rmSync(currentPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
-        this.logger.warn(`[WPP][${companyId}] Deleted token at: ${currentPath}`);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        this.logger.warn(`[WPP][${companyId}] Nao foi possivel deletar ${currentPath}: ${message}`);
-      }
-    }
+    this.removeDirectories(companyId, allDirectories, 'arquivo');
   }
 
   private async handleQrRequired(
@@ -719,6 +771,9 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     this.needsQrScan.add(companyId);
     this.logger.warn(
       `[WPP][${companyId}] Dispositivo desconectado pelo usuario (${rawStatus}). Novo QR obrigatorio.`,
+    );
+    this.logger.warn(
+      `[WPP][${companyId}] Antes do novo teste, remova todos os aparelhos conectados no WhatsApp do celular.`,
     );
 
     await this.clearSession(companyId);
@@ -783,6 +838,140 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
 
   private extractDisplayName(host: HostDeviceShape | undefined, phoneNumber: string | null) {
     return host?.pushname || host?.formattedName || host?.name || phoneNumber || null;
+  }
+
+  private buildCompanySessionPrefix(companyId: string) {
+    return `company-${companyId}`;
+  }
+
+  private buildFreshSessionName(companyId: string) {
+    return `${this.buildCompanySessionPrefix(companyId)}-${Date.now()}`;
+  }
+
+  private async resolveSessionName(companyId: string) {
+    const cached = this.sessionNames.get(companyId);
+    if (cached) {
+      return cached;
+    }
+
+    const company = await this.prisma.company.findUnique({
+      where: { id: companyId },
+      select: { whatsappSessionName: true },
+    });
+    const resolved = company?.whatsappSessionName || this.buildCompanySessionPrefix(companyId);
+    this.sessionNames.set(companyId, resolved);
+    return resolved;
+  }
+
+  private clearInitialization(companyId: string, sessionName?: string) {
+    const currentSession = this.initializationSessions.get(companyId);
+    if (sessionName && currentSession && currentSession !== sessionName) {
+      return;
+    }
+
+    this.initializations.delete(companyId);
+    this.initializationSessions.delete(companyId);
+  }
+
+  private isActiveSession(companyId: string, sessionName: string) {
+    return this.sessionNames.get(companyId) === sessionName;
+  }
+
+  private hasPersistedSessionData(companyId: string, sessionName?: string) {
+    return [
+      ...this.collectPersistedDirectories(this.getTokenRoots(), companyId, sessionName),
+      ...this.collectPersistedDirectories(this.getSessionRoots(), companyId, sessionName),
+    ].some((currentPath) => fs.existsSync(currentPath));
+  }
+
+  private getSessionRoots() {
+    return this.uniquePaths([
+      SESSION_BASE_DIR,
+      '/tmp/.wppconnect',
+      path.join(process.cwd(), '.wppconnect'),
+    ]);
+  }
+
+  private getTokenRoots() {
+    return this.uniquePaths([
+      TOKEN_BASE_DIR,
+      '/tmp/tokens',
+      path.join(process.cwd(), 'tokens'),
+    ]);
+  }
+
+  private uniquePaths(paths: Array<string | undefined>) {
+    return [...new Set(paths.filter((value): value is string => Boolean(value)))];
+  }
+
+  private collectPersistedDirectories(
+    roots: string[],
+    companyId: string,
+    sessionName?: string,
+  ) {
+    const prefix = this.buildCompanySessionPrefix(companyId);
+    const directories = new Set<string>();
+
+    for (const root of roots) {
+      if (!root) {
+        continue;
+      }
+
+      directories.add(path.join(root, prefix));
+      directories.add(path.join(root, companyId));
+
+      if (sessionName) {
+        directories.add(path.join(root, sessionName));
+      }
+
+      if (!fs.existsSync(root)) {
+        continue;
+      }
+
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        if (!entry.isDirectory()) {
+          continue;
+        }
+
+        if (this.matchesCompanySessionEntry(entry.name, companyId)) {
+          directories.add(path.join(root, entry.name));
+        }
+      }
+    }
+
+    return [...directories];
+  }
+
+  private matchesCompanySessionEntry(entryName: string, companyId: string) {
+    const prefix = this.buildCompanySessionPrefix(companyId);
+    return (
+      entryName === companyId ||
+      entryName === prefix ||
+      entryName.startsWith(`${prefix}-`)
+    );
+  }
+
+  private removeDirectories(companyId: string, directories: string[], label: string) {
+    const uniqueDirectories = [...new Set(directories)];
+
+    for (const currentPath of uniqueDirectories) {
+      try {
+        if (!fs.existsSync(currentPath)) {
+          continue;
+        }
+
+        this.logger.warn(`[WPP][${companyId}] Limpando ${label}: ${currentPath}`);
+        fs.rmSync(currentPath, {
+          recursive: true,
+          force: true,
+          maxRetries: 5,
+          retryDelay: 500,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`[WPP][${companyId}] Nao foi possivel limpar ${currentPath}: ${message}`);
+      }
+    }
   }
 
   private resolveBrowserExecutablePath() {
