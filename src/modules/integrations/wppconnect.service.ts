@@ -1,27 +1,24 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { create, Whatsapp as WppWhatsapp } from '@wppconnect-team/wppconnect';
-import { IntegrationProvider } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
+import { IntegrationProvider } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-
-type WhatsappStatus =
-  | 'DISCONNECTED'
-  | 'CONNECTING'
-  | 'QR_READY'
-  | 'QR_REQUIRED'
-  | 'AUTHENTICATING'
-  | 'CONNECTED'
-  | 'UNPAIRED';
-
-type SessionLifecycleState =
-  | 'idle'
-  | 'starting'
-  | 'qr_ready'
-  | 'connected'
-  | 'failed';
+import {
+  SessionDiagnosticSnapshot,
+  SessionLifecycleState,
+  WhatsappStatus,
+  WppSessionStateManager,
+} from './wpp-session-state.manager';
 
 type IncomingMessageShape = {
   isGroupMsg?: boolean;
@@ -47,13 +44,10 @@ type HostDeviceShape = {
   name?: string;
 };
 
-const SESSION_BASE_DIR =
-  process.env.WPPCONNECT_SESSION_DIR || '/tmp/.wppconnect';
-const TOKEN_BASE_DIR =
-  process.env.WPPCONNECT_TOKEN_DIR || '/tmp/tokens';
-const DEFAULT_RETRY_DELAY_MS = 20000;
-const QR_REUSE_WINDOW_MS = 60000;
+const SESSION_BASE_DIR = process.env.WPPCONNECT_SESSION_DIR || '/tmp/.wppconnect';
+const TOKEN_BASE_DIR = process.env.WPPCONNECT_TOKEN_DIR || '/tmp/tokens';
 const QR_VALIDITY_MS = 5 * 60 * 1000;
+const QR_TIMEOUT_MS = Number(process.env.WHATSAPP_QR_TIMEOUT_MS ?? 90000);
 const WHATSAPP_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const CHROMIUM_ARGS = [
@@ -89,26 +83,22 @@ const PUPPETEER_CACHE_ROOTS = [
   '/opt/render/project/src/.cache/puppeteer',
   path.join(process.cwd(), '.cache', 'puppeteer'),
 ];
+const TERMINAL_NEEDS_NEW_QR_STATUSES = new Set([
+  'deleteToken',
+  'desconnectedMobile',
+  'disconnectedMobile',
+  'sessionUnpaired',
+]);
 
 @Injectable()
 export class WppconnectService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WppconnectService.name);
-  private readonly clients = new Map<string, WppWhatsapp>();
-  private readonly initializations = new Map<string, Promise<WppWhatsapp | null>>();
-  private readonly initializationSessions = new Map<string, string>();
-  private readonly qrCodes = new Map<string, string>();
-  private readonly statuses = new Map<string, WhatsappStatus>();
-  private readonly lifecycleStates = new Map<string, SessionLifecycleState>();
-  private readonly failureReasons = new Map<string, string | null>();
-  private readonly retryTimers = new Map<string, NodeJS.Timeout>();
-  private readonly manualDisconnects = new Set<string>();
-  private readonly needsQrScan = new Set<string>();
-  private readonly qrTimestamps = new Map<string, number>();
-  private readonly sessionNames = new Map<string, string>();
+  private readonly companyLocks = new Map<string, Promise<void>>();
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly stateManager: WppSessionStateManager,
   ) {}
 
   async onModuleInit() {
@@ -116,136 +106,139 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy() {
-    for (const companyId of this.retryTimers.keys()) {
-      this.cancelRetry(companyId);
-    }
-
-    for (const [companyId, client] of this.clients.entries()) {
-      await client.close().catch(() => null);
-      this.cleanupMemory(companyId, { clearSessionName: true });
+    for (const companyId of this.stateManager.listCompanyIds()) {
+      await this.safeDisposeRuntime(companyId, 'module_destroy', { clearMemory: true });
     }
   }
 
   async createSession(companyId: string, options?: { fresh?: boolean }) {
-    this.needsQrScan.delete(companyId);
-    let sessionName: string;
+    return this.runExclusive(companyId, async () => {
+      const snapshot = this.getDiagnosticSnapshot(companyId);
+      if (snapshot.cleanupInFlight) {
+        throw new ConflictException({
+          message: 'Cleanup da sessao em andamento. Aguarde antes de criar outra instancia.',
+          companyId,
+          snapshot,
+        });
+      }
 
-    if (options?.fresh) {
-      this.logger.warn(`[WPP][${companyId}] Forcando nova sessao com limpeza total de tokens.`);
-      await this.clearPersistedSessionState(companyId);
-      await this.sleep(2000);
-      sessionName = this.buildFreshSessionName(companyId);
-    } else {
-      sessionName = await this.resolveSessionName(companyId);
-    }
+      if (snapshot.creationInFlight && this.isTransientStartupState(snapshot.currentState)) {
+        throw new ConflictException({
+          message: 'Ja existe uma criacao de sessao em andamento para esta empresa.',
+          companyId,
+          snapshot,
+        });
+      }
 
-    this.qrCodes.delete(companyId);
-    this.qrTimestamps.delete(companyId);
-    this.failureReasons.delete(companyId);
-    this.sessionNames.set(companyId, sessionName);
-    this.setStatus(companyId, 'CONNECTING');
-    this.setLifecycleState(companyId, 'starting');
-    this.logger.log(`[WPP][${companyId}] Iniciando sessao: ${sessionName}`);
+      if (!options?.fresh && (snapshot.currentState === 'qr_ready' || snapshot.currentState === 'connected')) {
+        this.logLifecycle(companyId, 'log', 'create_session_reused_existing_state');
+        return this.buildPublicSnapshot(companyId, 'Reutilizando estado ativo existente.');
+      }
 
-    await this.ensureSessionBaseDir();
-    await this.prisma.company.update({
-      where: { id: companyId },
-      data: {
-        whatsappEnabled: true,
-        whatsappStatus: 'CONNECTING',
-        whatsappSessionName: sessionName,
-      },
+      if (snapshot.hasClient || snapshot.hasBrowser || snapshot.hasPage || snapshot.sessionName) {
+        await this.cleanupSessionInternal(companyId, {
+          reason: options?.fresh ? 'fresh_recreate_requested' : 'stale_runtime_before_start',
+          deletePersistedState: Boolean(options?.fresh),
+          clearSessionName: true,
+          resetDatabase: true,
+        });
+      }
+
+      const correlationId = randomUUID();
+      const sessionName = options?.fresh
+        ? this.buildFreshSessionName(companyId)
+        : await this.resolveSessionName(companyId);
+
+      this.stateManager.setSessionIdentity(companyId, sessionName, correlationId);
+      this.transition(companyId, 'starting', 'CONNECTING', 'instance_creation_request_received', {
+        failureReason: null,
+        lastError: null,
+      });
+
+      this.logLifecycle(companyId, 'log', 'instance_creation_request_received', {
+        fresh: Boolean(options?.fresh),
+      });
+
+      const startPromise = this.bootstrapClient(companyId, sessionName, correlationId, {
+        fresh: Boolean(options?.fresh),
+      });
+      this.stateManager.setStartPromise(companyId, startPromise);
+      void startPromise.finally(() => {
+        const ctx = this.stateManager.get(companyId);
+        if (ctx?.sessionName === sessionName) {
+          this.stateManager.setStartPromise(companyId, null);
+        }
+      });
+
+      return this.buildPublicSnapshot(
+        companyId,
+        'Criacao da instancia iniciada. Consulte status e QR sem recriar a sessao.',
+      );
     });
-
-    if (!options?.fresh && this.clients.has(companyId)) {
-      return {
-        status: this.getStatus(companyId),
-        qrcode: this.getQrCode(companyId),
-        qrCode: this.getQrCode(companyId),
-        ready: Boolean(this.getQrCode(companyId)),
-        lifecycleState: this.getLifecycleState(companyId),
-      };
-    }
-
-    if (
-      !this.initializations.has(companyId) ||
-      this.initializationSessions.get(companyId) !== sessionName
-    ) {
-      this.initializationSessions.set(companyId, sessionName);
-      this.initializations.set(companyId, this.bootstrapClient(companyId, sessionName));
-    }
-
-    return {
-      status: this.getStatus(companyId),
-      qrcode: this.getQrCode(companyId),
-      qrCode: this.getQrCode(companyId),
-      ready: Boolean(this.getQrCode(companyId)),
-      lifecycleState: this.getLifecycleState(companyId),
-    };
   }
 
   async terminateSession(companyId: string) {
-    this.manualDisconnects.add(companyId);
-    this.cancelRetry(companyId);
-
-    const client = this.clients.get(companyId);
-    if (client) {
-      await client.logout().catch(() => null);
-      await client.close().catch(() => null);
-    }
-
-    this.cleanupMemory(companyId, { clearSessionName: true });
-    await this.forceCleanupFiles(companyId);
-    await this.forceCleanupTokenFiles(companyId);
-    await this.prisma.company.update({
-      where: { id: companyId },
-      data: {
-        whatsappStatus: 'DISCONNECTED',
-        whatsappEnabled: false,
-        whatsappSessionName: null,
-        whatsappSessionToken: null,
-        whatsappWid: null,
-        whatsappName: null,
-        whatsappAvatar: null,
-      },
+    await this.runExclusive(companyId, async () => {
+      await this.cleanupSessionInternal(companyId, {
+        reason: 'manual_terminate',
+        deletePersistedState: true,
+        clearSessionName: true,
+        resetDatabase: true,
+      });
     });
-    await this.syncIntegrationStatus(companyId, 'disconnected');
-
-    this.manualDisconnects.delete(companyId);
 
     return { success: true };
   }
 
+  async forceCleanupSession(companyId: string) {
+    await this.runExclusive(companyId, async () => {
+      await this.cleanupSessionInternal(companyId, {
+        reason: 'forced_cleanup',
+        deletePersistedState: true,
+        clearSessionName: true,
+        resetDatabase: true,
+      });
+    });
+
+    return { success: true, companyId, status: 'DISCONNECTED' };
+  }
+
+  async clearSession(companyId: string) {
+    await this.forceCleanupSession(companyId);
+  }
+
   getStatus(companyId: string): WhatsappStatus {
-    return this.statuses.get(companyId) || 'DISCONNECTED';
+    return this.stateManager.getOrCreate(companyId).status;
   }
 
   getQrCode(companyId: string) {
-    const qrCode = this.qrCodes.get(companyId) || null;
-    const qrTimestamp = this.qrTimestamps.get(companyId) || 0;
-
-    if (!qrCode) {
+    const ctx = this.stateManager.getOrCreate(companyId);
+    if (!ctx.qrCode || !ctx.qrExpiresAt) {
       return null;
     }
 
-    if (Date.now() - qrTimestamp > QR_VALIDITY_MS) {
-      this.qrCodes.delete(companyId);
-      this.qrTimestamps.delete(companyId);
-      if (this.getLifecycleState(companyId) === 'qr_ready') {
-        this.setLifecycleState(companyId, 'failed', 'QR expirado');
-      }
+    if (Date.now() > ctx.qrExpiresAt) {
+      this.stateManager.clearQr(companyId);
+      this.transition(companyId, 'failed', 'QR_REQUIRED', 'qr_expired', {
+        failureReason: 'qr_expired',
+        lastError: 'QR expirado antes da leitura.',
+      });
       return null;
     }
 
-    return qrCode;
+    return ctx.qrCode;
   }
 
   getClient(companyId: string) {
-    return this.clients.get(companyId) || null;
+    return this.stateManager.getOrCreate(companyId).client;
+  }
+
+  getDiagnosticSnapshot(companyId: string): SessionDiagnosticSnapshot {
+    return this.stateManager.snapshot(companyId);
   }
 
   async sendTextMessage(companyId: string, to: string, message: string) {
-    const client = this.clients.get(companyId);
+    const client = this.getClient(companyId);
     if (!client) {
       throw new Error('WhatsApp nao conectado para esta empresa.');
     }
@@ -255,7 +248,8 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
   }
 
   async getHealthStatus(companyId: string) {
-    const client = this.clients.get(companyId) || null;
+    const snapshot = this.getDiagnosticSnapshot(companyId);
+    const client = this.getClient(companyId);
     const dbCompany = await this.prisma.company.findUnique({
       where: { id: companyId },
       select: {
@@ -269,96 +263,67 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
 
     let connected = false;
     let authenticated = false;
-    let connectionState: string | null = null;
+    let connectionState: string | null = snapshot.lastKnownConnectionState;
     let phoneNumber: string | null = null;
     let pushname: string | null = null;
-    let lastError: string | null = null;
+    let runtimeError: string | null = null;
+    let waVersion: string | null = null;
 
     if (client) {
       try {
-        const [clientConnected, isAuthenticated, state] = await Promise.all([
+        const [clientConnected, isAuthenticated, state, host, currentWaVersion] = await Promise.all([
           client.isConnected(),
           client.isAuthenticated(),
           client.getConnectionState(),
+          client.getHostDevice(),
+          client.getWAVersion().catch(() => null),
         ]);
         authenticated = isAuthenticated;
         connectionState = state ? String(state) : null;
         connected = Boolean(clientConnected && isAuthenticated);
-        const host = (await client.getHostDevice()) as HostDeviceShape | undefined;
-        phoneNumber = this.extractPhoneNumber(host);
-        pushname = this.extractDisplayName(host, phoneNumber);
+        waVersion = currentWaVersion ? String(currentWaVersion) : null;
+        phoneNumber = this.extractPhoneNumber(host as HostDeviceShape | undefined);
+        pushname = this.extractDisplayName(host as HostDeviceShape | undefined, phoneNumber);
       } catch (error) {
-        lastError = error instanceof Error ? error.message : String(error);
+        runtimeError = error instanceof Error ? error.message : String(error);
       }
     }
 
     const qrCode = this.getQrCode(companyId);
-    const status = connected ? 'CONNECTED' : this.getStatus(companyId);
-    const qrRequired =
-      !connected &&
-      (this.needsQrScan.has(companyId) ||
-        status === 'QR_REQUIRED' ||
-        status === 'UNPAIRED');
-    const awaitingQR = !connected && (status === 'QR_READY' || Boolean(qrCode));
+    const currentSnapshot = this.getDiagnosticSnapshot(companyId);
 
     return {
       companyId,
-      status,
+      status: currentSnapshot.status,
+      lifecycleState: currentSnapshot.currentState,
       connected,
       authenticated,
       connectionState,
       qrCode,
       phoneNumber,
       pushname,
-      hasClient: Boolean(client),
-      hasInitialization: this.initializations.has(companyId),
-      hasRetryTimer: this.retryTimers.has(companyId),
-      lastError,
+      hasClient: currentSnapshot.hasClient,
+      hasBrowser: currentSnapshot.hasBrowser,
+      hasPage: currentSnapshot.hasPage,
+      creationInFlight: currentSnapshot.creationInFlight,
+      cleanupInFlight: currentSnapshot.cleanupInFlight,
+      lastError: runtimeError || currentSnapshot.lastError,
+      failureReason: currentSnapshot.failureReason,
+      versionWarning: currentSnapshot.versionWarning,
+      waVersion,
       dbStatus: dbCompany?.whatsappStatus || 'DISCONNECTED',
       dbEnabled: Boolean(dbCompany?.whatsappEnabled),
       dbLastConnected: dbCompany?.lastConnectedAt?.toISOString() || null,
       healthy: connected,
-      needsReconnect:
-        !connected &&
-        dbCompany?.whatsappStatus === 'CONNECTED' &&
-        !this.needsQrScan.has(companyId),
-      awaitingQR,
-      qrRequired,
-      lifecycleState: this.getLifecycleState(companyId),
-      failureReason: this.failureReasons.get(companyId) || null,
+      awaitingQR: currentSnapshot.currentState === 'qr_ready',
+      qrRequired: currentSnapshot.currentState === 'needs_new_qr',
+      diagnosticSnapshot: currentSnapshot,
+      machineState: currentSnapshot.currentState,
     };
-  }
-
-  async forceCleanupSession(companyId: string) {
-    this.cancelRetry(companyId);
-    const client = this.clients.get(companyId);
-    if (client) {
-      await client.close().catch(() => null);
-    }
-
-    this.cleanupMemory(companyId, { clearSessionName: true });
-    await this.forceCleanupFiles(companyId);
-    await this.forceCleanupTokenFiles(companyId);
-    await this.prisma.company.update({
-      where: { id: companyId },
-      data: {
-        whatsappStatus: 'DISCONNECTED',
-        whatsappEnabled: false,
-        whatsappSessionName: null,
-        whatsappSessionToken: null,
-        whatsappWid: null,
-        whatsappName: null,
-        whatsappAvatar: null,
-      },
-    }).catch(() => null);
-    await this.syncIntegrationStatus(companyId, 'disconnected');
-
-    return { success: true, companyId, status: 'DISCONNECTED' };
   }
 
   private async restoreActiveSessions() {
     const recentThreshold = new Date(Date.now() - 24 * 60 * 60 * 1000);
-
     const companies = await this.prisma.company.findMany({
       where: {
         whatsappStatus: 'CONNECTED',
@@ -368,36 +333,57 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     });
 
     for (const [index, company] of companies.entries()) {
-      const sessionName =
-        company.whatsappSessionName || this.buildCompanySessionPrefix(company.id);
+      const sessionName = company.whatsappSessionName || this.buildCompanySessionPrefix(company.id);
       if (!this.hasPersistedSessionData(company.id, sessionName)) {
-        this.logger.warn(
-          `[WPP][${company.id}] Sessao marcada como conectada, mas sem tokens locais. Ignorando restauracao.`,
-        );
+        this.logLifecycle(company.id, 'warn', 'restore_skipped_missing_local_tokens', {
+          sessionName,
+        });
         continue;
       }
-      this.sessionNames.set(company.id, sessionName);
+
       setTimeout(() => {
-        void this.createSession(company.id);
+        void this.createSession(company.id).catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          this.logLifecycle(company.id, 'warn', 'restore_failed', { error: message });
+        });
       }, index * 1000);
     }
   }
 
-  private async bootstrapClient(companyId: string, sessionName: string): Promise<WppWhatsapp | null> {
+  private async bootstrapClient(
+    companyId: string,
+    sessionName: string,
+    correlationId: string,
+    options: { fresh: boolean },
+  ): Promise<WppWhatsapp | null> {
     const executablePath = this.resolveBrowserExecutablePath();
+    const configuredWaVersion =
+      process.env.WPPCONNECT_WHATSAPP_VERSION ||
+      process.env.WA_VERSION ||
+      process.env.WPP_VERSION ||
+      null;
 
     try {
-      this.setStatus(companyId, 'CONNECTING');
-      this.setLifecycleState(companyId, 'starting');
-
-      if (executablePath) {
-        this.logger.log(`[WA-BROWSER][${companyId}] Usando browser em: ${executablePath}`);
+      if (options.fresh) {
+        await this.clearPersistedSessionState(companyId, sessionName, correlationId);
       } else {
-        this.logger.warn(
-          `[WA-BROWSER][${companyId}] Nenhum executavel de Chrome/Chromium foi localizado. ` +
-            'Se estiver no Render Node runtime, adicione `npx puppeteer browsers install chrome` ao build.',
-        );
+        await this.ensureSessionBaseDir();
       }
+
+      await this.prisma.company.update({
+        where: { id: companyId },
+        data: {
+          whatsappEnabled: true,
+          whatsappStatus: 'CONNECTING',
+          whatsappSessionName: sessionName,
+        },
+      }).catch(() => null);
+
+      this.transition(companyId, 'starting', 'CONNECTING', 'browser_launch_start');
+      this.logLifecycle(companyId, 'log', 'browser_launch_start', {
+        executablePath: executablePath || null,
+        configuredWaVersion,
+      });
 
       const client = await create({
         session: sessionName,
@@ -415,48 +401,12 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         disableWelcome: true,
         folderNameToken: TOKEN_BASE_DIR,
         mkdirFolderToken: TOKEN_BASE_DIR,
-        catchQR: (base64Qr, _asciiQR, attempts) => {
-          if (!this.isActiveSession(companyId, sessionName)) {
-            this.logger.warn(
-              `[WPP][${companyId}] Ignorando QR de sessao antiga: ${sessionName}`,
-            );
-            return;
-          }
-
-          const now = Date.now();
-          const previousQr = this.qrCodes.get(companyId);
-          const previousTimestamp = this.qrTimestamps.get(companyId) || 0;
-          const qrCode = base64Qr.startsWith('data:')
-            ? base64Qr
-            : `data:image/png;base64,${base64Qr}`;
-
-          if (previousQr && now - previousTimestamp < QR_REUSE_WINDOW_MS) {
-            return;
-          }
-
-          this.qrCodes.set(companyId, qrCode);
-          this.qrTimestamps.set(companyId, now);
-          this.setStatus(companyId, 'QR_READY');
-          this.setLifecycleState(companyId, 'qr_ready');
-          this.logger.log(
-            `[WPP][${companyId}] QR gerado com sucesso. Tentativa ${attempts ?? 1}. Sessao ${sessionName}`,
-          );
-          void this.syncIntegrationStatus(companyId, 'awaiting_qr_scan', sessionName);
-          this.eventEmitter.emit('whatsapp.qr.generated', {
-            companyId,
-            qrCode,
-            attempts: attempts ?? 1,
-            sessionName,
-          });
+        createPathFileToken: true,
+        catchQR: (base64Qr, _asciiQr, attempts) => {
+          this.handleQrCallback(companyId, sessionName, correlationId, base64Qr, attempts ?? 1);
         },
         statusFind: (statusSession: string) => {
-          if (!this.isActiveSession(companyId, sessionName)) {
-            this.logger.warn(
-              `[WPP][${companyId}] Ignorando status de sessao antiga ${sessionName}: ${statusSession}`,
-            );
-            return;
-          }
-          void this.handleStatusChange(companyId, statusSession, sessionName);
+          void this.handleStatusChange(companyId, sessionName, correlationId, statusSession);
         },
         puppeteerOptions: {
           headless: this.resolveHeadless(),
@@ -466,63 +416,65 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         },
       });
 
-      if (!this.isActiveSession(companyId, sessionName)) {
-        this.logger.warn(
-          `[WPP][${companyId}] Cliente antigo iniciado fora de hora. Fechando sessao ${sessionName}.`,
-        );
+      if (!this.isCurrentSession(companyId, sessionName)) {
         await client.close().catch(() => null);
-        this.clearInitialization(companyId, sessionName);
         return null;
       }
 
-      this.clients.set(companyId, client);
-      this.clearInitialization(companyId, sessionName);
-      this.attachEventListeners(client, companyId, sessionName);
+      this.stateManager.setClient(companyId, client);
+      this.transition(companyId, 'browser_ready', 'CONNECTING', 'browser_launch_complete');
+      this.logLifecycle(companyId, 'log', 'browser_launch_complete', {
+        pageReady: Boolean((client as unknown as { page?: unknown }).page),
+      });
+
+      this.transition(companyId, 'whatsapp_loading', 'AUTHENTICATING', 'page_ready');
+      this.logLifecycle(companyId, 'log', 'page_ready');
+
+      const actualWaVersion = await client.getWAVersion().catch(() => null);
+      if (configuredWaVersion && actualWaVersion && configuredWaVersion !== actualWaVersion) {
+        const versionWarning =
+          `Versao configurada ${configuredWaVersion} nao corresponde a versao carregada ${actualWaVersion}. ` +
+          'Isso indica fallback do WhatsApp Web e deve ser tratado como fator contribuinte de incompatibilidade.';
+        this.transition(companyId, this.stateManager.getOrCreate(companyId).lifecycleState, this.getStatus(companyId), 'wa_version_fallback_detected', {
+          versionWarning,
+        });
+        this.logLifecycle(companyId, 'warn', 'wa_version_fallback_detected', {
+          configuredWaVersion,
+          actualWaVersion,
+        });
+      }
+
+      this.attachEventListeners(client, companyId, sessionName, correlationId);
+      this.startQrTimeout(companyId, sessionName, correlationId);
       return client;
     } catch (error) {
-      if (!this.isActiveSession(companyId, sessionName)) {
-        this.clearInitialization(companyId, sessionName);
-        return null;
-      }
-
-      this.clearInitialization(companyId, sessionName);
-      this.cleanupMemory(companyId, { sessionName });
-      this.setStatus(companyId, 'DISCONNECTED');
-      await this.syncIntegrationStatus(companyId, 'disconnected', sessionName);
-
       const message = this.formatBootstrapError(error);
-      this.setLifecycleState(companyId, 'failed', message);
-      this.logger.error(`[WA-FATAL][${companyId}] Falha ao iniciar WPPConnect: ${message}`);
-      this.scheduleRetry(companyId);
+      this.transition(companyId, 'failed', 'DISCONNECTED', 'bootstrap_failed', {
+        lastError: message,
+        failureReason: 'bootstrap_failed',
+      });
+      this.logLifecycle(companyId, 'error', 'bootstrap_failed', { error: message });
+      await this.safeDisposeRuntime(companyId, 'bootstrap_failed', {
+        clearMemory: false,
+        preserveQr: true,
+      });
       return null;
     }
   }
 
-  private attachEventListeners(client: WppWhatsapp, companyId: string, sessionName: string) {
+  private attachEventListeners(
+    client: WppWhatsapp,
+    companyId: string,
+    sessionName: string,
+    correlationId: string,
+  ) {
     client.onStateChange((state: string) => {
-      if (!this.isActiveSession(companyId, sessionName)) {
-        return;
-      }
-
-      if (state === 'CONNECTED') {
-        this.cancelRetry(companyId);
-        this.needsQrScan.delete(companyId);
-        this.qrCodes.delete(companyId);
-        this.qrTimestamps.delete(companyId);
-        this.setStatus(companyId, 'CONNECTED');
-        this.setLifecycleState(companyId, 'connected', null);
-        void this.syncConnectedProfile(companyId, client, sessionName);
-        return;
-      }
-
-      if (state === 'DISCONNECTED' && !this.manualDisconnects.has(companyId)) {
-        void this.handleClientDisconnect(companyId, sessionName, 'DISCONNECTED');
-      }
+      void this.handleStateChange(companyId, sessionName, correlationId, state);
     });
 
     client.onMessage((message: IncomingMessageShape) => {
       if (
-        !this.isActiveSession(companyId, sessionName) ||
+        !this.isCurrentSession(companyId, sessionName) ||
         message.isGroupMsg ||
         message.fromMe ||
         !message.body ||
@@ -541,160 +493,406 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private async handleStatusChange(companyId: string, statusSession: string, sessionName: string) {
-    this.logger.log(`[WPP][${companyId}] Status: ${statusSession}`);
+  private async handleStateChange(
+    companyId: string,
+    sessionName: string,
+    correlationId: string,
+    state: string,
+  ) {
+    if (!this.isCurrentSession(companyId, sessionName)) {
+      this.logLifecycle(companyId, 'warn', 'state_change_ignored_old_session', {
+        state,
+        sessionName,
+        correlationId,
+      });
+      return;
+    }
+
+    this.logLifecycle(companyId, 'log', 'connection_state_changed', { state });
+
+    if (state === 'CONNECTED') {
+      this.transition(companyId, 'connected', 'CONNECTED', 'connected_state_change', {
+        lastKnownConnectionState: state,
+        lastError: null,
+        failureReason: null,
+      });
+      this.stateManager.clearQr(companyId);
+      this.clearQrTimeout(companyId);
+      await this.syncConnectedProfile(companyId, sessionName);
+      return;
+    }
+
+    if (state === 'DISCONNECTED') {
+      const currentState = this.stateManager.getOrCreate(companyId).lifecycleState;
+      if (currentState === 'needs_new_qr' || currentState === 'cleaning_up') {
+        this.logLifecycle(companyId, 'warn', 'disconnect_after_terminal_state_ignored', { state });
+        await this.safeDisposeRuntime(companyId, 'disconnect_after_terminal_state', {
+          clearMemory: false,
+          preserveQr: true,
+        });
+        return;
+      }
+
+      await this.markFailed(companyId, sessionName, 'DISCONNECTED', 'state_change_disconnected');
+    }
+  }
+
+  private async handleStatusChange(
+    companyId: string,
+    sessionName: string,
+    correlationId: string,
+    statusSession: string,
+  ) {
+    if (!this.isCurrentSession(companyId, sessionName)) {
+      this.logLifecycle(companyId, 'warn', 'status_event_ignored_old_session', {
+        statusSession,
+        sessionName,
+        correlationId,
+      });
+      return;
+    }
+
     this.eventEmitter.emit('whatsapp.status.updated', {
       companyId,
       status: statusSession,
     });
+    this.logLifecycle(companyId, 'log', 'status_event_received', { rawStatus: statusSession });
 
     switch (statusSession) {
+      case 'openBrowser':
+        this.transition(companyId, 'starting', 'CONNECTING', 'status_open_browser');
+        return;
+      case 'connectBrowserWs':
+      case 'initWhatsapp':
+        this.transition(companyId, 'browser_ready', 'CONNECTING', `status_${statusSession}`);
+        return;
+      case 'waitChat':
+      case 'connecting':
+      case 'notLogged':
+        this.transition(companyId, 'whatsapp_loading', 'AUTHENTICATING', `status_${statusSession}`);
+        return;
+      case 'qrReadSuccess':
+        this.transition(companyId, 'pairing', 'AUTHENTICATING', 'status_qr_read_success');
+        return;
       case 'isLogged':
       case 'inChat':
       case 'chatsAvailable':
-      case 'qrReadSuccess':
-        this.cancelRetry(companyId);
-        this.needsQrScan.delete(companyId);
-        this.qrCodes.delete(companyId);
-        this.qrTimestamps.delete(companyId);
-        this.setStatus(companyId, 'CONNECTED');
-        this.setLifecycleState(companyId, 'connected', null);
-        void this.syncIntegrationStatus(companyId, 'connected', sessionName);
-        return;
-      case 'notLogged':
-        await this.handleQrRequired(companyId, sessionName, statusSession);
-        return;
-      case 'initWhatsapp':
-      case 'openBrowser':
-      case 'connectBrowserWs':
-      case 'waitChat':
-      case 'connecting':
-        this.setStatus(companyId, 'AUTHENTICATING');
-        this.setLifecycleState(companyId, 'starting');
+        this.transition(companyId, 'connected', 'CONNECTED', `status_${statusSession}`, {
+          lastError: null,
+          failureReason: null,
+        });
+        this.stateManager.clearQr(companyId);
+        this.clearQrTimeout(companyId);
+        await this.syncConnectedProfile(companyId, sessionName);
         return;
       case 'sessionUnpaired':
-        this.setStatus(companyId, 'UNPAIRED');
-        await this.handleQrRequired(companyId, sessionName, statusSession);
-        return;
-      case 'serverClose':
-      case 'browserClose':
-      case 'autocloseCalled':
-        if (this.needsQrScan.has(companyId)) {
-          this.logger.warn(
-            `[WPP][${companyId}] ${statusSession} apos desconexao do usuario. Ignorando reconnect.`,
-          );
-          return;
-        }
-        await this.handleClientDisconnect(companyId, sessionName, 'DISCONNECTED', 10000);
-        return;
       case 'deleteToken':
       case 'desconnectedMobile':
       case 'disconnectedMobile':
-        await this.handleQrRequired(companyId, sessionName, statusSession);
+        await this.markNeedsNewQr(companyId, sessionName, statusSession);
         return;
+      case 'browserClose':
+      case 'serverClose':
+      case 'autocloseCalled': {
+        const currentState = this.stateManager.getOrCreate(companyId).lifecycleState;
+        if (currentState === 'needs_new_qr' || currentState === 'cleaning_up') {
+          this.logLifecycle(companyId, 'warn', 'browser_close_after_terminal_state', {
+            rawStatus: statusSession,
+          });
+          await this.safeDisposeRuntime(companyId, 'browser_close_after_terminal_state', {
+            clearMemory: false,
+            preserveQr: true,
+          });
+          return;
+        }
+
+        await this.markFailed(companyId, sessionName, statusSession, 'browser_or_server_closed');
+        return;
+      }
       case 'phoneNotConnected':
       case 'qrReadError':
       default:
-        await this.handleClientDisconnect(companyId, sessionName, 'DISCONNECTED', 10000);
+        await this.markFailed(companyId, sessionName, statusSession, 'unexpected_status_event');
     }
   }
 
-  private scheduleRetry(companyId: string, delayMs = this.resolveRetryDelayMs()) {
-    if (this.retryTimers.has(companyId) || this.manualDisconnects.has(companyId)) {
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      this.retryTimers.delete(companyId);
-      if (!this.clients.has(companyId) && !this.initializations.has(companyId)) {
-        const sessionName =
-          this.sessionNames.get(companyId) || this.buildCompanySessionPrefix(companyId);
-        this.initializationSessions.set(companyId, sessionName);
-        this.initializations.set(companyId, this.bootstrapClient(companyId, sessionName));
-      }
-    }, delayMs);
-
-    this.retryTimers.set(companyId, timer);
-  }
-
-  private cancelRetry(companyId: string) {
-    const timer = this.retryTimers.get(companyId);
-    if (!timer) return;
-    clearTimeout(timer);
-    this.retryTimers.delete(companyId);
-  }
-
-  private cleanupMemory(
-    companyId: string,
-    options?: {
-      sessionName?: string;
-      clearSessionName?: boolean;
-    },
-  ) {
-    if (
-      options?.sessionName &&
-      this.sessionNames.has(companyId) &&
-      this.sessionNames.get(companyId) !== options.sessionName
-    ) {
-      return;
-    }
-
-    this.clients.delete(companyId);
-    this.clearInitialization(companyId, options?.sessionName);
-    this.qrCodes.delete(companyId);
-    this.qrTimestamps.delete(companyId);
-    this.statuses.delete(companyId);
-    this.lifecycleStates.delete(companyId);
-    this.failureReasons.delete(companyId);
-
-    if (options?.clearSessionName) {
-      this.sessionNames.delete(companyId);
-    }
-  }
-
-  private async handleClientDisconnect(
+  private handleQrCallback(
     companyId: string,
     sessionName: string,
-    status: WhatsappStatus,
-    retryDelayMs = this.resolveRetryDelayMs(),
+    correlationId: string,
+    base64Qr: string,
+    attempts: number,
   ) {
-    if (this.manualDisconnects.has(companyId)) {
+    if (!this.isCurrentSession(companyId, sessionName)) {
+      this.logLifecycle(companyId, 'warn', 'qr_callback_ignored_old_session', {
+        attempts,
+        sessionName,
+        correlationId,
+      });
       return;
     }
 
-    const client = this.clients.get(companyId);
-    if (client) {
-      await client.close().catch(() => null);
-    }
+    const now = Date.now();
+    const qrCode = base64Qr.startsWith('data:') ? base64Qr : `data:image/png;base64,${base64Qr}`;
+    this.stateManager.setQr(companyId, qrCode, now, now + QR_VALIDITY_MS);
+    this.transition(companyId, 'qr_ready', 'QR_READY', 'qr_callback_received', {
+      lastError: null,
+      failureReason: null,
+    });
+    this.logLifecycle(companyId, 'log', 'qr_callback_received', { attempts });
+    this.logLifecycle(companyId, 'log', 'qr_persisted_in_memory', { attempts });
 
-    this.cleanupMemory(companyId, { sessionName });
-    this.setStatus(companyId, status);
-    this.setLifecycleState(companyId, 'failed', `Sessao encerrada: ${status}`);
-    await this.syncIntegrationStatus(companyId, 'disconnected', sessionName);
-    this.scheduleRetry(companyId, retryDelayMs);
+    this.eventEmitter.emit('whatsapp.qr.generated', {
+      companyId,
+      qrCode,
+      attempts,
+      sessionName,
+    });
+    this.logLifecycle(companyId, 'log', 'qr_emitted_through_socket', { attempts });
+    void this.syncIntegrationStatus(companyId, 'awaiting_qr_scan', sessionName);
   }
 
-  async clearSession(companyId: string) {
-    try {
-      this.manualDisconnects.add(companyId);
-      this.cancelRetry(companyId);
+  private async markNeedsNewQr(companyId: string, sessionName: string, rawStatus: string) {
+    this.transition(companyId, 'needs_new_qr', 'QR_REQUIRED', 'terminal_needs_new_qr', {
+      failureReason: rawStatus,
+      lastError: rawStatus,
+      lastKnownConnectionState: rawStatus,
+    });
+    this.logLifecycle(companyId, 'warn', 'terminal_needs_new_qr', {
+      rawStatus,
+      qrAvailable: Boolean(this.getQrCode(companyId)),
+    });
+    this.clearQrTimeout(companyId);
 
-      const client = this.clients.get(companyId);
-      if (client) {
-        await client.close().catch(() => null);
+    await this.prisma.company.update({
+      where: { id: companyId },
+      data: {
+        whatsappStatus: 'QR_REQUIRED',
+        whatsappEnabled: false,
+        whatsappSessionName: sessionName,
+        whatsappSessionToken: null,
+        whatsappWid: null,
+        whatsappName: null,
+        whatsappAvatar: null,
+      },
+    }).catch(() => null);
+    await this.syncIntegrationStatus(companyId, 'awaiting_qr_scan', sessionName);
+
+    this.eventEmitter.emit('whatsapp.status.updated', {
+      companyId,
+      status: 'needs_new_qr',
+    });
+
+    await this.safeDisposeRuntime(companyId, 'terminal_needs_new_qr', {
+      clearMemory: false,
+      preserveQr: true,
+    });
+  }
+
+  private async markFailed(
+    companyId: string,
+    sessionName: string,
+    rawStatus: string,
+    event: string,
+  ) {
+    this.transition(companyId, 'failed', 'DISCONNECTED', event, {
+      failureReason: rawStatus,
+      lastError: rawStatus,
+      lastKnownConnectionState: rawStatus,
+    });
+    this.logLifecycle(companyId, 'error', event, { rawStatus });
+    this.clearQrTimeout(companyId);
+
+    await this.prisma.company.update({
+      where: { id: companyId },
+      data: {
+        whatsappStatus: 'DISCONNECTED',
+        whatsappEnabled: false,
+      },
+    }).catch(() => null);
+    await this.syncIntegrationStatus(companyId, 'disconnected', sessionName);
+    await this.safeDisposeRuntime(companyId, event, {
+      clearMemory: false,
+      preserveQr: true,
+    });
+  }
+
+  private async cleanupSessionInternal(
+    companyId: string,
+    options: {
+      reason: string;
+      deletePersistedState: boolean;
+      clearSessionName: boolean;
+      resetDatabase: boolean;
+    },
+  ) {
+    const existingCleanup = this.stateManager.getOrCreate(companyId).cleanupPromise;
+    if (existingCleanup) {
+      await existingCleanup;
+      return;
+    }
+
+    const ctx = this.stateManager.getOrCreate(companyId);
+    const cleanupPromise = (async () => {
+      this.transition(companyId, 'cleaning_up', 'DISCONNECTED', 'cleanup_start', {
+        lastError: ctx.lastError,
+        failureReason: ctx.failureReason,
+      });
+      this.logLifecycle(companyId, 'log', 'cleanup_start', options);
+      this.clearQrTimeout(companyId);
+
+      await this.safeDisposeRuntime(companyId, options.reason, {
+        clearMemory: false,
+        preserveQr: false,
+      });
+
+      if (options.deletePersistedState) {
+        await this.forceCleanupFiles(companyId, ctx.sessionName || undefined);
+        await this.forceCleanupTokenFiles(companyId, ctx.sessionName || undefined);
       }
 
-      this.cleanupMemory(companyId, { clearSessionName: true });
-      this.deletePersistedSessionPaths(companyId);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(`[WPP][${companyId}] Erro ao limpar sessao: ${message}`);
+      if (options.resetDatabase) {
+        await this.prisma.company.update({
+          where: { id: companyId },
+          data: {
+            whatsappStatus: 'DISCONNECTED',
+            whatsappEnabled: false,
+            whatsappSessionName: options.clearSessionName ? null : ctx.sessionName,
+            whatsappSessionToken: null,
+            whatsappWid: null,
+            whatsappName: null,
+            whatsappAvatar: null,
+          },
+        }).catch(() => null);
+        await this.syncIntegrationStatus(companyId, 'disconnected');
+      }
+
+      this.stateManager.clearQr(companyId);
+      this.transition(companyId, 'disconnected', 'DISCONNECTED', 'cleanup_complete', {
+        failureReason: null,
+        lastError: null,
+      });
+
+      if (options.clearSessionName) {
+        this.stateManager.clear(companyId);
+      } else {
+        this.stateManager.setClient(companyId, null);
+      }
+
+      this.logLifecycle(companyId, 'log', 'cleanup_complete', {
+        clearSessionName: options.clearSessionName,
+      });
+    })();
+
+    this.stateManager.setCleanupPromise(companyId, cleanupPromise);
+    try {
+      await cleanupPromise;
     } finally {
-      this.manualDisconnects.delete(companyId);
+      const current = this.stateManager.get(companyId);
+      if (current) {
+        this.stateManager.setCleanupPromise(companyId, null);
+      }
     }
   }
 
-  private async syncConnectedProfile(companyId: string, client: WppWhatsapp, sessionName: string) {
+  private async clearPersistedSessionState(
+    companyId: string,
+    sessionName: string,
+    correlationId: string,
+  ) {
+    this.logLifecycle(companyId, 'log', 'token_cleanup_start', {
+      sessionName,
+      correlationId,
+    });
+    await this.ensureSessionBaseDir();
+    await this.forceCleanupFiles(companyId, sessionName);
+    await this.forceCleanupTokenFiles(companyId, sessionName);
+    this.logLifecycle(companyId, 'log', 'token_cleanup_end', {
+      sessionName,
+      correlationId,
+    });
+  }
+
+  private startQrTimeout(companyId: string, sessionName: string, correlationId: string) {
+    this.clearQrTimeout(companyId);
+    const timer = setTimeout(() => {
+      if (!this.isCurrentSession(companyId, sessionName)) {
+        return;
+      }
+
+      const state = this.stateManager.getOrCreate(companyId).lifecycleState;
+      if (state === 'qr_ready' || state === 'connected' || state === 'needs_new_qr') {
+        return;
+      }
+
+      this.transition(companyId, 'failed', 'DISCONNECTED', 'qr_timeout_reached', {
+        lastError: 'QR nao foi produzido dentro da janela esperada.',
+        failureReason: 'qr_timeout',
+      });
+      this.logLifecycle(companyId, 'error', 'qr_timeout_reached', {
+        sessionName,
+        correlationId,
+      });
+      void this.safeDisposeRuntime(companyId, 'qr_timeout_reached', {
+        clearMemory: false,
+        preserveQr: true,
+      });
+    }, QR_TIMEOUT_MS);
+
+    this.stateManager.setQrTimeoutTimer(companyId, timer);
+  }
+
+  private clearQrTimeout(companyId: string) {
+    const ctx = this.stateManager.get(companyId);
+    if (!ctx?.qrTimeoutTimer) {
+      return;
+    }
+
+    clearTimeout(ctx.qrTimeoutTimer);
+    this.stateManager.setQrTimeoutTimer(companyId, null);
+  }
+
+  private async safeDisposeRuntime(
+    companyId: string,
+    reason: string,
+    options?: {
+      clearMemory?: boolean;
+      preserveQr?: boolean;
+    },
+  ) {
+    const ctx = this.stateManager.get(companyId);
+    if (!ctx?.client) {
+      if (options?.clearMemory) {
+        this.stateManager.clear(companyId);
+      }
+      return;
+    }
+
+    this.logLifecycle(companyId, 'log', 'client_destroy_start', { reason });
+    await ctx.client.close().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logLifecycle(companyId, 'warn', 'client_destroy_error', { reason, error: message });
+    });
+    this.logLifecycle(companyId, 'log', 'client_destroy_end', { reason });
+
+    this.stateManager.setClient(companyId, null);
+    this.stateManager.setStartPromise(companyId, null);
+
+    if (!options?.preserveQr) {
+      this.stateManager.clearQr(companyId);
+    }
+
+    if (options?.clearMemory) {
+      this.stateManager.clear(companyId);
+    }
+  }
+
+  private async syncConnectedProfile(companyId: string, sessionName: string) {
+    const client = this.getClient(companyId);
+    if (!client) {
+      return;
+    }
+
     try {
       const host = (await client.getHostDevice()) as HostDeviceShape | undefined;
       const wid = this.extractWid(host);
@@ -712,155 +910,104 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
           lastConnectedAt: new Date(),
         },
       });
-
       await this.syncIntegrationStatus(companyId, 'connected', sessionName);
+      this.logLifecycle(companyId, 'log', 'connected_profile_synced', {
+        phoneNumber,
+        displayName,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`[WA-PROFILE][${companyId}] Falha ao sincronizar perfil: ${message}`);
+      this.logLifecycle(companyId, 'warn', 'connected_profile_sync_failed', { error: message });
     }
   }
 
-  private async syncIntegrationStatus(
+  private buildPublicSnapshot(companyId: string, message: string) {
+    const diagnosticSnapshot = this.getDiagnosticSnapshot(companyId);
+    const qrCode = this.getQrCode(companyId);
+
+    return {
+      companyId,
+      instanceName: diagnosticSnapshot.sessionName,
+      qrcode: qrCode,
+      qrCode,
+      ready: Boolean(qrCode),
+      status: diagnosticSnapshot.status,
+      lifecycleState: diagnosticSnapshot.currentState,
+      failureReason: diagnosticSnapshot.failureReason,
+      connected: diagnosticSnapshot.currentState === 'connected',
+      message,
+      diagnosticSnapshot,
+    };
+  }
+
+  private transition(
     companyId: string,
-    status: string,
-    externalId?: string,
+    lifecycleState: SessionLifecycleState,
+    status: WhatsappStatus,
+    event: string,
+    details?: {
+      lastError?: string | null;
+      failureReason?: string | null;
+      lastKnownConnectionState?: string | null;
+      versionWarning?: string | null;
+    },
   ) {
-    await this.prisma.integration.upsert({
-      where: {
-        companyId_provider: {
-          companyId,
-          provider: IntegrationProvider.WHATSAPP,
-        },
-      },
-      update: {
-        status,
-        externalId: externalId || undefined,
-        accessToken: externalId || 'wppconnect-session',
-      },
-      create: {
-        companyId,
-        provider: IntegrationProvider.WHATSAPP,
-        status,
-        externalId: externalId || `company-${companyId}`,
-        accessToken: externalId || 'wppconnect-session',
-      },
-    }).catch(() => null);
+    this.stateManager.transition(companyId, lifecycleState, status, event, details);
   }
 
-  private setStatus(companyId: string, status: WhatsappStatus) {
-    this.statuses.set(companyId, status);
-    void this.prisma.company.update({
-      where: { id: companyId },
-      data: { whatsappStatus: status },
-    }).catch(() => null);
-  }
-
-  private async ensureSessionBaseDir() {
-    await mkdir(SESSION_BASE_DIR, { recursive: true }).catch(() => null);
-  }
-
-  private async forceCleanupFiles(companyId: string, sessionName?: string) {
-    const directories = this.collectPersistedDirectories(
-      this.getSessionRoots(),
-      companyId,
-      sessionName,
+  private isTransientStartupState(state: SessionLifecycleState) {
+    return (
+      state === 'starting' ||
+      state === 'browser_ready' ||
+      state === 'whatsapp_loading' ||
+      state === 'pairing'
     );
-    this.removeDirectories(companyId, directories, 'sessao');
   }
 
-  private async forceCleanupTokenFiles(companyId: string, sessionName?: string) {
-    const directories = this.collectPersistedDirectories(
-      this.getTokenRoots(),
-      companyId,
-      sessionName,
-    );
-    this.removeDirectories(companyId, directories, 'token');
-  }
-
-  private async clearPersistedSessionState(companyId: string) {
-    this.manualDisconnects.add(companyId);
-    this.cancelRetry(companyId);
-
-    const client = this.clients.get(companyId);
-    if (client) {
-      await client.logout().catch(() => null);
-      await client.close().catch(() => null);
-    }
-
-    this.cleanupMemory(companyId, { clearSessionName: true });
-    this.deletePersistedSessionPaths(companyId);
-
-    await this.prisma.company.update({
-      where: { id: companyId },
-      data: {
-        whatsappStatus: 'DISCONNECTED',
-        whatsappEnabled: false,
-        whatsappSessionName: null,
-        whatsappSessionToken: null,
-        whatsappWid: null,
-        whatsappName: null,
-        whatsappAvatar: null,
-      },
-    }).catch(() => null);
-    await this.syncIntegrationStatus(companyId, 'disconnected');
-
-    this.manualDisconnects.delete(companyId);
-  }
-
-  private deletePersistedSessionPaths(companyId: string, sessionName?: string) {
-    const allDirectories = [
-      ...this.collectPersistedDirectories(this.getTokenRoots(), companyId, sessionName),
-      ...this.collectPersistedDirectories(this.getSessionRoots(), companyId, sessionName),
-    ];
-    this.removeDirectories(companyId, allDirectories, 'arquivo');
-  }
-
-  private async handleQrRequired(
-    companyId: string,
-    sessionName: string,
-    rawStatus: string,
-  ) {
-    this.needsQrScan.add(companyId);
-    this.logger.warn(
-      `[WPP][${companyId}] Dispositivo desconectado pelo usuario (${rawStatus}). Novo QR obrigatorio.`,
-    );
-    this.logger.warn(
-      `[WPP][${companyId}] Antes do novo teste, remova todos os aparelhos conectados no WhatsApp do celular.`,
-    );
-
-    await this.closeClientPreservingQr(companyId, sessionName);
-    this.setStatus(companyId, 'QR_REQUIRED');
-    this.setLifecycleState(companyId, this.getQrCode(companyId) ? 'qr_ready' : 'failed', rawStatus);
-    this.failureReasons.set(companyId, rawStatus);
-    await this.prisma.company.update({
-      where: { id: companyId },
-      data: {
-        whatsappStatus: 'QR_REQUIRED',
-        whatsappEnabled: false,
-        whatsappSessionName: null,
-        whatsappSessionToken: null,
-        whatsappWid: null,
-        whatsappName: null,
-        whatsappAvatar: null,
-      },
-    }).catch(() => null);
-    await this.syncIntegrationStatus(companyId, 'awaiting_qr_scan', sessionName);
-    this.eventEmitter.emit('whatsapp.status.updated', {
-      companyId,
-      status: 'qrRequired',
+  private async runExclusive<T>(companyId: string, action: () => Promise<T>) {
+    const previous = this.companyLocks.get(companyId) || Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
     });
+
+    this.companyLocks.set(companyId, previous.catch(() => undefined).then(() => current));
+    await previous.catch(() => undefined);
+
+    try {
+      return await action();
+    } finally {
+      release();
+      if (this.companyLocks.get(companyId) === current) {
+        this.companyLocks.delete(companyId);
+      }
+    }
   }
 
-  private async closeClientPreservingQr(companyId: string, sessionName: string) {
-    this.cancelRetry(companyId);
-    const client = this.clients.get(companyId);
-    if (client) {
-      await client.close().catch(() => null);
+  private isCurrentSession(companyId: string, sessionName: string) {
+    return this.stateManager.getOrCreate(companyId).sessionName === sessionName;
+  }
+
+  private buildCompanySessionPrefix(companyId: string) {
+    return `company-${companyId}`;
+  }
+
+  private buildFreshSessionName(companyId: string) {
+    return `${this.buildCompanySessionPrefix(companyId)}-${Date.now()}`;
+  }
+
+  private async resolveSessionName(companyId: string) {
+    const cached = this.stateManager.get(companyId)?.sessionName;
+    if (cached) {
+      return cached;
     }
 
-    this.clients.delete(companyId);
-    this.clearInitialization(companyId, sessionName);
-    this.sessionNames.delete(companyId);
+    const company = await this.prisma.company.findUnique({
+      where: { id: companyId },
+      select: { whatsappSessionName: true },
+    });
+
+    return company?.whatsappSessionName || this.buildCompanySessionPrefix(companyId);
   }
 
   private normalizeRecipient(value: string) {
@@ -871,11 +1018,6 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
 
     const digits = trimmed.replace(/\D/g, '');
     return `${digits}@c.us`;
-  }
-
-  private resolveRetryDelayMs() {
-    const parsed = Number(process.env.WHATSAPP_RETRY_DELAY_MS ?? DEFAULT_RETRY_DELAY_MS);
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_RETRY_DELAY_MS;
   }
 
   private resolveHeadless(): boolean | 'shell' {
@@ -906,64 +1048,49 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     return host?.pushname || host?.formattedName || host?.name || phoneNumber || null;
   }
 
-  private buildCompanySessionPrefix(companyId: string) {
-    return `company-${companyId}`;
+  private async syncIntegrationStatus(companyId: string, status: string, externalId?: string) {
+    await this.prisma.integration.upsert({
+      where: {
+        companyId_provider: {
+          companyId,
+          provider: IntegrationProvider.WHATSAPP,
+        },
+      },
+      update: {
+        status,
+        externalId: externalId || undefined,
+        accessToken: externalId || 'wppconnect-session',
+      },
+      create: {
+        companyId,
+        provider: IntegrationProvider.WHATSAPP,
+        status,
+        externalId: externalId || `company-${companyId}`,
+        accessToken: externalId || 'wppconnect-session',
+      },
+    }).catch(() => null);
   }
 
-  private getLifecycleState(companyId: string): SessionLifecycleState {
-    return this.lifecycleStates.get(companyId) || 'idle';
+  private async ensureSessionBaseDir() {
+    await mkdir(SESSION_BASE_DIR, { recursive: true }).catch(() => null);
   }
 
-  private setLifecycleState(
-    companyId: string,
-    state: SessionLifecycleState,
-    failureReason?: string | null,
-  ) {
-    this.lifecycleStates.set(companyId, state);
-
-    if (typeof failureReason === 'undefined') {
-      return;
-    }
-
-    if (failureReason) {
-      this.failureReasons.set(companyId, failureReason);
-      return;
-    }
-
-    this.failureReasons.delete(companyId);
+  private async forceCleanupFiles(companyId: string, sessionName?: string) {
+    const directories = this.collectPersistedDirectories(
+      this.getSessionRoots(),
+      companyId,
+      sessionName,
+    );
+    this.removeDirectories(companyId, directories, 'sessao');
   }
 
-  private buildFreshSessionName(companyId: string) {
-    return `${this.buildCompanySessionPrefix(companyId)}-${Date.now()}`;
-  }
-
-  private async resolveSessionName(companyId: string) {
-    const cached = this.sessionNames.get(companyId);
-    if (cached) {
-      return cached;
-    }
-
-    const company = await this.prisma.company.findUnique({
-      where: { id: companyId },
-      select: { whatsappSessionName: true },
-    });
-    const resolved = company?.whatsappSessionName || this.buildCompanySessionPrefix(companyId);
-    this.sessionNames.set(companyId, resolved);
-    return resolved;
-  }
-
-  private clearInitialization(companyId: string, sessionName?: string) {
-    const currentSession = this.initializationSessions.get(companyId);
-    if (sessionName && currentSession && currentSession !== sessionName) {
-      return;
-    }
-
-    this.initializations.delete(companyId);
-    this.initializationSessions.delete(companyId);
-  }
-
-  private isActiveSession(companyId: string, sessionName: string) {
-    return this.sessionNames.get(companyId) === sessionName;
+  private async forceCleanupTokenFiles(companyId: string, sessionName?: string) {
+    const directories = this.collectPersistedDirectories(
+      this.getTokenRoots(),
+      companyId,
+      sessionName,
+    );
+    this.removeDirectories(companyId, directories, 'token');
   }
 
   private hasPersistedSessionData(companyId: string, sessionName?: string) {
@@ -1033,11 +1160,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
 
   private matchesCompanySessionEntry(entryName: string, companyId: string) {
     const prefix = this.buildCompanySessionPrefix(companyId);
-    return (
-      entryName === companyId ||
-      entryName === prefix ||
-      entryName.startsWith(`${prefix}-`)
-    );
+    return entryName === companyId || entryName === prefix || entryName.startsWith(`${prefix}-`);
   }
 
   private removeDirectories(companyId: string, directories: string[], label: string) {
@@ -1049,7 +1172,10 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
           continue;
         }
 
-        this.logger.warn(`[WPP][${companyId}] Limpando ${label}: ${currentPath}`);
+        this.logLifecycle(companyId, 'warn', 'filesystem_cleanup_path', {
+          label,
+          path: currentPath,
+        });
         fs.rmSync(currentPath, {
           recursive: true,
           force: true,
@@ -1058,7 +1184,11 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        this.logger.warn(`[WPP][${companyId}] Nao foi possivel limpar ${currentPath}: ${message}`);
+        this.logLifecycle(companyId, 'warn', 'filesystem_cleanup_failed', {
+          label,
+          path: currentPath,
+          error: message,
+        });
       }
     }
   }
@@ -1085,7 +1215,6 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
 
   private resolvePuppeteerExecutablePath() {
     try {
-      // Usa o caminho calculado pelo proprio Puppeteer quando o browser foi baixado no build.
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const puppeteer = require('puppeteer') as { executablePath?: () => string };
       const executablePath = puppeteer.executablePath?.();
@@ -1119,8 +1248,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       return undefined;
     }
 
-    const executableName =
-      process.platform === 'win32' ? 'chrome.exe' : undefined;
+    const executableName = process.platform === 'win32' ? 'chrome.exe' : undefined;
     const linuxCandidates = ['chrome', 'chrome-headless-shell'];
 
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -1150,19 +1278,33 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
 
   private formatBootstrapError(error: unknown) {
     const baseMessage = error instanceof Error ? error.message : String(error);
-
     if (!baseMessage.includes('Could not find Chrome')) {
       return baseMessage;
     }
 
     return (
       `${baseMessage} | Diagnostico: o backend subiu, mas o browser nao foi instalado no runtime. ` +
-      'No Render em modo Node, use `npx puppeteer browsers install chrome` no Build Command; ' +
-      'em modo Docker, confirme se o servico esta usando o Dockerfile e um Chrome/Chromium valido.'
+      'No Render em modo Node, use `npx puppeteer browsers install chrome` no Build Command.'
     );
   }
 
-  private sleep(ms: number) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+  private logLifecycle(
+    companyId: string,
+    level: 'log' | 'warn' | 'error',
+    event: string,
+    extra?: Record<string, unknown>,
+  ) {
+    const snapshot = this.getDiagnosticSnapshot(companyId);
+    const payload = {
+      timestamp: new Date().toISOString(),
+      companyId,
+      sessionName: snapshot.sessionName,
+      correlationId: snapshot.correlationId,
+      currentState: snapshot.currentState,
+      event,
+      ...extra,
+    };
+
+    this.logger[level](JSON.stringify(payload));
   }
 }

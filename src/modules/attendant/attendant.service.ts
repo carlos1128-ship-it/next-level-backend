@@ -94,6 +94,16 @@ export class AttendantService {
     this.attendantGateway.emitWhatsappStatus(payload.companyId, payload.status);
   }
 
+  @OnEvent('whatsapp.qr.generated')
+  handleWhatsappQrGenerated(payload: {
+    companyId: string;
+    qrCode: string;
+    attempts: number;
+    sessionName: string;
+  }) {
+    this.attendantGateway.emitWhatsappQr(payload.companyId, payload);
+  }
+
   async getBotConfig(companyId: string) {
     const [config, company, connectionStatus] = await Promise.all([
       this.getOrCreateAgentConfig(companyId),
@@ -335,7 +345,7 @@ export class AttendantService {
     const result = await this.wppconnectService.createSession(companyId, { fresh: true });
     return {
       ...result,
-      message: 'Fluxo rapido habilitado para QR Code com sessao nova.',
+      message: 'Nova sessao iniciada somente por acao explicita do usuario.',
     };
   }
 
@@ -350,12 +360,13 @@ export class AttendantService {
       qrcode: qrCode,
       qrCode,
       ready: Boolean(qrCode),
-      status: qrCode ? 'ready' : 'generating',
+      status: qrCode ? 'qr_ready' : health.lifecycleState,
       connectionStatus: health.status,
       lifecycleState: health.lifecycleState,
       failureReason: health.failureReason,
       connected: health.connected,
       method: health.connected ? 'wppconnect' : null,
+      diagnosticSnapshot: health.diagnosticSnapshot,
     };
   }
 
@@ -366,19 +377,16 @@ export class AttendantService {
   async getWhatsappStatus(companyId: string) {
     const wppHealth = await this.wppconnectService.getHealthStatus(companyId);
     return {
-      status: wppHealth.connected
-        ? 'CONNECTED'
-        : wppHealth.awaitingQR
-          ? 'AWAITING_QR_SCAN'
-          : wppHealth.qrRequired
-            ? 'QR_REQUIRED'
-          : wppHealth.status,
+      status: wppHealth.connected ? 'connected' : wppHealth.lifecycleState,
+      lifecycleState: wppHealth.lifecycleState,
       qrcode: wppHealth.qrCode,
       qrCode: wppHealth.qrCode,
       connected: wppHealth.connected,
       method: wppHealth.connected ? 'wppconnect' : null,
       phoneNumber: wppHealth.phoneNumber,
       qrRequired: wppHealth.qrRequired,
+      failureReason: wppHealth.failureReason,
+      diagnosticSnapshot: wppHealth.diagnosticSnapshot,
       updatedAt: wppHealth.dbLastConnected,
       quotaUsed: 0,
       quotaLimit: 10000,
@@ -423,12 +431,12 @@ export class AttendantService {
           ? 'wppconnect'
           : null,
       status: connectedViaMeta || connectedViaWpp
-        ? 'CONNECTED'
+        ? 'connected'
         : awaitingQr
-          ? 'AWAITING_QR_SCAN'
+          ? 'qr_ready'
           : wppHealth.qrRequired
-            ? 'QR_REQUIRED'
-          : 'DISCONNECTED',
+            ? 'needs_new_qr'
+            : wppHealth.lifecycleState,
       phoneNumberId: company?.metaPhoneNumberId ?? null,
       phoneNumber: connectedViaMeta ? metaHealth.phoneNumber : wppHealth.phoneNumber,
       qrCode: connectedViaMeta ? null : wppHealth.qrCode,

@@ -7,6 +7,7 @@ import { InstagramService } from './instagram.service';
 import { MetaGraphService } from './meta-graph.service';
 import { ShopeeScraperService } from './shopee-scraper.service';
 import { WppconnectService } from './wppconnect.service';
+import { WppSessionStateManager } from './wpp-session-state.manager';
 
 import { DashboardModule } from '../dashboard/dashboard.module';
 import { AiModule } from '../ai/ai.module';
@@ -20,6 +21,7 @@ import { AiModule } from '../ai/ai.module';
     InstagramService, 
     MetaGraphService,
     ShopeeScraperService,
+    WppSessionStateManager,
     WppconnectService,
   ],
   exports: [
@@ -28,6 +30,7 @@ import { AiModule } from '../ai/ai.module';
     InstagramService, 
     MetaGraphService,
     ShopeeScraperService,
+    WppSessionStateManager,
     WppconnectService,
   ],
 })

@@ -52,6 +52,14 @@ export class AttendantGateway implements OnGatewayConnection, OnGatewayDisconnec
     });
   }
 
+  emitWhatsappQr(companyId: string, payload: { qrCode: string; attempts: number; sessionName: string }) {
+    this.server.to(this.room(companyId)).emit('whatsapp.qr', {
+      companyId,
+      ...payload,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   private resolveCompanyId(client: Socket) {
     const raw = client.handshake.query.companyId;
     return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
