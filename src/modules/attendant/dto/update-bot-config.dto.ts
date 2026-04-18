@@ -7,6 +7,10 @@ export class UpdateBotConfigDto {
 
   @IsOptional()
   @IsString()
+  agentName?: string;
+
+  @IsOptional()
+  @IsString()
   welcomeMessage?: string;
 
   @IsOptional()
@@ -15,9 +19,17 @@ export class UpdateBotConfigDto {
 
   @IsOptional()
   @IsString()
+  tone?: string;
+
+  @IsOptional()
+  @IsString()
   instructions?: string;
 
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isOnline?: boolean;
 }

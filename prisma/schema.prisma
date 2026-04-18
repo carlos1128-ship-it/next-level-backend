@@ -123,7 +123,9 @@ model Company {
   marketPrices        MarketPrice[]
   marketTrends        MarketTrend[]
   botConfig           BotConfig?
+  agentConfig         AgentConfig?
   leads               Lead[]
+  conversations       Conversation[]
   usageQuota          UsageQuota?
   apiLogs             ApiLog[]
   auditTrails         AuditTrail[]
@@ -419,6 +421,50 @@ model BotConfig {
   updatedAt             DateTime @updatedAt
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+}
+
+model AgentConfig {
+  id             String   @id @default(cuid())
+  companyId      String   @unique
+  agentName      String   @default("Atendente")
+  tone           String   @default("Amigável")
+  welcomeMessage String   @db.Text
+  instructions   String   @db.Text
+  isOnline       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+}
+
+model Conversation {
+  id             String    @id @default(cuid())
+  companyId      String
+  contactNumber  String
+  contactName    String?
+  status         String    @default("Aguardando")
+  isPaused       Boolean   @default(false)
+  pausedUntil    DateTime?
+  lastMessageAt  DateTime  @default(now())
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  messages       Message[]
+  company        Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, contactNumber])
+  @@index([companyId, updatedAt])
+  @@index([companyId, isPaused])
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  content        String       @db.Text
+  role           String
+  timestamp      DateTime     @default(now())
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, timestamp])
 }
 
 model Lead {

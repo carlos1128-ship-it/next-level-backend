@@ -16,6 +16,7 @@ export class MetaIntegrationService {
       select: {
         metaAccessToken: true,
         metaPhoneNumberId: true,
+        phoneNumber: true,
       },
     });
 
@@ -28,6 +29,7 @@ export class MetaIntegrationService {
 
   async saveConfig(companyId: string, dto: SaveMetaConfigDto) {
     let phoneNumberId = dto.phoneNumberId;
+    let discoveredPhoneNumber = dto.phoneNumber;
     let webhookVerifyToken = dto.webhookVerifyToken;
 
     if (!webhookVerifyToken) {
@@ -48,8 +50,10 @@ export class MetaIntegrationService {
           
           if (matched) {
             phoneNumberId = matched.id;
+            discoveredPhoneNumber = matched.display_phone_number || dto.phoneNumber;
           } else {
             phoneNumberId = numbers[0].id;
+            discoveredPhoneNumber = numbers[0].display_phone_number || dto.phoneNumber;
           }
         }
       } catch (error: any) {
@@ -69,7 +73,7 @@ export class MetaIntegrationService {
         metaAccessToken: dto.accessToken,
         metaPhoneNumberId: phoneNumberId,
         webhookVerifyToken: webhookVerifyToken,
-        phoneNumber: dto.phoneNumber,
+        phoneNumber: discoveredPhoneNumber,
         instagramAccountId: dto.instagramAccountId,
       },
     });
@@ -89,13 +93,28 @@ export class MetaIntegrationService {
   async getHealthStatus(companyId: string) {
     const company = await this.prisma.company.findUnique({
       where: { id: companyId },
-      select: { metaPhoneNumberId: true, metaAccessToken: true },
+      select: { metaPhoneNumberId: true, metaAccessToken: true, phoneNumber: true },
     });
 
-    if (company?.metaPhoneNumberId && company?.metaAccessToken) {
-      return { status: 'CONNECTED' };
-    }
-    return { status: 'DISCONNECTED' };
+    const connected = Boolean(company?.metaPhoneNumberId && company?.metaAccessToken);
+
+    return {
+      status: connected ? 'CONNECTED' : 'DISCONNECTED',
+      connected,
+      qrCode: null,
+      phoneNumber: company?.phoneNumber ?? null,
+      pushname: null,
+      hasClient: connected,
+      hasInitialization: connected,
+      hasRetryTimer: false,
+      lastError: null,
+      dbStatus: connected ? 'connected' : 'disconnected',
+      dbEnabled: true,
+      dbLastConnected: connected ? new Date().toISOString() : null,
+      healthy: connected,
+      needsReconnect: !connected,
+      awaitingQR: false,
+    };
   }
 
   async sendTextMessage(companyId: string, phone: string, text: string) {

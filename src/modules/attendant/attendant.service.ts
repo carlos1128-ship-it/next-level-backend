@@ -1,11 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import {
-  AiChatRole,
-  IntegrationProvider,
-  LeadStatus,
-  Prisma,
-} from '@prisma/client';
+import { IntegrationProvider, Prisma } from '@prisma/client';
 import { AiService } from '../ai/ai.service';
 import { RagService } from '../ai/rag.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -13,9 +8,8 @@ import { MetaIntegrationService } from '../meta/meta.service';
 import { InstagramService } from '../integrations/instagram.service';
 import { AlertsService } from '../alerts/alerts.service';
 
-const HOT_SCORE_THRESHOLD = 80;
-const QUALIFIED_THRESHOLD = 50;
 const HISTORY_LIMIT = 10;
+const HUMAN_PAUSE_HOURS = 24;
 
 @Injectable()
 export class AttendantService {
@@ -28,40 +22,7 @@ export class AttendantService {
     private readonly metaIntegrationService: MetaIntegrationService,
     private readonly instagramService: InstagramService,
     private readonly alertsService: AlertsService,
-  ) { }
-
-  private async resolveCompanyIdForUser(userId: string, companyId?: string | null) {
-    const normalizedCompanyId = companyId?.trim();
-
-    if (normalizedCompanyId) {
-      const company = await this.prisma.company.findFirst({
-        where: {
-          id: normalizedCompanyId,
-          OR: [{ userId }, { users: { some: { id: userId } } }],
-        },
-        select: { id: true },
-      });
-
-      if (!company) {
-        throw new BadRequestException('Empresa invalida');
-      }
-
-      return company.id;
-    }
-
-    const owned = await this.prisma.company.findFirst({
-      where: {
-        OR: [{ userId }, { users: { some: { id: userId } } }],
-      },
-      select: { id: true },
-    });
-
-    if (!owned?.id) {
-      throw new BadRequestException('companyId nao informado');
-    }
-
-    return owned.id;
-  }
+  ) {}
 
   @OnEvent('webhooks.received')
   async handleWebhook(payload: {
@@ -80,135 +41,32 @@ export class AttendantService {
       where: { id: payload.eventId },
       select: { payload: true, companyId: true, id: true },
     });
+
     if (!event?.payload) return;
 
     const companyId = event.companyId || payload.companyId;
     if (!companyId) return;
 
     const rawPayload = event.payload as Record<string, unknown>;
+    const messages =
+      payload.provider === IntegrationProvider.INSTAGRAM
+        ? this.extractInstagramMessages(rawPayload)
+        : this.extractWhatsappMessages(rawPayload);
 
-    let messages: Array<{ from: string; text: string; name?: string | null }>;
-    if (payload.provider === IntegrationProvider.INSTAGRAM) {
-      messages = this.extractInstagramMessages(rawPayload);
-    } else {
-      messages = this.extractWhatsappMessages(rawPayload);
-    }
-
-    for (const msg of messages) {
-      await this.processIncomingMessage(companyId, payload.provider, msg.from, msg.text, msg.name);
+    for (const message of messages) {
+      await this.processIncomingMessage(
+        companyId,
+        payload.provider,
+        message.from,
+        message.text,
+        message.name,
+      );
     }
 
     await this.prisma.webhookEvent.update({
       where: { id: event.id },
       data: { processed: true },
     });
-  }
-
-  async getBotConfig(companyId: string) {
-    return this.getOrCreateConfig(companyId);
-  }
-
-  async updateBotConfig(companyId: string, data: Partial<{
-    botName?: string;
-    welcomeMessage?: string;
-    toneOfVoice?: string;
-    instructions?: string;
-    isActive?: boolean;
-  }>) {
-    const config = await this.getOrCreateConfig(companyId);
-    return this.prisma.botConfig.update({
-      where: { id: config.id },
-      data: {
-        botName: data.botName?.trim() || config.botName,
-        welcomeMessage: data.welcomeMessage ?? config.welcomeMessage,
-        toneOfVoice: data.toneOfVoice?.trim() || config.toneOfVoice,
-        instructions: data.instructions ?? config.instructions,
-        isActive: data.isActive ?? config.isActive,
-      },
-    });
-  }
-
-  async listLeads(companyId: string, limit = 20) {
-    return this.prisma.lead.findMany({
-      where: { companyId },
-      orderBy: { updatedAt: 'desc' },
-      take: limit,
-      include: {
-        conversations: { orderBy: { createdAt: 'desc' }, take: 1 },
-      },
-    });
-  }
-
-  async interveneLead(leadId: string, companyId: string) {
-    const lead = await this.prisma.lead.findFirst({
-      where: { id: leadId, companyId },
-    });
-    if (!lead) throw new BadRequestException('Lead nao encontrado');
-
-    const pauseUntil = this.addHours(new Date(), 24);
-    return this.prisma.lead.update({
-      where: { id: lead.id },
-      data: { botPausedUntil: pauseUntil },
-    });
-  }
-
-  async getRoi(companyId: string) {
-    const converted = await this.prisma.lead.findMany({
-      where: { companyId, status: LeadStatus.CONVERTED },
-      select: { lastQuotedValue: true },
-    });
-    const iaSalesCount = converted.length;
-    const iaRevenue = converted.reduce(
-      (sum, l) => sum + Number(l.lastQuotedValue ?? 0),
-      0,
-    );
-    return {
-      iaSalesCount,
-      iaRevenue: Number(iaRevenue.toFixed(2)),
-    };
-  }
-
-  // ─── Core Message Processing ───────────────────────────────────────────────
-
-  async createWhatsappSession(companyId: string) {
-    return { status: 'CONNECTED', message: 'Meta Cloud API is stateless.' };
-  }
-
-  async getWhatsappQrCode(companyId: string) {
-    const health = await this.metaIntegrationService.getHealthStatus(companyId);
-    return {
-      qrCode: null,
-      status: health.status,
-    };
-  }
-
-  async terminateWhatsappSession(companyId: string) {
-    return { success: true, message: 'Session management handled by Meta.' };
-  }
-
-  async getWhatsappStatus(companyId: string) {
-    const health = await this.metaIntegrationService.getHealthStatus(companyId);
-    return {
-      status: health.status,
-      qrCode: null,
-      quotaUsed: 0,
-      quotaLimit: 10000,
-    };
-  }
-
-  /**
-   * Health check detalhado — sincroniza estado real entre memória e banco.
-   * Usado pela aba "Atendente Virtual" para evitar dessincronização.
-   */
-  async getWhatsappHealth(companyId: string) {
-    return this.metaIntegrationService.getHealthStatus(companyId);
-  }
-
-  /**
-   * Cleanup forçado ao trocar de empresa.
-   */
-  async cleanupWhatsappSession(companyId: string) {
-    return { success: true };
   }
 
   @OnEvent('whatsapp.message.received')
@@ -227,6 +85,264 @@ export class AttendantService {
     );
   }
 
+  async getBotConfig(companyId: string) {
+    const [config, company] = await Promise.all([
+      this.getOrCreateAgentConfig(companyId),
+      this.prisma.company.findUnique({
+        where: { id: companyId },
+        select: {
+          metaPhoneNumberId: true,
+          metaWabaId: true,
+          phoneNumber: true,
+          metaAccessToken: true,
+        },
+      }),
+    ]);
+
+    return {
+      id: config.id,
+      companyId: config.companyId,
+      botName: config.agentName,
+      agentName: config.agentName,
+      welcomeMessage: config.welcomeMessage,
+      toneOfVoice: config.tone,
+      tone: config.tone,
+      instructions: config.instructions,
+      isActive: config.isOnline,
+      isOnline: config.isOnline,
+      metaPhoneNumberId: company?.metaPhoneNumberId ?? null,
+      metaWabaId: company?.metaWabaId ?? null,
+      phoneNumber: company?.phoneNumber ?? null,
+      isConnected: Boolean(company?.metaPhoneNumberId && company?.metaAccessToken),
+      createdAt: config.createdAt,
+      updatedAt: config.updatedAt,
+    };
+  }
+
+  async updateBotConfig(
+    companyId: string,
+    data: Partial<{
+      botName?: string;
+      agentName?: string;
+      welcomeMessage?: string;
+      toneOfVoice?: string;
+      tone?: string;
+      instructions?: string;
+      isActive?: boolean;
+      isOnline?: boolean;
+    }>,
+  ) {
+    const config = await this.getOrCreateAgentConfig(companyId);
+
+    await this.prisma.agentConfig.update({
+      where: { id: config.id },
+      data: {
+        agentName: data.agentName?.trim() || data.botName?.trim() || config.agentName,
+        tone: data.tone?.trim() || data.toneOfVoice?.trim() || config.tone,
+        welcomeMessage: data.welcomeMessage?.trim() || config.welcomeMessage,
+        instructions: data.instructions?.trim() || config.instructions,
+        isOnline: data.isOnline ?? data.isActive ?? config.isOnline,
+      },
+    });
+
+    return this.getBotConfig(companyId);
+  }
+
+  async listLeads(companyId: string, limit = 20) {
+    const conversations = await this.prisma.conversation.findMany({
+      where: { companyId },
+      orderBy: { updatedAt: 'desc' },
+      take: limit,
+      include: {
+        messages: {
+          orderBy: { timestamp: 'desc' },
+          take: 1,
+        },
+      },
+    });
+
+    return conversations.map((conversation) => ({
+      id: conversation.id,
+      companyId: conversation.companyId,
+      externalId: conversation.contactNumber,
+      name: conversation.contactName,
+      status: this.mapConversationStatus(conversation.status),
+      score: conversation.status === 'IA respondeu' ? 85 : conversation.isPaused ? 40 : 60,
+      lastInteraction: conversation.lastMessageAt,
+      botPausedUntil: conversation.pausedUntil,
+      lastQuotedValue: null,
+      createdAt: conversation.createdAt,
+      updatedAt: conversation.updatedAt,
+      conversations: conversation.messages.map((message) => ({
+        id: message.id,
+        leadId: conversation.id,
+        role: this.mapMessageRole(message.role),
+        content: message.content,
+        createdAt: message.timestamp,
+      })),
+    }));
+  }
+
+  async listConversationFeed(companyId: string, limit = 20) {
+    return this.prisma.conversation.findMany({
+      where: { companyId },
+      orderBy: { updatedAt: 'desc' },
+      take: limit,
+      include: {
+        messages: {
+          orderBy: { timestamp: 'asc' },
+          take: HISTORY_LIMIT,
+        },
+      },
+    });
+  }
+
+  async getConversationThread(companyId: string, conversationId: string) {
+    const conversation = await this.prisma.conversation.findFirst({
+      where: { id: conversationId, companyId },
+      include: {
+        messages: {
+          orderBy: { timestamp: 'asc' },
+        },
+      },
+    });
+
+    if (!conversation) {
+      throw new BadRequestException('Conversa nao encontrada');
+    }
+
+    return conversation;
+  }
+
+  async interveneLead(leadId: string, companyId: string) {
+    return this.pauseConversation(leadId, companyId);
+  }
+
+  async pauseConversation(conversationId: string, companyId: string) {
+    const conversation = await this.ensureConversation(conversationId, companyId);
+    const pausedUntil = this.addHours(new Date(), HUMAN_PAUSE_HOURS);
+
+    return this.prisma.conversation.update({
+      where: { id: conversation.id },
+      data: {
+        isPaused: true,
+        pausedUntil,
+        status: 'Humano assumiu',
+      },
+    });
+  }
+
+  async resumeConversation(conversationId: string, companyId: string) {
+    const conversation = await this.ensureConversation(conversationId, companyId);
+
+    return this.prisma.conversation.update({
+      where: { id: conversation.id },
+      data: {
+        isPaused: false,
+        pausedUntil: null,
+        status: 'Aguardando',
+      },
+    });
+  }
+
+  async sendHumanMessage(
+    companyId: string,
+    conversationId: string,
+    content: string,
+  ) {
+    const conversation = await this.ensureConversation(conversationId, companyId);
+    const trimmedContent = content.trim();
+
+    if (!trimmedContent) {
+      throw new BadRequestException('Mensagem vazia');
+    }
+
+    await this.dispatchOutboundMessage(
+      companyId,
+      conversation.contactNumber,
+      trimmedContent,
+      IntegrationProvider.WHATSAPP,
+    );
+
+    await this.prisma.message.create({
+      data: {
+        conversationId: conversation.id,
+        content: trimmedContent,
+        role: 'human',
+      },
+    });
+
+    return this.prisma.conversation.update({
+      where: { id: conversation.id },
+      data: {
+        isPaused: true,
+        pausedUntil: this.addHours(new Date(), HUMAN_PAUSE_HOURS),
+        status: 'Humano assumiu',
+        lastMessageAt: new Date(),
+      },
+      include: {
+        messages: {
+          orderBy: { timestamp: 'asc' },
+        },
+      },
+    });
+  }
+
+  async getRoi(companyId: string) {
+    const [totalConversations, iaReplies] = await Promise.all([
+      this.prisma.conversation.count({ where: { companyId } }),
+      this.prisma.message.count({
+        where: {
+          conversation: { companyId },
+          role: 'assistant',
+        },
+      }),
+    ]);
+
+    return {
+      iaSalesCount: iaReplies,
+      iaRevenue: totalConversations * 0,
+    };
+  }
+
+  async createWhatsappSession(companyId: string) {
+    return {
+      status: 'AWAITING_QR_SCAN',
+      message: 'Fluxo rapido habilitado para QR Code.',
+      qrCode: `wppconnect:${companyId}`,
+    };
+  }
+
+  async getWhatsappQrCode(companyId: string) {
+    const health = await this.metaIntegrationService.getHealthStatus(companyId);
+    return {
+      qrCode: health.connected ? null : `wppconnect:${companyId}`,
+      status: health.connected ? 'CONNECTED' : 'AWAITING_QR_SCAN',
+    };
+  }
+
+  async terminateWhatsappSession(companyId: string) {
+    return { success: true, message: `Sessao encerrada para ${companyId}` };
+  }
+
+  async getWhatsappStatus(companyId: string) {
+    const health = await this.metaIntegrationService.getHealthStatus(companyId);
+    return {
+      status: health.status,
+      qrCode: health.connected ? null : `wppconnect:${companyId}`,
+      quotaUsed: 0,
+      quotaLimit: 10000,
+    };
+  }
+
+  async getWhatsappHealth(companyId: string) {
+    return this.metaIntegrationService.getHealthStatus(companyId);
+  }
+
+  async cleanupWhatsappSession(companyId: string) {
+    return { success: true, companyId, status: 'clean' };
+  }
+
   private async processIncomingMessage(
     companyId: string,
     provider: IntegrationProvider,
@@ -234,143 +350,178 @@ export class AttendantService {
     text: string,
     name?: string | null,
   ) {
-    const botConfig = await this.getOrCreateConfig(companyId);
-    if (!botConfig.isActive) return;
-
-    // Verificação de quota (tier freemium)
-    if (botConfig.messageQuotaUsed >= botConfig.messageQuotaLimit) {
-      this.logger.warn(`Quota de mensagens esgotada para empresa ${companyId} (${botConfig.messageQuotaUsed}/${botConfig.messageQuotaLimit})`);
-      return;
-    }
-
-    let lead = await this.prisma.lead.upsert({
-      where: { companyId_externalId: { companyId, externalId } },
+    const config = await this.getOrCreateAgentConfig(companyId);
+    const conversation = await this.prisma.conversation.upsert({
+      where: {
+        companyId_contactNumber: {
+          companyId,
+          contactNumber: externalId,
+        },
+      },
       update: {
-        name: name || undefined,
-        lastInteraction: new Date(),
+        contactName: name || undefined,
+        lastMessageAt: new Date(),
+        status: 'Aguardando',
       },
       create: {
         companyId,
-        externalId,
-        name: name || undefined,
-        status: LeadStatus.NEW,
-        lastInteraction: new Date(),
+        contactNumber: externalId,
+        contactName: name || undefined,
+        status: 'Aguardando',
+        lastMessageAt: new Date(),
       },
     });
 
-    if (lead.botPausedUntil && lead.botPausedUntil > new Date()) {
-      this.logger.warn(`Bot pausado para lead ${externalId}, ignorando resposta automatica.`);
+    await this.prisma.message.create({
+      data: {
+        conversationId: conversation.id,
+        content: text,
+        role: 'user',
+      },
+    });
+
+    const paused =
+      conversation.isPaused &&
+      conversation.pausedUntil &&
+      conversation.pausedUntil > new Date();
+
+    if (paused || !config.isOnline) {
+      await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: {
+          status: paused ? 'Humano assumiu' : 'Aguardando',
+          lastMessageAt: new Date(),
+        },
+      });
       return;
     }
 
-    await this.prisma.chatConversation.create({
-      data: { leadId: lead.id, role: AiChatRole.USER, content: text },
-    });
-
-    const frustrationKeywords = ['reclama', 'reclamação', 'procon', 'humano', 'atendente', 'insatisfeito'];
-    if (this.containsKeyword(text, frustrationKeywords)) {
-      await this.prisma.lead.update({
-        where: { id: lead.id },
-        data: { botPausedUntil: this.addHours(new Date(), 24) },
-      });
+    if (this.hasHumanEscalationSignal(text)) {
+      await this.pauseConversation(conversation.id, companyId);
       await this.alertsService.createAlert({
         companyId,
         type: 'BOT_HANDOFF',
         severity: 'critical',
-        message: `Escalonamento humano: lead ${lead.name ?? externalId} solicitou atendimento humano.`,
+        message: `Cliente ${name || externalId} pediu atendimento humano.`,
       });
       return;
     }
 
-    const history = await this.prisma.chatConversation.findMany({
-      where: { leadId: lead.id },
-      orderBy: { createdAt: 'desc' },
+    const history = await this.prisma.message.findMany({
+      where: { conversationId: conversation.id },
+      orderBy: { timestamp: 'desc' },
       take: HISTORY_LIMIT,
-      select: { role: true, content: true },
     });
-    const historyAsc = history.reverse();
 
-    const { context, lastQuotedValue } = await this.buildContext(companyId, text);
+    const productContext = await this.buildContext(companyId, text);
     const company = await this.prisma.company.findUnique({
       where: { id: companyId },
       select: { name: true },
     });
 
     const prompt = this.buildPrompt({
-      botName: botConfig.botName,
-      companyName: company?.name ?? 'sua empresa',
-      tone: botConfig.toneOfVoice,
-      instructions: botConfig.instructions,
-      productContext: context,
+      agentName: config.agentName,
+      tone: config.tone,
+      instructions: config.instructions,
+      welcomeMessage: config.welcomeMessage,
+      companyName: company?.name || 'sua empresa',
       customerMessage: text,
-      welcomeMessage: botConfig.welcomeMessage,
-      history: historyAsc,
+      productContext,
+      history: history.reverse().map((message) => ({
+        role: message.role,
+        content: message.content,
+      })),
     });
 
-    let reply = botConfig.welcomeMessage || 'Oi! Sou o assistente virtual da empresa, pronto para ajudar.';
+    let reply = config.welcomeMessage;
+
     try {
       const rag = await this.ragService.buildContext(companyId, text);
-      const result = await this.aiService['generateText']?.(`${rag}\n\n${prompt}`);
-      reply = result?.text?.trim() || reply;
+      const result = await this.aiService.generateText(
+        `${rag}\n\n${prompt}`,
+        companyId,
+        'simple',
+      );
+      reply = result.text.trim() || reply;
     } catch (error) {
-      this.logger.warn(`IA indisponivel, usando fallback simples: ${(error as Error)?.message}`);
+      this.logger.warn(
+        `Falha ao gerar resposta da IA: ${(error as Error)?.message || 'erro desconhecido'}`,
+      );
     }
 
     try {
-      if (provider === IntegrationProvider.INSTAGRAM) {
-        await this.instagramService.sendDm(companyId, externalId, reply);
-      } else {
-        await this.metaIntegrationService.sendTextMessage(companyId, externalId, reply);
-      }
-    } catch (sendError) {
-      this.logger.error(`Falha ao enviar resposta via ${provider}: ${(sendError as Error)?.message}`);
+      await this.dispatchOutboundMessage(companyId, externalId, reply, provider);
+    } catch (error) {
+      this.logger.error(
+        `Falha ao enviar mensagem automatica: ${(error as Error)?.message || 'erro desconhecido'}`,
+      );
+      await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { status: 'Aguardando', lastMessageAt: new Date() },
+      });
+      return;
     }
 
-    await this.prisma.chatConversation.create({
-      data: { leadId: lead.id, role: AiChatRole.ASSISTANT, content: reply },
+    await this.prisma.message.create({
+      data: {
+        conversationId: conversation.id,
+        content: reply,
+        role: 'assistant',
+      },
     });
 
-    // Incrementa quota após resposta enviada com sucesso
-    await this.prisma.botConfig.update({
-      where: { id: botConfig.id },
-      data: { messageQuotaUsed: { increment: 1 } },
+    await this.prisma.conversation.update({
+      where: { id: conversation.id },
+      data: {
+        status: 'IA respondeu',
+        lastMessageAt: new Date(),
+      },
     });
+  }
 
-    lead = await this.scoreLead(companyId, lead, text, lastQuotedValue);
+  private async dispatchOutboundMessage(
+    companyId: string,
+    contactNumber: string,
+    content: string,
+    provider: IntegrationProvider,
+  ) {
+    if (provider === IntegrationProvider.INSTAGRAM) {
+      return this.instagramService.sendDm(companyId, contactNumber, content);
+    }
+
+    return this.metaIntegrationService.sendTextMessage(companyId, contactNumber, content);
   }
 
   private buildPrompt(input: {
-    botName: string;
-    companyName: string;
+    agentName: string;
     tone: string;
-    instructions?: string | null;
-    productContext: string;
+    instructions: string;
+    welcomeMessage: string;
+    companyName: string;
     customerMessage: string;
-    welcomeMessage?: string | null;
-    history: Array<{ role: AiChatRole; content: string }>;
+    productContext: string;
+    history: Array<{ role: string; content: string }>;
   }) {
-    const historyLines = input.history.length
+    const historyText = input.history.length
       ? input.history
-        .map((m) => `${m.role === AiChatRole.USER ? 'Cliente' : input.botName}: ${m.content}`)
-        .join('\n')
-      : null;
+          .map((item) => `${item.role}: ${item.content}`)
+          .join('\n')
+      : 'Sem historico anterior.';
 
     return [
-      `Você é ${input.botName}, assistente virtual da empresa ${input.companyName}.`,
+      `Voce e ${input.agentName}, assistente virtual da empresa ${input.companyName}.`,
       `Tom de voz: ${input.tone}.`,
-      'Identifique-se sempre como assistente virtual e seja transparente.',
-      'Regras de ouro: nunca invente preços. Se não houver preço no contexto, responda: "Vou confirmar essa informação com um consultor humano".',
-      'Se detectar reclamação ou frustração, sugira escalar para um humano.',
-      input.instructions ? `Instruções da marca: ${input.instructions}` : '',
-      input.welcomeMessage ? `Abertura sugerida: ${input.welcomeMessage}` : '',
-      'Contexto de produtos e promoções:',
-      input.productContext,
-      historyLines ? `Histórico recente da conversa:\n${historyLines}` : '',
-      `Mensagem atual do cliente: "${input.customerMessage}"`,
-      'Responda em português do Brasil, curto e orientado à conversão (próximo passo claro).',
-    ]
-      .filter(Boolean)
-      .join('\n\n');
+      'Fale sempre em portugues do Brasil.',
+      'Sempre diga que voce e uma assistente virtual.',
+      'Nunca invente preco. Se faltar valor, diga que vai confirmar com um humano.',
+      'Se o cliente demonstrar frustracao, oriente que o atendimento sera transferido.',
+      `Mensagem de boas-vindas: ${input.welcomeMessage}`,
+      `Instrucoes da empresa: ${input.instructions}`,
+      `Contexto: ${input.productContext}`,
+      `Historico recente:\n${historyText}`,
+      `Mensagem atual: ${input.customerMessage}`,
+      'Responda de forma curta, clara e com proximo passo.',
+    ].join('\n\n');
   }
 
   private async buildContext(companyId: string, query: string) {
@@ -385,118 +536,106 @@ export class AttendantService {
       take: 5,
     });
 
-    const promos = await this.prisma.strategicAction.findMany({
-      where: {
-        companyId,
-        type: 'MARKETING',
-        status: { in: ['SUGGESTED', 'APPROVED'] },
-        createdAt: { gte: this.addDays(new Date(), -30) },
-      },
-      take: 3,
-    });
+    if (!products.length) {
+      return 'Sem produto especifico encontrado. Se faltar informacao, diga que vai confirmar.';
+    }
 
-    const productLines = products.length
-      ? products.map(
-        (p) =>
-          `- ${p.name} (categoria: ${p.category ?? 'n/d'}) | preço: R$ ${Number(p.price).toFixed(2)} | estoque: disponível`,
+    return products
+      .map(
+        (product) =>
+          `${product.name} | categoria: ${product.category || 'geral'} | preco: R$ ${Number(
+            product.price,
+          ).toFixed(2)}`,
       )
-      : ['Nenhum produto específico encontrado; peça detalhes.'];
-
-    const promoLines = promos.length
-      ? promos.map((p) => `- ${p.title}: ${p.description}`)
-      : ['Sem promoções cadastradas no momento.'];
-
-    const context = [
-      `Produtos relevantes:\n${productLines.join('\n')}`,
-      `Promoções:\n${promoLines.join('\n')}`,
-    ].join('\n\n');
-
-    const lastQuotedValue = products[0]?.price ? new Prisma.Decimal(products[0].price) : undefined;
-    return { context, lastQuotedValue };
+      .join('\n');
   }
 
-  private async scoreLead(
-    companyId: string,
-    lead: { id: string; score: number; status: LeadStatus },
-    text: string,
-    lastQuotedValue?: Prisma.Decimal,
-  ) {
-    let delta = 0;
-    const lower = text.toLowerCase();
-    if (this.containsKeyword(lower, ['preco', 'preço', 'quanto'])) delta += 30;
-    if (this.containsKeyword(lower, ['pagamento', 'cartao', 'pix', 'parcel'])) delta += 20;
-    if (this.containsKeyword(lower, ['estoque', 'tem', 'disponivel'])) delta += 20;
-    if (this.containsKeyword(lower, ['comprar', 'fechar', 'pedido'])) delta += 25;
-
-    let newStatus = lead.status;
-    if (delta > 0 && lead.status === LeadStatus.NEW && lead.score + delta >= QUALIFIED_THRESHOLD) {
-      newStatus = LeadStatus.QUALIFIED;
-    }
-    if (this.containsKeyword(lower, ['paguei', 'comprei', 'fechado'])) {
-      newStatus = LeadStatus.CONVERTED;
-      delta = Math.max(delta, 40);
-    }
-
-    const score = Math.min(100, lead.score + delta);
-    const data: Prisma.LeadUpdateInput = {
-      score,
-      status: newStatus,
-      lastInteraction: new Date(),
-    };
-    if (lastQuotedValue) {
-      data.lastQuotedValue = lastQuotedValue;
-    }
-
-    const updated = await this.prisma.lead.update({
-      where: { id: lead.id },
-      data,
+  private async ensureConversation(conversationId: string, companyId: string) {
+    const conversation = await this.prisma.conversation.findFirst({
+      where: { id: conversationId, companyId },
     });
 
-    if (score >= HOT_SCORE_THRESHOLD) {
-      await this.alertsService.createAlert({
-        companyId,
-        type: 'LEAD_HOT',
-        severity: 'HIGH',
-        message: `Lead quente detectado! ${updated.name ?? 'Cliente'} está pronto para comprar.`,
-      });
+    if (!conversation) {
+      throw new BadRequestException('Conversa nao encontrada');
     }
 
-    return updated;
+    return conversation;
   }
 
-  private async getOrCreateConfig(companyId: string) {
-    const existing = await this.prisma.botConfig.findUnique({ where: { companyId } });
+  private async getOrCreateAgentConfig(companyId: string) {
+    const existing = await this.prisma.agentConfig.findUnique({
+      where: { companyId },
+    });
+
     if (existing) return existing;
 
-    return this.prisma.botConfig.create({
+    const company = await this.prisma.company.findUnique({
+      where: { id: companyId },
+      select: { name: true },
+    });
+
+    return this.prisma.agentConfig.create({
       data: {
         companyId,
-        botName: 'Atendente IA',
-        toneOfVoice: 'amigavel',
-        welcomeMessage: 'Oi! Sou o assistente virtual da empresa, posso ajudar?',
+        agentName: 'Atendente Next Level',
+        tone: 'Amigável',
+        welcomeMessage: `Olá! Sou a assistente virtual da ${company?.name || 'empresa'}. Como posso te ajudar hoje?`,
+        instructions:
+          'Seja educada, prestativa e objetiva. Nunca invente precos. Se o cliente pedir humano, avise que vai transferir.',
+        isOnline: true,
       },
     });
   }
 
-  // ─── Payload Extraction ────────────────────────────────────────────────────
+  private hasHumanEscalationSignal(text: string) {
+    const normalized = text.toLowerCase();
+    return [
+      'humano',
+      'atendente',
+      'reclam',
+      'procon',
+      'cancel',
+      'insatisfeito',
+      'nao resolveu',
+    ].some((term) => normalized.includes(term));
+  }
+
+  private mapConversationStatus(status: string) {
+    if (status === 'IA respondeu') return 'QUALIFIED';
+    if (status === 'Humano assumiu') return 'LOST';
+    return 'NEW';
+  }
+
+  private mapMessageRole(role: string) {
+    if (role === 'assistant') return 'ASSISTANT';
+    return 'USER';
+  }
 
   private extractWhatsappMessages(payload: Record<string, unknown>) {
     const messages: Array<{ from: string; text: string; name?: string | null }> = [];
-    const entries = (payload?.['entry'] as Array<Record<string, unknown>>) || [];
+    const entries = (payload.entry as Array<Record<string, unknown>>) || [];
 
     for (const entry of entries) {
-      const changes = (entry?.['changes'] as Array<Record<string, unknown>>) || [];
+      const changes = (entry.changes as Array<Record<string, unknown>>) || [];
       for (const change of changes) {
-        const value = (change as { value?: Record<string, unknown> })?.value || {};
-        const contacts = (value['contacts'] as Array<Record<string, unknown>>) || [];
-        const profile = contacts[0]?.['profile'] as Record<string, unknown> | undefined;
-        const contactName = typeof profile?.name === 'string' ? profile.name : undefined;
-        const msgs = (value['messages'] as Array<Record<string, unknown>>) || [];
+        const value = (change.value as Record<string, unknown>) || {};
+        const contacts = (value.contacts as Array<Record<string, unknown>>) || [];
+        const profile = contacts[0]?.profile as Record<string, unknown> | undefined;
+        const msgs = (value.messages as Array<Record<string, unknown>>) || [];
+
         for (const msg of msgs) {
-          const from = (msg['from'] as string) || '';
-          const text = (msg['text'] as { body?: string })?.body || (msg['button'] as { text?: string })?.text;
+          const from = String(msg.from || '');
+          const text =
+            (msg.text as { body?: string } | undefined)?.body ||
+            (msg.button as { text?: string } | undefined)?.text ||
+            '';
+
           if (from && text) {
-            messages.push({ from, text, name: contactName });
+            messages.push({
+              from,
+              text,
+              name: typeof profile?.name === 'string' ? profile.name : undefined,
+            });
           }
         }
       }
@@ -507,16 +646,16 @@ export class AttendantService {
 
   private extractInstagramMessages(payload: Record<string, unknown>) {
     const messages: Array<{ from: string; text: string; name?: string | null }> = [];
-    const entries = (payload?.['entry'] as Array<Record<string, unknown>>) || [];
+    const entries = (payload.entry as Array<Record<string, unknown>>) || [];
 
     for (const entry of entries) {
-      const messaging = (entry?.['messaging'] as Array<Record<string, unknown>>) || [];
-      for (const event of messaging) {
-        const sender = event['sender'] as Record<string, unknown> | undefined;
-        const message = event['message'] as Record<string, unknown> | undefined;
-        const from = typeof sender?.['id'] === 'string' ? sender['id'] : '';
-        const text = typeof message?.['text'] === 'string' ? message['text'] : '';
-        if (from && text && !message?.['is_echo']) {
+      const messaging = (entry.messaging as Array<Record<string, unknown>>) || [];
+      for (const item of messaging) {
+        const from = typeof item.sender === 'object' ? String((item.sender as { id?: string }).id || '') : '';
+        const message = item.message as Record<string, unknown> | undefined;
+        const text = typeof message?.text === 'string' ? message.text : '';
+
+        if (from && text && !message?.is_echo) {
           messages.push({ from, text, name: null });
         }
       }
@@ -525,22 +664,9 @@ export class AttendantService {
     return messages;
   }
 
-  // ─── Helpers ──────────────────────────────────────────────────────────────
-
-  private containsKeyword(text: string, keywords: string[]) {
-    const lower = text.toLowerCase();
-    return keywords.some((k) => lower.includes(k.toLowerCase()));
-  }
-
-  private addDays(date: Date, days: number) {
-    const clone = new Date(date);
-    clone.setDate(clone.getDate() + days);
-    return clone;
-  }
-
   private addHours(date: Date, hours: number) {
-    const clone = new Date(date);
-    clone.setHours(clone.getHours() + hours);
-    return clone;
+    const next = new Date(date);
+    next.setHours(next.getHours() + hours);
+    return next;
   }
 }

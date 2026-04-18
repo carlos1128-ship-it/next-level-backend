@@ -45,6 +45,58 @@ export class AttendantController {
     return this.attendantService.interveneLead(id, resolved!);
   }
 
+  @Get('conversations')
+  listConversations(
+    @Req() req: { user: { companyId?: string | null } },
+    @Query('companyId') companyId?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const resolved = companyId || req.user.companyId;
+    const take = Math.min(50, Math.max(1, Number(limit) || 20));
+    return this.attendantService.listConversationFeed(resolved!, take);
+  }
+
+  @Get('conversations/:id')
+  getConversation(
+    @Param('id') id: string,
+    @Req() req: { user: { companyId?: string | null } },
+    @Query('companyId') companyId?: string,
+  ) {
+    const resolved = companyId || req.user.companyId;
+    return this.attendantService.getConversationThread(resolved!, id);
+  }
+
+  @Post('conversations/:id/pause')
+  pauseConversation(
+    @Param('id') id: string,
+    @Req() req: { user: { companyId?: string | null } },
+    @Query('companyId') companyId?: string,
+  ) {
+    const resolved = companyId || req.user.companyId;
+    return this.attendantService.pauseConversation(id, resolved!);
+  }
+
+  @Post('conversations/:id/resume')
+  resumeConversation(
+    @Param('id') id: string,
+    @Req() req: { user: { companyId?: string | null } },
+    @Query('companyId') companyId?: string,
+  ) {
+    const resolved = companyId || req.user.companyId;
+    return this.attendantService.resumeConversation(id, resolved!);
+  }
+
+  @Post('conversations/:id/human-message')
+  sendHumanMessage(
+    @Param('id') id: string,
+    @Body() body: { content?: string },
+    @Req() req: { user: { companyId?: string | null } },
+    @Query('companyId') companyId?: string,
+  ) {
+    const resolved = companyId || req.user.companyId;
+    return this.attendantService.sendHumanMessage(resolved!, id, body.content || '');
+  }
+
   @Get('roi')
   roi(
     @Req() req: { user: { companyId?: string | null } },

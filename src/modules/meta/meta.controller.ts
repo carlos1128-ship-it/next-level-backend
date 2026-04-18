@@ -51,12 +51,14 @@ export class MetaStatusController {
       select: {
         metaPhoneNumberId: true,
         metaAccessToken: true,
+        phoneNumber: true,
       },
     });
 
     return {
       connected: !!(company?.metaPhoneNumberId && company?.metaAccessToken),
       phoneNumberId: company?.metaPhoneNumberId ?? null,
+      phoneNumber: company?.phoneNumber ?? null,
     };
   }
 }
