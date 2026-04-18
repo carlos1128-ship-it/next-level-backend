@@ -3,9 +3,72 @@ import { PrismaService } from '../../prisma/prisma.service';
 import axios from 'axios';
 import * as crypto from 'crypto';
 
+interface OAuthStatePayload {
+  companyId: string;
+  nonce: string;
+  issuedAt: number;
+}
+
 @Injectable()
 export class MetaOAuthService {
+  private static readonly STATE_TTL_MS = 10 * 60 * 1000;
+
   constructor(private prisma: PrismaService) {}
+
+  private getStateSecret() {
+    const secret = process.env.META_OAUTH_STATE_SECRET || process.env.META_APP_SECRET;
+
+    if (!secret) {
+      throw new Error('META_OAUTH_STATE_SECRET or META_APP_SECRET must be defined');
+    }
+
+    return secret;
+  }
+
+  private signStatePayload(payload: OAuthStatePayload) {
+    const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const signature = crypto
+      .createHmac('sha256', this.getStateSecret())
+      .update(encodedPayload)
+      .digest('base64url');
+
+    return `${encodedPayload}.${signature}`;
+  }
+
+  private parseState(state: string): OAuthStatePayload {
+    const [encodedPayload, signature] = state.split('.');
+
+    if (!encodedPayload || !signature) {
+      throw new Error('Invalid OAuth state format');
+    }
+
+    const expectedSignature = crypto
+      .createHmac('sha256', this.getStateSecret())
+      .update(encodedPayload)
+      .digest();
+    const receivedSignature = Buffer.from(signature, 'base64url');
+
+    if (
+      receivedSignature.length !== expectedSignature.length ||
+      !crypto.timingSafeEqual(receivedSignature, expectedSignature)
+    ) {
+      throw new Error('Invalid OAuth state signature');
+    }
+
+    const payload = JSON.parse(
+      Buffer.from(encodedPayload, 'base64url').toString('utf8'),
+    ) as OAuthStatePayload;
+
+    if (!payload.companyId || !payload.issuedAt) {
+      throw new Error('Invalid OAuth state payload');
+    }
+
+    if (Date.now() - payload.issuedAt > MetaOAuthService.STATE_TTL_MS) {
+      throw new Error('Expired OAuth state');
+    }
+
+    return payload;
+  }
 
   // Step 1: Generate the OAuth URL to redirect the client to Facebook
   getOAuthUrl(companyId: string): string {
@@ -20,12 +83,18 @@ export class MetaOAuthService {
       throw new Error('META_APP_ID is not defined in environment variables');
     }
 
+    const state = this.signStatePayload({
+      companyId,
+      nonce: crypto.randomUUID(),
+      issuedAt: Date.now(),
+    });
+
     const params = new URLSearchParams({
       client_id: clientId,
       redirect_uri: `${backendUrl}/api/meta/oauth/callback`,
       scope: 'whatsapp_business_management,whatsapp_business_messaging,business_management',
       response_type: 'code',
-      state: companyId, // used to identify which company is connecting
+      state,
     });
 
     const url = `https://www.facebook.com/v19.0/dialog/oauth?${params}`;
@@ -116,5 +185,9 @@ export class MetaOAuthService {
         whatsappBusinessId: wabaId,
       },
     });
+  }
+
+  validateOAuthState(state: string) {
+    return this.parseState(state);
   }
 }

@@ -18,10 +18,11 @@ export class MetaOAuthController {
   @Get('callback')
   async handleCallback(
     @Query('code') code: string,
-    @Query('state') companyId: string,
+    @Query('state') state: string,
     @Res() res: Response,
   ) {
     try {
+      const { companyId } = this.metaOAuthService.validateOAuthState(state);
       await this.metaOAuthService.saveOAuthConnection(companyId, code);
       // Redirect back to frontend with success
       return res.redirect(
