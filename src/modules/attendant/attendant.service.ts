@@ -6,6 +6,7 @@ import { RagService } from '../ai/rag.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MetaIntegrationService } from '../meta/meta.service';
 import { InstagramService } from '../integrations/instagram.service';
+import { WppconnectService } from '../integrations/wppconnect.service';
 import { AlertsService } from '../alerts/alerts.service';
 
 const HISTORY_LIMIT = 10;
@@ -21,6 +22,7 @@ export class AttendantService {
     private readonly ragService: RagService,
     private readonly metaIntegrationService: MetaIntegrationService,
     private readonly instagramService: InstagramService,
+    private readonly wppconnectService: WppconnectService,
     private readonly alertsService: AlertsService,
   ) {}
 
@@ -86,7 +88,7 @@ export class AttendantService {
   }
 
   async getBotConfig(companyId: string) {
-    const [config, company] = await Promise.all([
+    const [config, company, connectionStatus] = await Promise.all([
       this.getOrCreateAgentConfig(companyId),
       this.prisma.company.findUnique({
         where: { id: companyId },
@@ -97,6 +99,7 @@ export class AttendantService {
           metaAccessToken: true,
         },
       }),
+      this.getConnectionStatus(companyId),
     ]);
 
     return {
@@ -113,7 +116,8 @@ export class AttendantService {
       metaPhoneNumberId: company?.metaPhoneNumberId ?? null,
       metaWabaId: company?.metaWabaId ?? null,
       phoneNumber: company?.phoneNumber ?? null,
-      isConnected: Boolean(company?.metaPhoneNumberId && company?.metaAccessToken),
+      isConnected: connectionStatus.connected,
+      connectionMethod: connectionStatus.method,
       createdAt: config.createdAt,
       updatedAt: config.updatedAt,
     };
@@ -306,41 +310,105 @@ export class AttendantService {
   }
 
   async createWhatsappSession(companyId: string) {
+    const result = await this.wppconnectService.createSession(companyId);
     return {
-      status: 'AWAITING_QR_SCAN',
+      ...result,
       message: 'Fluxo rapido habilitado para QR Code.',
-      qrCode: `wppconnect:${companyId}`,
     };
   }
 
   async getWhatsappQrCode(companyId: string) {
-    const health = await this.metaIntegrationService.getHealthStatus(companyId);
+    let health = await this.wppconnectService.getHealthStatus(companyId);
+
+    for (let attempt = 0; attempt < 8 && !health.qrCode && !health.connected; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      health = await this.wppconnectService.getHealthStatus(companyId);
+    }
+
     return {
-      qrCode: health.connected ? null : `wppconnect:${companyId}`,
-      status: health.connected ? 'CONNECTED' : 'AWAITING_QR_SCAN',
+      qrcode: health.qrCode,
+      qrCode: health.qrCode,
+      status: health.status,
+      method: health.connected ? 'wppconnect' : null,
     };
   }
 
   async terminateWhatsappSession(companyId: string) {
-    return { success: true, message: `Sessao encerrada para ${companyId}` };
+    return this.wppconnectService.terminateSession(companyId);
   }
 
   async getWhatsappStatus(companyId: string) {
-    const health = await this.metaIntegrationService.getHealthStatus(companyId);
+    const connectionStatus = await this.getConnectionStatus(companyId);
     return {
-      status: health.status,
-      qrCode: health.connected ? null : `wppconnect:${companyId}`,
+      status: connectionStatus.status,
+      qrcode: connectionStatus.qrCode,
+      qrCode: connectionStatus.qrCode,
+      connected: connectionStatus.connected,
+      method: connectionStatus.method,
+      updatedAt: connectionStatus.updatedAt,
       quotaUsed: 0,
       quotaLimit: 10000,
     };
   }
 
   async getWhatsappHealth(companyId: string) {
-    return this.metaIntegrationService.getHealthStatus(companyId);
+    const connectionStatus = await this.getConnectionStatus(companyId);
+    if (connectionStatus.method === 'meta') {
+      const metaHealth = await this.metaIntegrationService.getHealthStatus(companyId);
+      return {
+        ...metaHealth,
+        method: 'meta',
+      };
+    }
+
+    const wppHealth = await this.wppconnectService.getHealthStatus(companyId);
+    return {
+      ...wppHealth,
+      method: connectionStatus.method,
+    };
   }
 
   async cleanupWhatsappSession(companyId: string) {
-    return { success: true, companyId, status: 'clean' };
+    return this.wppconnectService.forceCleanupSession(companyId);
+  }
+
+  async getConnectionStatus(companyId: string) {
+    const [company, wppHealth] = await Promise.all([
+      this.prisma.company.findUnique({
+        where: { id: companyId },
+        select: {
+          metaPhoneNumberId: true,
+          metaAccessToken: true,
+          phoneNumber: true,
+        },
+      }),
+      this.wppconnectService.getHealthStatus(companyId),
+    ]);
+
+    const connectedViaMeta = Boolean(
+      company?.metaPhoneNumberId && company?.metaAccessToken,
+    );
+    const connectedViaWpp = !connectedViaMeta && wppHealth.connected;
+    const awaitingQr = !connectedViaMeta && wppHealth.awaitingQR;
+
+    return {
+      connected: connectedViaMeta || connectedViaWpp,
+      method: connectedViaMeta
+        ? 'meta'
+        : connectedViaWpp
+          ? 'wppconnect'
+          : null,
+      status: connectedViaMeta || connectedViaWpp
+        ? 'CONNECTED'
+        : awaitingQr
+          ? 'AWAITING_QR_SCAN'
+          : 'DISCONNECTED',
+      phoneNumberId: company?.metaPhoneNumberId ?? null,
+      phoneNumber: connectedViaMeta ? company?.phoneNumber ?? null : wppHealth.phoneNumber,
+      qrCode: connectedViaMeta ? null : wppHealth.qrCode,
+      sessionId: null,
+      updatedAt: wppHealth.dbLastConnected,
+    };
   }
 
   private async processIncomingMessage(
@@ -487,6 +555,11 @@ export class AttendantService {
   ) {
     if (provider === IntegrationProvider.INSTAGRAM) {
       return this.instagramService.sendDm(companyId, contactNumber, content);
+    }
+
+    const connectionStatus = await this.getConnectionStatus(companyId);
+    if (connectionStatus.method === 'wppconnect') {
+      return this.wppconnectService.sendTextMessage(companyId, contactNumber, content);
     }
 
     return this.metaIntegrationService.sendTextMessage(companyId, contactNumber, content);

@@ -133,6 +133,15 @@ export class AttendantController {
     return this.attendantService.getWhatsappStatus(resolved!);
   }
 
+  @Get('connection-status')
+  getConnectionStatus(
+    @Req() req: { user: { companyId?: string | null } },
+    @Query('companyId') companyId?: string,
+  ) {
+    const resolved = companyId || req.user.companyId;
+    return this.attendantService.getConnectionStatus(resolved!);
+  }
+
   /**
    * Health check detalhado — usado pela aba Atendente Virtual
    * para verificar estado REAL da conexão WhatsApp.

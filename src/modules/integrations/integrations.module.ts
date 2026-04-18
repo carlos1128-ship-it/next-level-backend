@@ -6,6 +6,7 @@ import { MetaIntegrationModule } from '../meta/meta.module';
 import { InstagramService } from './instagram.service';
 import { MetaGraphService } from './meta-graph.service';
 import { ShopeeScraperService } from './shopee-scraper.service';
+import { WppconnectService } from './wppconnect.service';
 
 import { DashboardModule } from '../dashboard/dashboard.module';
 import { AiModule } from '../ai/ai.module';
@@ -18,14 +19,16 @@ import { AiModule } from '../ai/ai.module';
     IntegrationsService, 
     InstagramService, 
     MetaGraphService,
-    ShopeeScraperService
+    ShopeeScraperService,
+    WppconnectService,
   ],
   exports: [
     IntegrationsService, 
     MetaIntegrationModule,
     InstagramService, 
     MetaGraphService,
-    ShopeeScraperService
+    ShopeeScraperService,
+    WppconnectService,
   ],
 })
 export class IntegrationsModule {}

@@ -17,6 +17,7 @@ import { IntegrationProvider } from '@prisma/client';
 import { ActiveCompanyGuard } from '../../common/guards/active-company.guard';
 import { MetaIntegrationService } from './meta.service';
 import { SaveMetaConfigDto } from './dto/save-meta-config.dto';
+import { WppconnectService } from '../integrations/wppconnect.service';
 
 @Controller('whatsapp')
 @UseGuards(ActiveCompanyGuard)
@@ -42,23 +43,40 @@ export class WhatsappConfigController {
 @Controller('meta')
 @UseGuards(ActiveCompanyGuard)
 export class MetaStatusController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly wppconnectService: WppconnectService,
+  ) {}
 
   @Get('status')
   async getConnectionStatus(@Query('companyId') companyId: string) {
-    const company = await this.prisma.company.findUnique({
-      where: { id: companyId },
-      select: {
-        metaPhoneNumberId: true,
-        metaAccessToken: true,
-        phoneNumber: true,
-      },
-    });
+    const [company, wppHealth] = await Promise.all([
+      this.prisma.company.findUnique({
+        where: { id: companyId },
+        select: {
+          metaPhoneNumberId: true,
+          metaAccessToken: true,
+          phoneNumber: true,
+        },
+      }),
+      this.wppconnectService.getHealthStatus(companyId),
+    ]);
+
+    const connectedViaMeta = !!(company?.metaPhoneNumberId && company?.metaAccessToken);
+    const connectedViaWpp = !connectedViaMeta && wppHealth.connected;
 
     return {
-      connected: !!(company?.metaPhoneNumberId && company?.metaAccessToken),
+      connected: connectedViaMeta || connectedViaWpp,
+      method: connectedViaMeta ? 'meta' : connectedViaWpp ? 'wppconnect' : null,
       phoneNumberId: company?.metaPhoneNumberId ?? null,
-      phoneNumber: company?.phoneNumber ?? null,
+      phoneNumber: connectedViaMeta ? company?.phoneNumber ?? null : wppHealth.phoneNumber,
+      status:
+        connectedViaMeta || connectedViaWpp
+          ? 'CONNECTED'
+          : wppHealth.awaitingQR
+            ? 'AWAITING_QR_SCAN'
+            : 'DISCONNECTED',
+      updatedAt: wppHealth.dbLastConnected,
     };
   }
 }

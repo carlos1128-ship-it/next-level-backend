@@ -73,7 +73,7 @@ export class AiService {
     );
     this.providerMaxRetries = Math.max(
       1,
-      Number(this.configService.get<string>('AI_PROVIDER_MAX_RETRIES') || 2),
+      Number(this.configService.get<string>('AI_PROVIDER_MAX_RETRIES') || 3),
     );
   }
 
@@ -382,7 +382,11 @@ export class AiService {
   }
 
   private shouldRetryProviderError(error: unknown): boolean {
-    return this.isServiceUnavailableError(error);
+    if (error instanceof QuotaExceededException) {
+      return false;
+    }
+
+    return this.isServiceUnavailableError(error) || this.isQuotaExceededError(error);
   }
 
   private async executeWithRetry<T>(
@@ -402,7 +406,7 @@ export class AiService {
         if (!canRetry) {
           break;
         }
-        const delayMs = 400 * attempt;
+        const delayMs = 1000 * 2 ** (attempt - 1);
         this.logger.warn(
           `Provedor ${provider} instavel na tentativa ${attempt}/${this.providerMaxRetries}. Novo retry em ${delayMs}ms.`,
         );
@@ -474,7 +478,7 @@ export class AiService {
     });
 
     const limits: Record<string, number> = {
-      COMUM: 50000,
+      COMUM: 100000,
       PRO: 200000,
       ENTERPRISE: 10000000,
     };
