@@ -115,6 +115,7 @@ Start Command: npm run start
 
 Documentacao de integração frontend:
 - `docs/frontend-integration.md`
+- `docs/wppconnect-hardening.md`
 
 Smoke test automatizado:
 - `npm run smoke`

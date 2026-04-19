@@ -1,6 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { Whatsapp as WppWhatsapp } from '@wppconnect-team/wppconnect';
 
+export interface SessionDisposableListener {
+  dispose: () => void;
+}
+
 export type WhatsappStatus =
   | 'DISCONNECTED'
   | 'CONNECTING'
@@ -43,6 +47,10 @@ export interface SessionDiagnosticSnapshot {
   versionWarning: string | null;
   creationInFlight: boolean;
   cleanupInFlight: boolean;
+  hasReconnectTimer: boolean;
+  reconnectAttempts: number;
+  nextReconnectAt: string | null;
+  lastReconnectAt: string | null;
   timeline: Array<{
     at: string;
     event: string;
@@ -70,6 +78,11 @@ export interface SessionRuntimeContext {
   startPromise: Promise<WppWhatsapp | null> | null;
   cleanupPromise: Promise<void> | null;
   qrTimeoutTimer: NodeJS.Timeout | null;
+  reconnectTimer: NodeJS.Timeout | null;
+  reconnectAttempts: number;
+  nextReconnectAt: number | null;
+  lastReconnectAt: number | null;
+  listeners: SessionDisposableListener[];
   timeline: Array<{
     at: number;
     event: string;
@@ -107,6 +120,11 @@ export class WppSessionStateManager {
       startPromise: null,
       cleanupPromise: null,
       qrTimeoutTimer: null,
+      reconnectTimer: null,
+      reconnectAttempts: 0,
+      nextReconnectAt: null,
+      lastReconnectAt: null,
+      listeners: [],
       timeline: [],
     };
 
@@ -211,10 +229,61 @@ export class WppSessionStateManager {
     return ctx;
   }
 
+  setReconnectTimer(companyId: string, reconnectTimer: NodeJS.Timeout | null) {
+    const ctx = this.getOrCreate(companyId);
+    ctx.reconnectTimer = reconnectTimer;
+    return ctx;
+  }
+
+  setReconnectState(
+    companyId: string,
+    input: {
+      reconnectAttempts?: number;
+      nextReconnectAt?: number | null;
+      lastReconnectAt?: number | null;
+    },
+  ) {
+    const ctx = this.getOrCreate(companyId);
+
+    if (typeof input.reconnectAttempts !== 'undefined') {
+      ctx.reconnectAttempts = input.reconnectAttempts;
+    }
+
+    if (typeof input.nextReconnectAt !== 'undefined') {
+      ctx.nextReconnectAt = input.nextReconnectAt;
+    }
+
+    if (typeof input.lastReconnectAt !== 'undefined') {
+      ctx.lastReconnectAt = input.lastReconnectAt;
+    }
+
+    return ctx;
+  }
+
+  setListeners(companyId: string, listeners: SessionDisposableListener[]) {
+    const ctx = this.getOrCreate(companyId);
+    this.disposeListeners(ctx.listeners);
+    ctx.listeners = listeners;
+    return ctx;
+  }
+
+  clearListeners(companyId: string) {
+    const ctx = this.getOrCreate(companyId);
+    this.disposeListeners(ctx.listeners);
+    ctx.listeners = [];
+    return ctx;
+  }
+
   clear(companyId: string) {
     const ctx = this.contexts.get(companyId);
     if (ctx?.qrTimeoutTimer) {
       clearTimeout(ctx.qrTimeoutTimer);
+    }
+    if (ctx?.reconnectTimer) {
+      clearTimeout(ctx.reconnectTimer);
+    }
+    if (ctx?.listeners?.length) {
+      this.disposeListeners(ctx.listeners);
     }
     this.contexts.delete(companyId);
   }
@@ -250,6 +319,10 @@ export class WppSessionStateManager {
       versionWarning: ctx.versionWarning,
       creationInFlight: Boolean(ctx.startPromise),
       cleanupInFlight: Boolean(ctx.cleanupPromise),
+      hasReconnectTimer: Boolean(ctx.reconnectTimer),
+      reconnectAttempts: ctx.reconnectAttempts,
+      nextReconnectAt: ctx.nextReconnectAt ? new Date(ctx.nextReconnectAt).toISOString() : null,
+      lastReconnectAt: ctx.lastReconnectAt ? new Date(ctx.lastReconnectAt).toISOString() : null,
       timeline: ctx.timeline.map((item) => ({
         at: new Date(item.at).toISOString(),
         event: item.event,
@@ -257,5 +330,15 @@ export class WppSessionStateManager {
         status: item.status,
       })),
     };
+  }
+
+  private disposeListeners(listeners: SessionDisposableListener[]) {
+    for (const listener of listeners) {
+      try {
+        listener.dispose();
+      } catch {
+        // Cleanup de listener nao deve interromper o fluxo.
+      }
+    }
   }
 }

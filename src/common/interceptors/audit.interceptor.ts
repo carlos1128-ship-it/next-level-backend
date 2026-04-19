@@ -56,7 +56,17 @@ export class AuditInterceptor implements NestInterceptor {
   }
 
   private maskSensitive(payload: any): any {
-    const SENSITIVE = ['password', 'accessToken', 'token', 'api_key', 'cvv', 'secret'];
+    const SENSITIVE = [
+      'password',
+      'accesstoken',
+      'metaaccesstoken',
+      'token',
+      'api_key',
+      'cvv',
+      'secret',
+      'authorization',
+      'whatsappsessiontoken',
+    ];
     if (!payload || typeof payload !== 'object') return payload;
     const clone: Record<string, any> = {};
     for (const [k, v] of Object.entries(payload)) {

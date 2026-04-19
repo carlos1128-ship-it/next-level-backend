@@ -11,15 +11,21 @@ import type { Page } from 'puppeteer';
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import { mkdir } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { IntegrationProvider } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   SessionDiagnosticSnapshot,
+  SessionDisposableListener,
   SessionLifecycleState,
   WhatsappStatus,
   WppSessionStateManager,
 } from './wpp-session-state.manager';
+import {
+  computeReconnectDelay,
+  shouldAttemptAutoReconnect,
+} from './wppconnect.reconnect-policy';
 
 type IncomingMessageShape = {
   isGroupMsg?: boolean;
@@ -59,12 +65,65 @@ type InjectionDiagnostic = {
   bodySnippet: string;
 };
 
-const SESSION_BASE_DIR = process.env.WPPCONNECT_SESSION_DIR || '/tmp/.wppconnect';
-const TOKEN_BASE_DIR = process.env.WPPCONNECT_TOKEN_DIR || '/tmp/tokens';
+type WatchdogClient = WppWhatsapp & {
+  startPhoneWatchdog?: (interval?: number) => Promise<void>;
+  stopPhoneWatchdog?: (interval?: number) => Promise<void>;
+  onStreamModeChanged?: (callback: (mode: string) => void) => SessionDisposableListener;
+  onStreamInfoChanged?: (
+    callback: (info: Record<string, unknown>) => void,
+  ) => SessionDisposableListener;
+};
+
+function parseBooleanEnv(value: string | undefined, fallback: boolean) {
+  if (typeof value === 'undefined') {
+    return fallback;
+  }
+
+  return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
+}
+
+function parseNumberEnv(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const TEMP_ROOT_DIR = process.env.WPPCONNECT_RUNTIME_DIR || os.tmpdir();
+const SESSION_BASE_DIR =
+  process.env.WPPCONNECT_SESSION_DIR || path.join(TEMP_ROOT_DIR, '.wppconnect');
+const TOKEN_BASE_DIR =
+  process.env.WPPCONNECT_TOKEN_DIR || path.join(TEMP_ROOT_DIR, 'tokens');
+const BROWSER_PROFILE_BASE_DIR =
+  process.env.WPPCONNECT_BROWSER_PROFILE_DIR ||
+  path.join(TEMP_ROOT_DIR, 'wpp-browser-profiles');
 const QR_VALIDITY_MS = 5 * 60 * 1000;
-const QR_TIMEOUT_MS = Number(process.env.WHATSAPP_QR_TIMEOUT_MS ?? 90000);
-const PRE_QR_FORENSIC_HOLD_MS = Number(process.env.WHATSAPP_PRE_QR_HOLD_MS ?? 10000);
-const WAPI_WAIT_TIMEOUT_MS = 60000;
+const QR_TIMEOUT_MS = parseNumberEnv(process.env.WHATSAPP_QR_TIMEOUT_MS, 90000);
+const PRE_QR_FORENSIC_HOLD_MS = parseNumberEnv(process.env.WHATSAPP_PRE_QR_HOLD_MS, 10000);
+const WAPI_WAIT_TIMEOUT_MS = parseNumberEnv(process.env.WHATSAPP_WAPI_WAIT_TIMEOUT_MS, 60000);
+const WHATSAPP_SKIP_RESTORE_ON_BOOT = parseBooleanEnv(
+  process.env.WHATSAPP_SKIP_RESTORE_ON_BOOT,
+  false,
+);
+const WHATSAPP_BOOT_RESTORE_DELAY_MS = parseNumberEnv(
+  process.env.WHATSAPP_BOOT_RESTORE_DELAY_MS,
+  1000,
+);
+const WPPCONNECT_AUTO_RETRY = parseBooleanEnv(process.env.WPPCONNECT_AUTO_RETRY, true);
+const WPPCONNECT_RETRY_LIMIT = parseNumberEnv(process.env.WPPCONNECT_RETRY_LIMIT, 5);
+const WHATSAPP_RETRY_DELAY_MS = parseNumberEnv(process.env.WHATSAPP_RETRY_DELAY_MS, 10000);
+const WHATSAPP_RETRY_MAX_DELAY_MS = parseNumberEnv(
+  process.env.WHATSAPP_RETRY_MAX_DELAY_MS,
+  120000,
+);
+const WHATSAPP_PHONE_WATCHDOG_MS = parseNumberEnv(
+  process.env.WHATSAPP_PHONE_WATCHDOG_MS,
+  30000,
+);
+const WPPCONNECT_AUTO_CLOSE = Number(process.env.WPPCONNECT_AUTO_CLOSE ?? 0);
+const WPPCONNECT_LOG_QR = parseBooleanEnv(
+  process.env.WPPCONNECT_LOG_QR,
+  process.env.NODE_ENV !== 'production',
+);
+const WPPCONNECT_UPDATES_LOG = parseBooleanEnv(process.env.WPPCONNECT_UPDATES_LOG, true);
 const WHATSAPP_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const CHROMIUM_ARGS = [
@@ -82,19 +141,16 @@ const COMMON_BROWSER_PATHS = [
   '/usr/bin/google-chrome',
   '/usr/bin/chromium-browser',
   '/usr/bin/chromium',
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
 ];
 const PUPPETEER_CACHE_ROOTS = [
   '/opt/render/.cache/puppeteer',
   '/opt/render/project/.cache/puppeteer',
   '/opt/render/project/src/.cache/puppeteer',
   path.join(process.cwd(), '.cache', 'puppeteer'),
+  path.join(os.homedir(), '.cache', 'puppeteer'),
 ];
-const TERMINAL_NEEDS_NEW_QR_STATUSES = new Set([
-  'deleteToken',
-  'desconnectedMobile',
-  'disconnectedMobile',
-  'sessionUnpaired',
-]);
 
 @Injectable()
 export class WppconnectService implements OnModuleInit, OnModuleDestroy {
@@ -108,6 +164,13 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   async onModuleInit() {
+    if (WHATSAPP_SKIP_RESTORE_ON_BOOT) {
+      this.logger.warn(
+        'Restore automatico de sessoes WhatsApp desabilitado por WHATSAPP_SKIP_RESTORE_ON_BOOT.',
+      );
+      return;
+    }
+
     await this.restoreActiveSessions();
   }
 
@@ -117,7 +180,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async createSession(companyId: string, options?: { fresh?: boolean }) {
+  async createSession(companyId: string, options?: { fresh?: boolean; recovery?: boolean }) {
     return this.runExclusive(companyId, async () => {
       const snapshot = this.getDiagnosticSnapshot(companyId);
       if (snapshot.cleanupInFlight) {
@@ -136,16 +199,30 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         });
       }
 
-      if (!options?.fresh && (snapshot.currentState === 'qr_ready' || snapshot.currentState === 'connected')) {
+      if (
+        !options?.fresh &&
+        !options?.recovery &&
+        (snapshot.currentState === 'qr_ready' || snapshot.currentState === 'connected')
+      ) {
         this.logLifecycle(companyId, 'log', 'create_session_reused_existing_state');
         return this.buildPublicSnapshot(companyId, 'Reutilizando estado ativo existente.');
       }
 
+      this.clearReconnectTimer(companyId);
+      if (!options?.recovery) {
+        this.resetReconnectState(companyId);
+      }
+
       if (snapshot.hasClient || snapshot.hasBrowser || snapshot.hasPage || snapshot.sessionName) {
         await this.cleanupSessionInternal(companyId, {
-          reason: options?.fresh ? 'fresh_recreate_requested' : 'stale_runtime_before_start',
+          reason: options?.fresh
+            ? 'fresh_recreate_requested'
+            : options?.recovery
+              ? 'recovery_restart'
+              : 'stale_runtime_before_start',
           deletePersistedState: Boolean(options?.fresh),
-          clearSessionName: true,
+          clearSessionName: Boolean(options?.fresh),
+          preserveReconnectState: Boolean(options?.recovery),
           resetDatabase: true,
         });
       }
@@ -163,6 +240,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
 
       this.logLifecycle(companyId, 'log', 'instance_creation_request_received', {
         fresh: Boolean(options?.fresh),
+        recovery: Boolean(options?.recovery),
       });
 
       const startPromise = this.bootstrapClient(companyId, sessionName, correlationId, {
@@ -225,7 +303,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
 
     if (Date.now() > ctx.qrExpiresAt) {
       this.stateManager.clearQr(companyId);
-      this.transition(companyId, 'failed', 'QR_REQUIRED', 'qr_expired', {
+      this.transition(companyId, 'needs_new_qr', 'QR_REQUIRED', 'qr_expired', {
         failureReason: 'qr_expired',
         lastError: 'QR expirado antes da leitura.',
       });
@@ -323,6 +401,15 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       healthy: connected,
       awaitingQR: currentSnapshot.currentState === 'qr_ready',
       qrRequired: currentSnapshot.currentState === 'needs_new_qr',
+      hasInitialization: currentSnapshot.creationInFlight,
+      hasRetryTimer: currentSnapshot.hasReconnectTimer,
+      reconnectAttempts: currentSnapshot.reconnectAttempts,
+      nextReconnectAt: currentSnapshot.nextReconnectAt,
+      needsReconnect:
+        !connected &&
+        (currentSnapshot.hasReconnectTimer ||
+          currentSnapshot.currentState === 'failed' ||
+          currentSnapshot.currentState === 'disconnected'),
       diagnosticSnapshot: currentSnapshot,
       machineState: currentSnapshot.currentState,
     };
@@ -348,11 +435,11 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       }
 
       setTimeout(() => {
-        void this.createSession(company.id).catch((error: unknown) => {
+        void this.createSession(company.id, { recovery: true }).catch((error: unknown) => {
           const message = error instanceof Error ? error.message : String(error);
           this.logLifecycle(company.id, 'warn', 'restore_failed', { error: message });
         });
-      }, index * 1000);
+      }, index * WHATSAPP_BOOT_RESTORE_DELAY_MS);
     }
   }
 
@@ -397,11 +484,11 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         devtools: false,
         useChrome: false,
         debug: false,
-        logQR: true,
-        updatesLog: true,
+        logQR: WPPCONNECT_LOG_QR,
+        updatesLog: WPPCONNECT_UPDATES_LOG,
         browserWS: '',
         browserArgs: CHROMIUM_ARGS,
-        autoClose: 0,
+        autoClose: WPPCONNECT_AUTO_CLOSE > 0 ? WPPCONNECT_AUTO_CLOSE : 0,
         waitForLogin: false,
         disableWelcome: true,
         folderNameToken: TOKEN_BASE_DIR,
@@ -411,7 +498,9 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         // Precisamos sobrescrever com undefined para nao quebrar a injecao.
         whatsappVersion: undefined,
         catchQR: (base64Qr, asciiQr, attempts) => {
-          console.log('QR RECEIVED', { companyId, attempts: attempts ?? 1 });
+          this.logLifecycle(companyId, 'log', 'qr_received_from_wppconnect', {
+            attempts: attempts ?? 1,
+          });
           this.handleQrCallback(
             companyId,
             sessionName,
@@ -453,6 +542,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
 
       this.attachEventListeners(client, companyId, sessionName, correlationId);
       this.startQrTimeout(companyId, sessionName, correlationId);
+      await this.startPhoneWatchdog(companyId, client, sessionName);
       return client;
     } catch (error) {
       const message = this.formatBootstrapError(error);
@@ -475,29 +565,71 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     sessionName: string,
     correlationId: string,
   ) {
-    client.onStateChange((state: string) => {
-      void this.handleStateChange(companyId, sessionName, correlationId, state);
-    });
+    const runtimeClient = client as WatchdogClient;
+    const listeners: SessionDisposableListener[] = [];
 
-    client.onMessage((message: IncomingMessageShape) => {
-      if (
-        !this.isCurrentSession(companyId, sessionName) ||
-        message.isGroupMsg ||
-        message.fromMe ||
-        !message.body ||
-        !message.from ||
-        (message.type && message.type !== 'chat')
-      ) {
-        return;
-      }
+    listeners.push(
+      client.onStateChange((state: string) => {
+        void this.handleStateChange(companyId, sessionName, correlationId, state);
+      }),
+    );
 
-      this.eventEmitter.emit('whatsapp.message.received', {
-        companyId,
-        from: message.from,
-        text: message.body,
-        name: message.sender?.pushname || message.sender?.name,
-      });
-    });
+    listeners.push(
+      client.onMessage((message: IncomingMessageShape) => {
+        if (
+          !this.isCurrentSession(companyId, sessionName) ||
+          message.isGroupMsg ||
+          message.fromMe ||
+          !message.body ||
+          !message.from ||
+          (message.type && message.type !== 'chat')
+        ) {
+          return;
+        }
+
+        this.eventEmitter.emit('whatsapp.message.received', {
+          companyId,
+          from: message.from,
+          text: message.body,
+          name: message.sender?.pushname || message.sender?.name,
+        });
+      }),
+    );
+
+    if (runtimeClient.onStreamModeChanged) {
+      listeners.push(
+        runtimeClient.onStreamModeChanged((mode: string) => {
+          if (!this.isCurrentSession(companyId, sessionName)) {
+            return;
+          }
+
+          this.logLifecycle(companyId, 'log', 'stream_mode_changed', { mode });
+        }),
+      );
+    }
+
+    if (runtimeClient.onStreamInfoChanged) {
+      listeners.push(
+        runtimeClient.onStreamInfoChanged((info: Record<string, unknown>) => {
+          if (!this.isCurrentSession(companyId, sessionName)) {
+            return;
+          }
+
+          let serializedInfo = '[unserializable]';
+          try {
+            serializedInfo = JSON.stringify(info).slice(0, 400);
+          } catch {
+            serializedInfo = '[unserializable]';
+          }
+
+          this.logLifecycle(companyId, 'log', 'stream_info_changed', {
+            info: serializedInfo,
+          });
+        }),
+      );
+    }
+
+    this.stateManager.setListeners(companyId, listeners);
   }
 
   private attachPageDiagnostics(
@@ -557,6 +689,13 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         sessionName,
         correlationId,
       });
+
+      const currentState = this.stateManager.getOrCreate(companyId).lifecycleState;
+      if (currentState === 'cleaning_up' || currentState === 'needs_new_qr') {
+        return;
+      }
+
+      void this.markFailed(companyId, sessionName, 'page_closed', 'page_close_detected');
     });
   }
 
@@ -578,6 +717,8 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     this.logLifecycle(companyId, 'log', 'connection_state_changed', { state });
 
     if (state === 'CONNECTED') {
+      this.clearReconnectTimer(companyId);
+      this.resetReconnectState(companyId);
       this.transition(companyId, 'connected', 'CONNECTED', 'connected_state_change', {
         lastKnownConnectionState: state,
         lastError: null,
@@ -645,6 +786,8 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       case 'isLogged':
       case 'inChat':
       case 'chatsAvailable':
+        this.clearReconnectTimer(companyId);
+        this.resetReconnectState(companyId);
         this.transition(companyId, 'connected', 'CONNECTED', `status_${statusSession}`, {
           lastError: null,
           failureReason: null,
@@ -657,6 +800,8 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       case 'deleteToken':
       case 'desconnectedMobile':
       case 'disconnectedMobile':
+      case 'qrReadError':
+      case 'qrReadFail':
         await this.markNeedsNewQr(companyId, sessionName, statusSession);
         return;
       case 'browserClose':
@@ -678,7 +823,6 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         return;
       }
       case 'phoneNotConnected':
-      case 'qrReadError':
       default:
         await this.markFailed(companyId, sessionName, statusSession, 'unexpected_status_event');
     }
@@ -725,6 +869,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async markNeedsNewQr(companyId: string, sessionName: string, rawStatus: string) {
+    this.clearReconnectTimer(companyId);
     this.transition(companyId, 'needs_new_qr', 'QR_REQUIRED', 'terminal_needs_new_qr', {
       failureReason: rawStatus,
       lastError: rawStatus,
@@ -813,6 +958,11 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       clearMemory: false,
       preserveQr: true,
     });
+
+    const scheduled = await this.scheduleReconnect(companyId, sessionName, rawStatus);
+    if (!scheduled) {
+      this.clearReconnectTimer(companyId);
+    }
   }
 
   private async cleanupSessionInternal(
@@ -821,6 +971,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       reason: string;
       deletePersistedState: boolean;
       clearSessionName: boolean;
+      preserveReconnectState?: boolean;
       resetDatabase: boolean;
     },
   ) {
@@ -838,6 +989,10 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       });
       this.logLifecycle(companyId, 'log', 'cleanup_start', options);
       this.clearQrTimeout(companyId);
+      this.clearReconnectTimer(companyId);
+      if (!options.preserveReconnectState) {
+        this.resetReconnectState(companyId);
+      }
 
       await this.safeDisposeRuntime(companyId, options.reason, {
         clearMemory: false,
@@ -847,6 +1002,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       if (options.deletePersistedState) {
         await this.forceCleanupFiles(companyId, ctx.sessionName || undefined);
         await this.forceCleanupTokenFiles(companyId, ctx.sessionName || undefined);
+        await this.forceCleanupBrowserProfile(companyId);
       }
 
       if (options.resetDatabase) {
@@ -936,6 +1092,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         clearMemory: false,
         preserveQr: true,
       });
+      void this.scheduleReconnect(companyId, sessionName, 'qr_timeout');
     }, QR_TIMEOUT_MS);
 
     this.stateManager.setQrTimeoutTimer(companyId, timer);
@@ -951,6 +1108,118 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     this.stateManager.setQrTimeoutTimer(companyId, null);
   }
 
+  private clearReconnectTimer(companyId: string) {
+    const ctx = this.stateManager.get(companyId);
+    if (!ctx?.reconnectTimer) {
+      return;
+    }
+
+    clearTimeout(ctx.reconnectTimer);
+    this.stateManager.setReconnectTimer(companyId, null);
+    this.stateManager.setReconnectState(companyId, {
+      nextReconnectAt: null,
+    });
+  }
+
+  private resetReconnectState(companyId: string) {
+    this.stateManager.setReconnectState(companyId, {
+      reconnectAttempts: 0,
+      nextReconnectAt: null,
+      lastReconnectAt: null,
+    });
+  }
+
+  private async startPhoneWatchdog(
+    companyId: string,
+    client: WppWhatsapp,
+    sessionName: string,
+  ) {
+    const runtimeClient = client as WatchdogClient;
+    if (!runtimeClient.startPhoneWatchdog || !this.isCurrentSession(companyId, sessionName)) {
+      return;
+    }
+
+    try {
+      await runtimeClient.startPhoneWatchdog(WHATSAPP_PHONE_WATCHDOG_MS);
+      this.logLifecycle(companyId, 'log', 'phone_watchdog_started', {
+        intervalMs: WHATSAPP_PHONE_WATCHDOG_MS,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logLifecycle(companyId, 'warn', 'phone_watchdog_start_failed', { error: message });
+    }
+  }
+
+  private async scheduleReconnect(
+    companyId: string,
+    sessionName: string,
+    reason: string,
+  ) {
+    if (!WPPCONNECT_AUTO_RETRY || !shouldAttemptAutoReconnect(reason)) {
+      return false;
+    }
+
+    const ctx = this.stateManager.getOrCreate(companyId);
+    if (ctx.cleanupPromise || ctx.reconnectTimer || !this.isCurrentSession(companyId, sessionName)) {
+      return false;
+    }
+
+    const nextAttempt = ctx.reconnectAttempts + 1;
+    if (nextAttempt > WPPCONNECT_RETRY_LIMIT) {
+      this.logLifecycle(companyId, 'error', 'reconnect_limit_reached', {
+        reason,
+        attempt: nextAttempt,
+        limit: WPPCONNECT_RETRY_LIMIT,
+      });
+      return false;
+    }
+
+    const delayMs = computeReconnectDelay(
+      nextAttempt,
+      WHATSAPP_RETRY_DELAY_MS,
+      WHATSAPP_RETRY_MAX_DELAY_MS,
+    );
+    const scheduledAt = Date.now() + delayMs;
+
+    const timer = setTimeout(() => {
+      this.stateManager.setReconnectTimer(companyId, null);
+      this.stateManager.setReconnectState(companyId, {
+        reconnectAttempts: nextAttempt,
+        nextReconnectAt: null,
+        lastReconnectAt: Date.now(),
+      });
+
+      void this.createSession(companyId, { recovery: true }).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logLifecycle(companyId, 'warn', 'reconnect_attempt_failed', {
+          reason,
+          attempt: nextAttempt,
+          error: message,
+        });
+      });
+    }, delayMs);
+
+    this.stateManager.setReconnectTimer(companyId, timer);
+    this.stateManager.setReconnectState(companyId, {
+      reconnectAttempts: nextAttempt,
+      nextReconnectAt: scheduledAt,
+    });
+
+    this.eventEmitter.emit('whatsapp.status.updated', {
+      companyId,
+      status: 'reconnecting',
+    });
+    await this.syncIntegrationStatus(companyId, 'reconnecting', sessionName);
+    this.logLifecycle(companyId, 'warn', 'reconnect_scheduled', {
+      reason,
+      attempt: nextAttempt,
+      delayMs,
+      scheduledAt: new Date(scheduledAt).toISOString(),
+    });
+
+    return true;
+  }
+
   private async safeDisposeRuntime(
     companyId: string,
     reason: string,
@@ -960,11 +1229,20 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     },
   ) {
     const ctx = this.stateManager.get(companyId);
+    if (ctx) {
+      this.stateManager.clearListeners(companyId);
+    }
+
     if (!ctx?.client) {
       if (options?.clearMemory) {
         this.stateManager.clear(companyId);
       }
       return;
+    }
+
+    const runtimeClient = ctx.client as WatchdogClient;
+    if (runtimeClient.stopPhoneWatchdog) {
+      await runtimeClient.stopPhoneWatchdog(WHATSAPP_PHONE_WATCHDOG_MS).catch(() => null);
     }
 
     this.logLifecycle(companyId, 'log', 'client_destroy_start', { reason });
@@ -1116,11 +1394,24 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     }
 
     const digits = trimmed.replace(/\D/g, '');
+    if (!digits) {
+      throw new Error('Numero de destino invalido para envio via WhatsApp.');
+    }
+
     return `${digits}@c.us`;
   }
 
   private resolveHeadless(): boolean | 'shell' {
-    return false;
+    const rawValue = process.env.WPPCONNECT_HEADLESS?.trim().toLowerCase();
+    if (rawValue === 'shell') {
+      return 'shell';
+    }
+
+    if (typeof rawValue !== 'undefined') {
+      return ['1', 'true', 'yes', 'on'].includes(rawValue);
+    }
+
+    return process.env.NODE_ENV === 'production';
   }
 
   private extractWid(host: HostDeviceShape | undefined) {
@@ -1173,6 +1464,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
   private async ensureRuntimeDirectories(companyId: string) {
     await this.ensureSessionBaseDir();
     await mkdir(TOKEN_BASE_DIR, { recursive: true }).catch(() => null);
+    await mkdir(BROWSER_PROFILE_BASE_DIR, { recursive: true }).catch(() => null);
     await mkdir(this.buildStableUserDataDir(companyId), { recursive: true }).catch(() => null);
   }
 
@@ -1192,6 +1484,10 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       sessionName,
     );
     this.removeDirectories(companyId, directories, 'token');
+  }
+
+  private async forceCleanupBrowserProfile(companyId: string) {
+    this.removeDirectories(companyId, [this.buildStableUserDataDir(companyId)], 'browser_profile');
   }
 
   private hasPersistedSessionData(companyId: string, sessionName?: string) {
@@ -1560,7 +1856,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
   }
 
   private buildStableUserDataDir(companyId: string) {
-    return `/tmp/wpp-${companyId}`;
+    return path.join(BROWSER_PROFILE_BASE_DIR, `company-${companyId}`);
   }
 
   private async sleep(ms: number) {

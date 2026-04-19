@@ -454,7 +454,9 @@ export class AttendantService {
     name?: string | null,
   ) {
     const config = await this.getOrCreateAgentConfig(companyId);
-    this.logger.log(`[BOT][${companyId}] Mensagem recebida de ${externalId}: ${text}`);
+    this.logger.log(
+      `[BOT][${companyId}] Mensagem recebida de ${externalId}: ${this.buildLogPreview(text)}`,
+    );
 
     let conversation = await this.prisma.conversation.upsert({
       where: {
@@ -907,5 +909,14 @@ export class AttendantService {
       timestamp: new Date().toISOString(),
       ...extras,
     });
+  }
+
+  private buildLogPreview(value: string) {
+    const normalized = value.replace(/\s+/g, ' ').trim();
+    if (normalized.length <= 80) {
+      return normalized;
+    }
+
+    return `${normalized.slice(0, 77)}...`;
   }
 }
