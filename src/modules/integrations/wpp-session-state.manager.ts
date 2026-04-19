@@ -43,6 +43,12 @@ export interface SessionDiagnosticSnapshot {
   versionWarning: string | null;
   creationInFlight: boolean;
   cleanupInFlight: boolean;
+  timeline: Array<{
+    at: string;
+    event: string;
+    state: SessionLifecycleState;
+    status: WhatsappStatus;
+  }>;
 }
 
 export interface SessionRuntimeContext {
@@ -64,6 +70,12 @@ export interface SessionRuntimeContext {
   startPromise: Promise<WppWhatsapp | null> | null;
   cleanupPromise: Promise<void> | null;
   qrTimeoutTimer: NodeJS.Timeout | null;
+  timeline: Array<{
+    at: number;
+    event: string;
+    state: SessionLifecycleState;
+    status: WhatsappStatus;
+  }>;
 }
 
 @Injectable()
@@ -95,6 +107,7 @@ export class WppSessionStateManager {
       startPromise: null,
       cleanupPromise: null,
       qrTimeoutTimer: null,
+      timeline: [],
     };
 
     this.contexts.set(companyId, created);
@@ -129,6 +142,15 @@ export class WppSessionStateManager {
     ctx.status = nextStatus;
     ctx.lastEvent = event;
     ctx.lastTransitionAt = Date.now();
+    ctx.timeline.push({
+      at: ctx.lastTransitionAt,
+      event,
+      state: nextState,
+      status: nextStatus,
+    });
+    if (ctx.timeline.length > 50) {
+      ctx.timeline.shift();
+    }
 
     if (typeof details?.lastError !== 'undefined') {
       ctx.lastError = details.lastError;
@@ -228,6 +250,12 @@ export class WppSessionStateManager {
       versionWarning: ctx.versionWarning,
       creationInFlight: Boolean(ctx.startPromise),
       cleanupInFlight: Boolean(ctx.cleanupPromise),
+      timeline: ctx.timeline.map((item) => ({
+        at: new Date(item.at).toISOString(),
+        event: item.event,
+        state: item.state,
+        status: item.status,
+      })),
     };
   }
 }

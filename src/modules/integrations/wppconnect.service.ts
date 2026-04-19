@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { create, Whatsapp as WppWhatsapp } from '@wppconnect-team/wppconnect';
+import type { Page } from 'puppeteer';
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import { mkdir } from 'node:fs/promises';
@@ -48,6 +49,7 @@ const SESSION_BASE_DIR = process.env.WPPCONNECT_SESSION_DIR || '/tmp/.wppconnect
 const TOKEN_BASE_DIR = process.env.WPPCONNECT_TOKEN_DIR || '/tmp/tokens';
 const QR_VALIDITY_MS = 5 * 60 * 1000;
 const QR_TIMEOUT_MS = Number(process.env.WHATSAPP_QR_TIMEOUT_MS ?? 90000);
+const PRE_QR_FORENSIC_HOLD_MS = Number(process.env.WHATSAPP_PRE_QR_HOLD_MS ?? 5000);
 const WHATSAPP_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const CHROMIUM_ARGS = [
@@ -383,7 +385,10 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       this.logLifecycle(companyId, 'log', 'browser_launch_start', {
         executablePath: executablePath || null,
         configuredWaVersion,
+        headless: this.resolveHeadless(),
       });
+
+      this.logLifecycle(companyId, 'log', 'wapi_injection_wait_start');
 
       const client = await create({
         session: sessionName,
@@ -422,6 +427,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       }
 
       this.stateManager.setClient(companyId, client);
+      this.attachPageDiagnostics(client, companyId, sessionName, correlationId);
       this.transition(companyId, 'browser_ready', 'CONNECTING', 'browser_launch_complete');
       this.logLifecycle(companyId, 'log', 'browser_launch_complete', {
         pageReady: Boolean((client as unknown as { page?: unknown }).page),
@@ -429,6 +435,8 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
 
       this.transition(companyId, 'whatsapp_loading', 'AUTHENTICATING', 'page_ready');
       this.logLifecycle(companyId, 'log', 'page_ready');
+      await this.probePage(companyId, sessionName, 'post_create_page_probe');
+      await this.verifyWapiInjection(companyId, sessionName);
 
       const actualWaVersion = await client.getWAVersion().catch(() => null);
       if (configuredWaVersion && actualWaVersion && configuredWaVersion !== actualWaVersion) {
@@ -489,6 +497,66 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         from: message.from,
         text: message.body,
         name: message.sender?.pushname || message.sender?.name,
+      });
+    });
+  }
+
+  private attachPageDiagnostics(
+    client: WppWhatsapp,
+    companyId: string,
+    sessionName: string,
+    correlationId: string,
+  ) {
+    const page = this.extractPage(client);
+    if (!page) {
+      this.logLifecycle(companyId, 'warn', 'page_diagnostics_unavailable', {
+        sessionName,
+        correlationId,
+      });
+      return;
+    }
+
+    page.on('console', (message) => {
+      if (!this.isCurrentSession(companyId, sessionName)) {
+        return;
+      }
+
+      this.logLifecycle(companyId, 'log', 'page_console', {
+        type: message.type(),
+        text: message.text().slice(0, 300),
+      });
+    });
+
+    page.on('pageerror', (error: unknown) => {
+      if (!this.isCurrentSession(companyId, sessionName)) {
+        return;
+      }
+
+      this.logLifecycle(companyId, 'error', 'page_error', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+
+    page.on('requestfailed', (request) => {
+      if (!this.isCurrentSession(companyId, sessionName)) {
+        return;
+      }
+
+      this.logLifecycle(companyId, 'warn', 'page_request_failed', {
+        url: request.url(),
+        method: request.method(),
+        failure: request.failure()?.errorText || null,
+      });
+    });
+
+    page.on('close', () => {
+      if (!this.isCurrentSession(companyId, sessionName)) {
+        return;
+      }
+
+      this.logLifecycle(companyId, 'warn', 'page_close_detected', {
+        sessionName,
+        correlationId,
       });
     });
   }
@@ -557,6 +625,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       status: statusSession,
     });
     this.logLifecycle(companyId, 'log', 'status_event_received', { rawStatus: statusSession });
+    await this.probePage(companyId, sessionName, `status_probe_${statusSession}`);
 
     switch (statusSession) {
       case 'openBrowser':
@@ -639,7 +708,10 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       lastError: null,
       failureReason: null,
     });
-    this.logLifecycle(companyId, 'log', 'qr_callback_received', { attempts });
+    this.logLifecycle(companyId, 'log', 'qr_callback_received', {
+      attempts,
+      generatedAt: new Date(now).toISOString(),
+    });
     this.logLifecycle(companyId, 'log', 'qr_persisted_in_memory', { attempts });
 
     this.eventEmitter.emit('whatsapp.qr.generated', {
@@ -662,6 +734,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       rawStatus,
       qrAvailable: Boolean(this.getQrCode(companyId)),
     });
+    await this.probePage(companyId, sessionName, 'pre_qr_terminal_probe');
     this.clearQrTimeout(companyId);
 
     await this.prisma.company.update({
@@ -682,6 +755,29 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       companyId,
       status: 'needs_new_qr',
     });
+
+    if (!this.getQrCode(companyId)) {
+      this.logLifecycle(companyId, 'error', 'qr_callback_never_fired_before_terminal_state', {
+        rawStatus,
+        forensicHoldMs: PRE_QR_FORENSIC_HOLD_MS,
+      });
+      setTimeout(() => {
+        if (!this.isCurrentSession(companyId, sessionName)) {
+          return;
+        }
+
+        const currentState = this.stateManager.getOrCreate(companyId).lifecycleState;
+        if (currentState !== 'needs_new_qr') {
+          return;
+        }
+
+        void this.safeDisposeRuntime(companyId, 'post_forensic_pre_qr_cleanup', {
+          clearMemory: false,
+          preserveQr: true,
+        });
+      }, PRE_QR_FORENSIC_HOLD_MS);
+      return;
+    }
 
     await this.safeDisposeRuntime(companyId, 'terminal_needs_new_qr', {
       clearMemory: false,
@@ -1306,5 +1402,93 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     };
 
     this.logger[level](JSON.stringify(payload));
+  }
+
+  private extractPage(client: WppWhatsapp) {
+    return (client as unknown as { page?: Page }).page || null;
+  }
+
+  private async verifyWapiInjection(companyId: string, sessionName: string) {
+    const client = this.getClient(companyId);
+    const page = client ? this.extractPage(client) : null;
+    if (!page || !this.isCurrentSession(companyId, sessionName)) {
+      return;
+    }
+
+    try {
+      const wapiReady = await page.waitForFunction(
+        () => Boolean((window as typeof window & { WAPI?: unknown }).WAPI),
+        { timeout: 15000 },
+      );
+
+      if (wapiReady) {
+        this.logLifecycle(companyId, 'log', 'wapi_injection_complete');
+        await this.probePage(companyId, sessionName, 'post_wapi_injection_probe');
+        return;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.transition(
+        companyId,
+        this.stateManager.getOrCreate(companyId).lifecycleState,
+        this.getStatus(companyId),
+        'wapi_injection_not_observed',
+        { lastError: message },
+      );
+      this.logLifecycle(companyId, 'error', 'wapi_injection_not_observed', {
+        error: message,
+      });
+      await this.probePage(companyId, sessionName, 'wapi_injection_failure_probe');
+    }
+  }
+
+  private async probePage(companyId: string, sessionName: string, event: string) {
+    const client = this.getClient(companyId);
+    const page = client ? this.extractPage(client) : null;
+    if (!page || !this.isCurrentSession(companyId, sessionName)) {
+      this.logLifecycle(companyId, 'warn', `${event}_skipped_no_page`);
+      return;
+    }
+
+    try {
+      const probe = await page.evaluate(() => {
+        const globalWindow = window as typeof window & {
+          WAPI?: {
+            getWAVersion?: () => string;
+          };
+          Debug?: {
+            VERSION?: string;
+          };
+        };
+        const bodyText = document.body?.innerText || '';
+        const qrCandidates = [
+          'canvas[aria-label*="Scan"]',
+          'canvas',
+          '[data-ref]',
+          'img[alt*="QR"]',
+        ];
+        const hasQrCandidate = qrCandidates.some((selector) => Boolean(document.querySelector(selector)));
+
+        return {
+          href: window.location.href,
+          title: document.title,
+          readyState: document.readyState,
+          hasWapi: typeof globalWindow.WAPI !== 'undefined',
+          waVersion:
+            globalWindow.WAPI?.getWAVersion?.() ||
+            globalWindow.Debug?.VERSION ||
+            null,
+          hasQrCandidate,
+          bodySnippet: bodyText.slice(0, 500),
+        };
+      });
+
+      this.logLifecycle(companyId, 'log', event, probe);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logLifecycle(companyId, 'error', `${event}_failed`, {
+        error: message,
+      });
+    }
   }
 }
