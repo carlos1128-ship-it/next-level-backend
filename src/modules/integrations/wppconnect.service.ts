@@ -45,11 +45,26 @@ type HostDeviceShape = {
   name?: string;
 };
 
+type InjectionDiagnostic = {
+  location: string;
+  title: string;
+  readyState: string;
+  hasStore: boolean;
+  hasWapi: boolean;
+  hasWpp: boolean;
+  waVersion: string | null;
+  storeVersion: string | null;
+  storeVersionError: string | null;
+  hasQrCandidate: boolean;
+  bodySnippet: string;
+};
+
 const SESSION_BASE_DIR = process.env.WPPCONNECT_SESSION_DIR || '/tmp/.wppconnect';
 const TOKEN_BASE_DIR = process.env.WPPCONNECT_TOKEN_DIR || '/tmp/tokens';
 const QR_VALIDITY_MS = 5 * 60 * 1000;
 const QR_TIMEOUT_MS = Number(process.env.WHATSAPP_QR_TIMEOUT_MS ?? 90000);
-const PRE_QR_FORENSIC_HOLD_MS = Number(process.env.WHATSAPP_PRE_QR_HOLD_MS ?? 5000);
+const PRE_QR_FORENSIC_HOLD_MS = Number(process.env.WHATSAPP_PRE_QR_HOLD_MS ?? 10000);
+const WAPI_WAIT_TIMEOUT_MS = 60000;
 const WHATSAPP_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const CHROMIUM_ARGS = [
@@ -61,17 +76,6 @@ const CHROMIUM_ARGS = [
   '--no-zygote',
   '--single-process',
   '--disable-gpu',
-  '--disable-extensions',
-  '--disable-default-apps',
-  '--disable-software-rasterizer',
-  '--disable-background-networking',
-  '--disable-sync',
-  '--disable-translate',
-  '--hide-scrollbars',
-  '--metrics-recording-only',
-  '--mute-audio',
-  '--safebrowsing-disable-auto-update',
-  '--no-default-browser-check',
 ];
 const COMMON_BROWSER_PATHS = [
   '/usr/bin/google-chrome-stable',
@@ -359,18 +363,13 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     options: { fresh: boolean },
   ): Promise<WppWhatsapp | null> {
     const executablePath = this.resolveBrowserExecutablePath();
-    const configuredWaVersion =
-      process.env.WPPCONNECT_WHATSAPP_VERSION ||
-      process.env.WA_VERSION ||
-      process.env.WPP_VERSION ||
-      null;
+    const userDataDir = this.buildStableUserDataDir(companyId);
 
     try {
       if (options.fresh) {
         await this.clearPersistedSessionState(companyId, sessionName, correlationId);
-      } else {
-        await this.ensureSessionBaseDir();
       }
+      await this.ensureRuntimeDirectories(companyId);
 
       await this.prisma.company.update({
         where: { id: companyId },
@@ -384,8 +383,9 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       this.transition(companyId, 'starting', 'CONNECTING', 'browser_launch_start');
       this.logLifecycle(companyId, 'log', 'browser_launch_start', {
         executablePath: executablePath || null,
-        configuredWaVersion,
         headless: this.resolveHeadless(),
+        userDataDir,
+        userAgent: WHATSAPP_USER_AGENT,
       });
 
       this.logLifecycle(companyId, 'log', 'wapi_injection_wait_start');
@@ -407,8 +407,19 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         folderNameToken: TOKEN_BASE_DIR,
         mkdirFolderToken: TOKEN_BASE_DIR,
         createPathFileToken: true,
-        catchQR: (base64Qr, _asciiQr, attempts) => {
-          this.handleQrCallback(companyId, sessionName, correlationId, base64Qr, attempts ?? 1);
+        // O WPPConnect 1.41.2 injeta uma versao fixa por default.
+        // Precisamos sobrescrever com undefined para nao quebrar a injecao.
+        whatsappVersion: undefined,
+        catchQR: (base64Qr, asciiQr, attempts) => {
+          console.log('QR RECEIVED', { companyId, attempts: attempts ?? 1 });
+          this.handleQrCallback(
+            companyId,
+            sessionName,
+            correlationId,
+            base64Qr,
+            asciiQr,
+            attempts ?? 1,
+          );
         },
         statusFind: (statusSession: string) => {
           void this.handleStatusChange(companyId, sessionName, correlationId, statusSession);
@@ -417,7 +428,9 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
           headless: this.resolveHeadless(),
           protocolTimeout: 120000,
           args: CHROMIUM_ARGS,
+          ignoreDefaultArgs: ['--enable-automation'],
           executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || executablePath || undefined,
+          userDataDir,
         },
       });
 
@@ -437,20 +450,6 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       this.logLifecycle(companyId, 'log', 'page_ready');
       await this.probePage(companyId, sessionName, 'post_create_page_probe');
       await this.verifyWapiInjection(companyId, sessionName);
-
-      const actualWaVersion = await client.getWAVersion().catch(() => null);
-      if (configuredWaVersion && actualWaVersion && configuredWaVersion !== actualWaVersion) {
-        const versionWarning =
-          `Versao configurada ${configuredWaVersion} nao corresponde a versao carregada ${actualWaVersion}. ` +
-          'Isso indica fallback do WhatsApp Web e deve ser tratado como fator contribuinte de incompatibilidade.';
-        this.transition(companyId, this.stateManager.getOrCreate(companyId).lifecycleState, this.getStatus(companyId), 'wa_version_fallback_detected', {
-          versionWarning,
-        });
-        this.logLifecycle(companyId, 'warn', 'wa_version_fallback_detected', {
-          configuredWaVersion,
-          actualWaVersion,
-        });
-      }
 
       this.attachEventListeners(client, companyId, sessionName, correlationId);
       this.startQrTimeout(companyId, sessionName, correlationId);
@@ -690,6 +689,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     sessionName: string,
     correlationId: string,
     base64Qr: string,
+    _asciiQr: string,
     attempts: number,
   ) {
     if (!this.isCurrentSession(companyId, sessionName)) {
@@ -756,30 +756,32 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
       status: 'needs_new_qr',
     });
 
-    if (!this.getQrCode(companyId)) {
-      this.logLifecycle(companyId, 'error', 'qr_callback_never_fired_before_terminal_state', {
-        rawStatus,
-        forensicHoldMs: PRE_QR_FORENSIC_HOLD_MS,
-      });
-      setTimeout(() => {
-        if (!this.isCurrentSession(companyId, sessionName)) {
-          return;
-        }
+    this.logLifecycle(companyId, 'warn', 'terminal_state_cleanup_delayed_for_qr', {
+      rawStatus,
+      forensicHoldMs: PRE_QR_FORENSIC_HOLD_MS,
+      qrAvailableNow: Boolean(this.getQrCode(companyId)),
+    });
 
-        const currentState = this.stateManager.getOrCreate(companyId).lifecycleState;
-        if (currentState !== 'needs_new_qr') {
-          return;
-        }
-
-        void this.safeDisposeRuntime(companyId, 'post_forensic_pre_qr_cleanup', {
-          clearMemory: false,
-          preserveQr: true,
-        });
-      }, PRE_QR_FORENSIC_HOLD_MS);
+    await this.sleep(PRE_QR_FORENSIC_HOLD_MS);
+    if (!this.isCurrentSession(companyId, sessionName)) {
       return;
     }
 
-    await this.safeDisposeRuntime(companyId, 'terminal_needs_new_qr', {
+    await this.probePage(companyId, sessionName, 'post_terminal_grace_probe');
+    if (this.getQrCode(companyId)) {
+      this.logLifecycle(companyId, 'log', 'terminal_state_cleanup_skipped_qr_available', {
+        rawStatus,
+      });
+      return;
+    }
+
+    this.logger.error('QR NEVER GENERATED');
+    this.logLifecycle(companyId, 'error', 'qr_callback_never_fired_before_terminal_state', {
+      rawStatus,
+      forensicHoldMs: PRE_QR_FORENSIC_HOLD_MS,
+    });
+
+    await this.safeDisposeRuntime(companyId, 'post_forensic_pre_qr_cleanup', {
       clearMemory: false,
       preserveQr: true,
     });
@@ -925,6 +927,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         lastError: 'QR nao foi produzido dentro da janela esperada.',
         failureReason: 'qr_timeout',
       });
+      this.logger.error('QR NEVER GENERATED');
       this.logLifecycle(companyId, 'error', 'qr_timeout_reached', {
         sessionName,
         correlationId,
@@ -1117,11 +1120,7 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
   }
 
   private resolveHeadless(): boolean | 'shell' {
-    const raw = (process.env.WPPCONNECT_HEADLESS ?? 'true').trim().toLowerCase();
-    if (raw === 'shell') {
-      return 'shell';
-    }
-    return raw !== 'false';
+    return false;
   }
 
   private extractWid(host: HostDeviceShape | undefined) {
@@ -1169,6 +1168,12 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
 
   private async ensureSessionBaseDir() {
     await mkdir(SESSION_BASE_DIR, { recursive: true }).catch(() => null);
+  }
+
+  private async ensureRuntimeDirectories(companyId: string) {
+    await this.ensureSessionBaseDir();
+    await mkdir(TOKEN_BASE_DIR, { recursive: true }).catch(() => null);
+    await mkdir(this.buildStableUserDataDir(companyId), { recursive: true }).catch(() => null);
   }
 
   private async forceCleanupFiles(companyId: string, sessionName?: string) {
@@ -1412,55 +1417,105 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
     const client = this.getClient(companyId);
     const page = client ? this.extractPage(client) : null;
     if (!page || !this.isCurrentSession(companyId, sessionName)) {
-      return;
+      throw new Error('Pagina do WhatsApp indisponivel durante a validacao da injecao.');
     }
 
-    try {
-      const wapiReady = await page.waitForFunction(
-        () => Boolean((window as typeof window & { WAPI?: unknown }).WAPI),
-        { timeout: 15000 },
-      );
+    const initialProbe = await this.probePage(companyId, sessionName, 'wapi_wait_start_probe');
 
-      if (wapiReady) {
-        this.logLifecycle(companyId, 'log', 'wapi_injection_complete');
-        await this.probePage(companyId, sessionName, 'post_wapi_injection_probe');
-        return;
-      }
+    try {
+      await page.waitForFunction(
+        () => {
+          const runtimeWindow = window as typeof window & {
+            WAPI?: unknown;
+            Store?: unknown;
+          };
+
+          return runtimeWindow.WAPI !== undefined || runtimeWindow.Store !== undefined;
+        },
+        { timeout: WAPI_WAIT_TIMEOUT_MS },
+      );
     } catch (error) {
+      const timeoutProbe = await this.probePage(companyId, sessionName, 'wapi_wait_timeout_probe');
       const message = error instanceof Error ? error.message : String(error);
+      const fatalMessage = `WAPI/Store nao ficaram disponiveis apos ${WAPI_WAIT_TIMEOUT_MS}ms.`;
       this.transition(
         companyId,
         this.stateManager.getOrCreate(companyId).lifecycleState,
         this.getStatus(companyId),
-        'wapi_injection_not_observed',
-        { lastError: message },
+        'wapi_injection_fatal',
+        {
+          lastError: fatalMessage,
+          failureReason: 'wapi_injection_failed',
+        },
       );
-      this.logLifecycle(companyId, 'error', 'wapi_injection_not_observed', {
+      this.logLifecycle(companyId, 'error', 'wapi_injection_fatal', {
         error: message,
+        timeoutMs: WAPI_WAIT_TIMEOUT_MS,
+        initialProbe,
+        timeoutProbe,
       });
-      await this.probePage(companyId, sessionName, 'wapi_injection_failure_probe');
+      throw new Error(`${fatalMessage} Detalhe: ${message}`);
     }
+
+    const finalProbe = await this.probePage(companyId, sessionName, 'post_wapi_injection_probe');
+    if (!finalProbe?.hasWapi) {
+      const fatalMessage = `WAPI continuou indefinido apos ${WAPI_WAIT_TIMEOUT_MS}ms.`;
+      this.transition(
+        companyId,
+        this.stateManager.getOrCreate(companyId).lifecycleState,
+        this.getStatus(companyId),
+        'wapi_injection_fatal',
+        {
+          lastError: fatalMessage,
+          failureReason: 'wapi_injection_failed',
+        },
+      );
+      this.logLifecycle(companyId, 'error', 'wapi_injection_fatal', {
+        timeoutMs: WAPI_WAIT_TIMEOUT_MS,
+        finalProbe,
+      });
+      throw new Error(fatalMessage);
+    }
+
+    this.logLifecycle(companyId, 'log', 'wapi_injection_complete', {
+      timeoutMs: WAPI_WAIT_TIMEOUT_MS,
+      finalProbe,
+    });
   }
 
-  private async probePage(companyId: string, sessionName: string, event: string) {
+  private async probePage(
+    companyId: string,
+    sessionName: string,
+    event: string,
+  ): Promise<InjectionDiagnostic | null> {
     const client = this.getClient(companyId);
     const page = client ? this.extractPage(client) : null;
     if (!page || !this.isCurrentSession(companyId, sessionName)) {
       this.logLifecycle(companyId, 'warn', `${event}_skipped_no_page`);
-      return;
+      return null;
     }
 
     try {
-      const probe = await page.evaluate(() => {
+      const probe = (await page.evaluate(() => {
         const globalWindow = window as typeof window & {
           WAPI?: {
             getWAVersion?: () => string;
           };
-          Debug?: {
+          Store?: {
             VERSION?: string;
+          };
+          WPP?: {
+            version?: string;
           };
         };
         const bodyText = document.body?.innerText || '';
+        let storeVersion: string | null = null;
+        let storeVersionError: string | null = null;
+        try {
+          storeVersion = globalWindow.Store?.VERSION ?? null;
+        } catch (error) {
+          storeVersionError = error instanceof Error ? error.message : String(error);
+        }
         const qrCandidates = [
           'canvas[aria-label*="Scan"]',
           'canvas',
@@ -1470,25 +1525,45 @@ export class WppconnectService implements OnModuleInit, OnModuleDestroy {
         const hasQrCandidate = qrCandidates.some((selector) => Boolean(document.querySelector(selector)));
 
         return {
-          href: window.location.href,
+          location: window.location.href,
           title: document.title,
           readyState: document.readyState,
+          hasStore: typeof globalWindow.Store !== 'undefined',
           hasWapi: typeof globalWindow.WAPI !== 'undefined',
+          hasWpp: typeof globalWindow.WPP !== 'undefined',
           waVersion:
             globalWindow.WAPI?.getWAVersion?.() ||
-            globalWindow.Debug?.VERSION ||
+            globalWindow.WPP?.version ||
+            storeVersion ||
             null,
+          storeVersion,
+          storeVersionError,
           hasQrCandidate,
           bodySnippet: bodyText.slice(0, 500),
         };
-      });
+      })) as InjectionDiagnostic;
 
       this.logLifecycle(companyId, 'log', event, probe);
+      if (probe.storeVersionError) {
+        this.logLifecycle(companyId, 'warn', `${event}_store_version_read_failed`, {
+          error: probe.storeVersionError,
+        });
+      }
+      return probe;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logLifecycle(companyId, 'error', `${event}_failed`, {
         error: message,
       });
+      return null;
     }
+  }
+
+  private buildStableUserDataDir(companyId: string) {
+    return `/tmp/wpp-${companyId}`;
+  }
+
+  private async sleep(ms: number) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
