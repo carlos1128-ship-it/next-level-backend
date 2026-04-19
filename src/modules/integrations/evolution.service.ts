@@ -66,10 +66,52 @@ const WEBHOOK_EVENTS: EvolutionEventName[] = [
   'CONNECTION_UPDATE',
 ];
 
+type EvolutionHttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
+
+type EvolutionRequestOptions = {
+  companyId?: string;
+  method: EvolutionHttpMethod;
+  operation: string;
+  path: string;
+  data?: Record<string, unknown>;
+  params?: Record<string, string | number | boolean | undefined>;
+  timeoutMs?: number;
+  maxRetries?: number;
+};
+
+type EvolutionInfoResponse = {
+  version?: string;
+};
+
+type EvolutionConnectionStateResponse = {
+  instance?: {
+    instanceName?: string;
+    state?: string;
+  };
+};
+
+type EvolutionRemoteInstance = {
+  instanceName: string;
+  state: string;
+};
+
+type EvolutionRemoteLookup = {
+  exists: boolean;
+  state: string;
+  source: 'connectionState' | 'fetchInstances' | 'created';
+};
+
 @Injectable()
 export class EvolutionService {
   private readonly logger = new Logger(EvolutionService.name);
   private readonly api: AxiosInstance;
+  private readonly evolutionApiUrl: string | null;
+  private readonly evolutionApiKey: string | null;
+  private readonly evolutionTimeoutMs: number;
+  private readonly evolutionMaxRetries: number;
+  private readonly evolutionInfoTtlMs: number;
+  private remoteInfoCache: { version: string | null; checkedAt: number } | null =
+    null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -77,13 +119,39 @@ export class EvolutionService {
     private readonly eventEmitter: EventEmitter2,
     private readonly platformQueue: PlatformQueueService,
   ) {
+    this.evolutionApiUrl = this.asString(
+      this.configService.get<string>('EVOLUTION_API_URL'),
+    );
+    this.evolutionApiKey = this.asString(
+      this.configService.get<string>('EVOLUTION_API_KEY'),
+    );
+    this.evolutionTimeoutMs = this.readPositiveInteger(
+      this.configService.get<string>('EVOLUTION_API_TIMEOUT_MS'),
+      10000,
+    );
+    this.evolutionMaxRetries = this.readBoundedInteger(
+      this.configService.get<string>('EVOLUTION_API_MAX_RETRIES'),
+      2,
+      0,
+      5,
+    );
+    this.evolutionInfoTtlMs = this.readPositiveInteger(
+      this.configService.get<string>('EVOLUTION_API_INFO_TTL_MS'),
+      300000,
+    );
+
     this.api = axios.create({
-      baseURL: this.configService.get<string>('EVOLUTION_API_URL'),
+      baseURL: this.evolutionApiUrl || undefined,
       headers: {
-        apikey: this.configService.get<string>('EVOLUTION_API_KEY'),
+        ...(this.evolutionApiKey
+          ? {
+              apikey: this.evolutionApiKey,
+              Authorization: `Bearer ${this.evolutionApiKey}`,
+            }
+          : {}),
         'Content-Type': 'application/json',
       },
-      timeout: 30000,
+      timeout: this.evolutionTimeoutMs,
     });
   }
 
@@ -137,11 +205,18 @@ export class EvolutionService {
       throw new BadRequestException('Mensagem vazia');
     }
 
-    const response = await this.api.post(`/message/sendText/${instance.instanceName}`, {
-      number,
-      text: trimmedText,
-      delay: 0,
-      linkPreview: false,
+    const response = await this.requestEvolution<Record<string, unknown>>({
+      companyId,
+      method: 'POST',
+      operation: 'send-text',
+      path: `message/sendText/${encodeURIComponent(instance.instanceName)}`,
+      data: {
+        number,
+        text: trimmedText,
+        delay: 0,
+        linkPreview: false,
+      },
+      maxRetries: 0,
     });
 
     await this.prisma.usageQuota.upsert({
@@ -157,7 +232,7 @@ export class EvolutionService {
       },
     }).catch(() => undefined);
 
-    return response.data;
+    return response;
   }
 
   async disconnectInstance(companyId: string): Promise<void> {
@@ -171,8 +246,20 @@ export class EvolutionService {
       return;
     }
 
-    await this.api.delete(`/instance/logout/${instance.instanceName}`).catch(() => undefined);
-    await this.api.delete(`/instance/delete/${instance.instanceName}`).catch(() => undefined);
+    await this.requestEvolution({
+      companyId,
+      method: 'DELETE',
+      operation: 'logout-instance',
+      path: `instance/logout/${encodeURIComponent(instance.instanceName)}`,
+      maxRetries: 0,
+    }).catch(() => undefined);
+    await this.requestEvolution({
+      companyId,
+      method: 'DELETE',
+      operation: 'delete-instance',
+      path: `instance/delete/${encodeURIComponent(instance.instanceName)}`,
+      maxRetries: 0,
+    }).catch(() => undefined);
 
     await this.prisma.$transaction([
       this.prisma.company.update({
@@ -376,31 +463,51 @@ export class EvolutionService {
   }
 
   private async ensureRemoteInstance(instance: WhatsappInstance) {
-    const exists = await this.remoteInstanceExists(instance.instanceName);
-    if (exists) {
-      return;
+    const remote = await this.resolveRemoteInstance(
+      instance.instanceName,
+      instance.companyId,
+    );
+    if (remote.exists) {
+      return remote;
     }
 
     const webhookToken = this.deriveWebhookToken(instance.instanceName);
     const webhookUrl = this.buildWebhookUrl(instance.instanceName, webhookToken);
 
-    await this.api.post('/instance/create', {
-      instanceName: instance.instanceName,
-      integration: 'WHATSAPP-BAILEYS',
-      qrcode: true,
-      rejectCall: false,
-      groupsIgnore: true,
-      alwaysOnline: false,
-      readMessages: false,
-      readStatus: false,
-      syncFullHistory: false,
-      webhook: {
-        url: webhookUrl,
-        byEvents: false,
-        base64: true,
-        events: WEBHOOK_EVENTS,
-      },
-    });
+    try {
+      await this.requestEvolution({
+        companyId: instance.companyId,
+        method: 'POST',
+        operation: 'create-instance',
+        path: 'instance/create',
+        data: {
+          instanceName: instance.instanceName,
+          integration: 'WHATSAPP-BAILEYS',
+          qrcode: true,
+          rejectCall: false,
+          groupsIgnore: true,
+          alwaysOnline: false,
+          readMessages: false,
+          readStatus: false,
+          syncFullHistory: false,
+          webhook: {
+            url: webhookUrl,
+            byEvents: false,
+            base64: true,
+            events: WEBHOOK_EVENTS,
+          },
+        } as Record<string, unknown>,
+        maxRetries: 0,
+      });
+    } catch (error) {
+      if (!this.isInstanceAlreadyExistsError(error)) {
+        throw error;
+      }
+
+      this.logger.warn(
+        `Evolution create-instance retornou conflito para ${instance.instanceName}; seguindo com a instancia remota existente.`,
+      );
+    }
 
     await this.prisma.whatsappInstance.update({
       where: { id: instance.id },
@@ -410,25 +517,48 @@ export class EvolutionService {
         lastError: null,
       },
     }).catch(() => undefined);
+
+    return {
+      exists: true,
+      state: 'connecting',
+      source: 'created',
+    } satisfies EvolutionRemoteLookup;
   }
 
   private async configureWebhook(instance: WhatsappInstance) {
     const webhookToken = this.deriveWebhookToken(instance.instanceName);
     const webhookUrl = this.buildWebhookUrl(instance.instanceName, webhookToken);
 
-    await this.api.post(`/webhook/set/${instance.instanceName}`, {
-      enabled: true,
-      url: webhookUrl,
-      webhookByEvents: false,
-      webhookBase64: true,
-      events: WEBHOOK_EVENTS,
+    await this.requestEvolution({
+      companyId: instance.companyId,
+      method: 'POST',
+      operation: 'set-webhook',
+      path: `webhook/set/${encodeURIComponent(instance.instanceName)}`,
+      data: {
+        enabled: true,
+        url: webhookUrl,
+        webhook_by_events: false,
+        webhook_base64: true,
+        webhookByEvents: false,
+        webhookBase64: true,
+        events: WEBHOOK_EVENTS,
+      },
+      maxRetries: 0,
     });
   }
 
   private async requestConnection(instance: WhatsappInstance) {
-    const response = await this.api.get(`/instance/connect/${instance.instanceName}`);
-    const pairingCode = this.asString(response.data?.pairingCode);
-    const qrCode = this.normalizeQrCode(this.asString(response.data?.code));
+    const response = await this.requestEvolution<{
+      pairingCode?: string;
+      code?: string;
+    }>({
+      companyId: instance.companyId,
+      method: 'GET',
+      operation: 'connect-instance',
+      path: `instance/connect/${encodeURIComponent(instance.instanceName)}`,
+    });
+    const pairingCode = this.asString(response?.pairingCode);
+    const qrCode = this.normalizeQrCode(this.asString(response?.code));
 
     await this.prisma.whatsappInstance.update({
       where: { id: instance.id },
@@ -443,15 +573,8 @@ export class EvolutionService {
   }
 
   private async remoteInstanceExists(instanceName: string): Promise<boolean> {
-    try {
-      await this.api.get(`/instance/connectionState/${instanceName}`);
-      return true;
-    } catch (error) {
-      if (this.isNotFoundError(error)) {
-        return false;
-      }
-      throw error;
-    }
+    const remote = await this.resolveRemoteInstance(instanceName);
+    return remote.exists;
   }
 
   private buildSnapshot(instance: WhatsappInstance | null): ConnectionSnapshot {
@@ -616,9 +739,13 @@ export class EvolutionService {
   }
 
   private buildWebhookUrl(instanceName: string, token: string): string {
-    return `${this.getBackendUrl()}/api/evolution/webhook?instance=${encodeURIComponent(
-      instanceName,
-    )}&token=${encodeURIComponent(token)}`;
+    const url = new URL(
+      this.normalizeRequestPath('api/evolution/webhook'),
+      `${this.getBackendUrl()}/`,
+    );
+    url.searchParams.set('instance', instanceName);
+    url.searchParams.set('token', token);
+    return url.toString();
   }
 
   private deriveWebhookToken(instanceName: string): string {
@@ -730,7 +857,7 @@ export class EvolutionService {
 
   private ensureConfigured(): void {
     if (!this.isConfigured()) {
-      if (!this.asString(this.configService.get<string>('EVOLUTION_API_URL'))) {
+      if (!this.evolutionApiUrl) {
         throw new BadRequestException('EVOLUTION_API_URL nao configurada no servidor');
       }
 
@@ -739,15 +866,7 @@ export class EvolutionService {
   }
 
   private isConfigured(): boolean {
-    if (!this.asString(this.configService.get<string>('EVOLUTION_API_URL'))) {
-      return false;
-    }
-
-    if (!this.asString(this.configService.get<string>('EVOLUTION_API_KEY'))) {
-      return false;
-    }
-
-    return true;
+    return Boolean(this.evolutionApiUrl && this.evolutionApiKey);
   }
 
   private async syncRemoteState(instance: WhatsappInstance): Promise<WhatsappInstance> {
@@ -756,56 +875,17 @@ export class EvolutionService {
     }
 
     try {
-      const response = await this.api.get(`/instance/connectionState/${instance.instanceName}`);
-      const state = this.asString(response.data?.instance?.state) || 'close';
-      const status = this.mapInstanceStatus(state, instance.qrCode);
-      const connected = state === 'open';
+      const remote = await this.resolveRemoteInstance(
+        instance.instanceName,
+        instance.companyId,
+      );
 
-      const [, updated] = await this.prisma.$transaction([
-        this.prisma.company.update({
-          where: { id: instance.companyId },
-          data: {
-            evolutionConnected: connected,
-            lastConnectedAt: connected ? new Date() : null,
-          },
-        }),
-        this.prisma.whatsappInstance.update({
-          where: { id: instance.id },
-          data: {
-            status,
-            connectionState: state,
-            qrCode: connected ? null : instance.qrCode,
-            pairingCode: connected ? null : instance.pairingCode,
-            lastConnectionAt: connected ? new Date() : instance.lastConnectionAt,
-            lastError: null,
-          },
-        }),
-      ]);
-
-      return updated;
-    } catch (error) {
-      if (this.isNotFoundError(error)) {
-        const [, updated] = await this.prisma.$transaction([
-          this.prisma.company.update({
-            where: { id: instance.companyId },
-            data: {
-              evolutionConnected: false,
-            },
-          }),
-          this.prisma.whatsappInstance.update({
-            where: { id: instance.id },
-            data: {
-              status: WhatsappInstanceStatus.DISCONNECTED,
-              connectionState: 'close',
-              qrCode: null,
-              pairingCode: null,
-            },
-          }),
-        ]);
-
-        return updated;
+      if (!remote.exists) {
+        return this.persistDisconnectedState(instance);
       }
 
+      return this.persistRemoteState(instance, remote.state);
+    } catch (error) {
       this.logger.warn(
         `Falha ao sincronizar estado remoto da Evolution para ${instance.companyId}: ${
           (error as Error)?.message || 'erro desconhecido'
@@ -813,6 +893,520 @@ export class EvolutionService {
       );
       return instance;
     }
+  }
+
+  private async resolveRemoteInstance(
+    instanceName: string,
+    companyId?: string,
+  ): Promise<EvolutionRemoteLookup> {
+    try {
+      const response = await this.requestEvolution<EvolutionConnectionStateResponse>({
+        companyId,
+        method: 'GET',
+        operation: 'connection-state',
+        path: `instance/connectionState/${encodeURIComponent(instanceName)}`,
+      });
+      return {
+        exists: true,
+        state: this.normalizeRemoteState(this.asString(response?.instance?.state)),
+        source: 'connectionState',
+      };
+    } catch (error) {
+      if (this.isAuthenticationError(error)) {
+        throw error;
+      }
+
+      if (!this.shouldFallbackToFetchInstances(error)) {
+        throw error;
+      }
+    }
+
+    const version = await this.detectRemoteVersion(companyId);
+    this.logger.warn(
+      `Evolution fallback: connectionState indisponivel para ${instanceName}; usando fetchInstances${
+        version ? ` (versao ${version})` : ''
+      }.`,
+    );
+
+    const remoteInstance = await this.fetchRemoteInstance(instanceName, companyId);
+    if (!remoteInstance) {
+      return {
+        exists: false,
+        state: 'close',
+        source: 'fetchInstances',
+      };
+    }
+
+    return {
+      exists: true,
+      state: remoteInstance.state,
+      source: 'fetchInstances',
+    };
+  }
+
+  private async fetchRemoteInstance(
+    instanceName: string,
+    companyId?: string,
+  ): Promise<EvolutionRemoteInstance | null> {
+    const response = await this.requestEvolution<unknown>({
+      companyId,
+      method: 'GET',
+      operation: 'fetch-instances',
+      path: 'instance/fetchInstances',
+      params: { instanceName },
+      maxRetries: 0,
+    });
+
+    const match = this.extractRemoteInstances(response).find(
+      (item) => item.instanceName === instanceName,
+    );
+
+    return match || null;
+  }
+
+  private extractRemoteInstances(payload: unknown): EvolutionRemoteInstance[] {
+    const responseRecord = this.asRecord(payload);
+    const candidates = Array.isArray(payload)
+      ? payload
+      : Array.isArray(responseRecord?.response)
+        ? responseRecord.response
+        : responseRecord?.instance
+          ? [responseRecord.instance]
+          : [];
+
+    const instances: EvolutionRemoteInstance[] = [];
+
+    for (const candidate of candidates) {
+      const instanceRecord =
+        this.asRecord(this.asRecord(candidate)?.instance) || this.asRecord(candidate);
+      const instanceName = this.asString(instanceRecord?.instanceName);
+
+      if (!instanceRecord || !instanceName) {
+        continue;
+      }
+
+      const state =
+        this.asString(instanceRecord.state) ||
+        this.asString(instanceRecord.status) ||
+        'close';
+
+      instances.push({
+        instanceName,
+        state: this.normalizeRemoteState(state),
+      });
+    }
+
+    return instances;
+  }
+
+  private normalizeRemoteState(value: string | null): string {
+    const normalized = value?.trim().toLowerCase();
+
+    if (!normalized) {
+      return 'close';
+    }
+
+    if (normalized === 'connected') {
+      return 'open';
+    }
+
+    if (normalized === 'disconnected') {
+      return 'close';
+    }
+
+    if (normalized === 'created') {
+      return 'connecting';
+    }
+
+    return normalized;
+  }
+
+  private async persistRemoteState(
+    instance: WhatsappInstance,
+    rawState: string,
+  ): Promise<WhatsappInstance> {
+    const state = this.normalizeRemoteState(rawState);
+    const status = this.mapInstanceStatus(state, instance.qrCode);
+    const connected = state === 'open';
+
+    const [, updated] = await this.prisma.$transaction([
+      this.prisma.company.update({
+        where: { id: instance.companyId },
+        data: {
+          evolutionConnected: connected,
+          lastConnectedAt: connected ? new Date() : null,
+        },
+      }),
+      this.prisma.whatsappInstance.update({
+        where: { id: instance.id },
+        data: {
+          status,
+          connectionState: state,
+          qrCode: connected ? null : instance.qrCode,
+          pairingCode: connected ? null : instance.pairingCode,
+          lastConnectionAt: connected ? new Date() : instance.lastConnectionAt,
+          lastError: null,
+        },
+      }),
+    ]);
+
+    return updated;
+  }
+
+  private async persistDisconnectedState(
+    instance: WhatsappInstance,
+  ): Promise<WhatsappInstance> {
+    const [, updated] = await this.prisma.$transaction([
+      this.prisma.company.update({
+        where: { id: instance.companyId },
+        data: {
+          evolutionConnected: false,
+        },
+      }),
+      this.prisma.whatsappInstance.update({
+        where: { id: instance.id },
+        data: {
+          status: WhatsappInstanceStatus.DISCONNECTED,
+          connectionState: 'close',
+          qrCode: null,
+          pairingCode: null,
+          lastError: null,
+        },
+      }),
+    ]);
+
+    return updated;
+  }
+
+  private async detectRemoteVersion(companyId?: string): Promise<string | null> {
+    if (!this.isConfigured()) {
+      return null;
+    }
+
+    const now = Date.now();
+    if (
+      this.remoteInfoCache &&
+      now - this.remoteInfoCache.checkedAt < this.evolutionInfoTtlMs
+    ) {
+      return this.remoteInfoCache.version;
+    }
+
+    try {
+      const response = await this.requestEvolution<EvolutionInfoResponse>({
+        companyId,
+        method: 'GET',
+        operation: 'detect-version',
+        path: '',
+        maxRetries: 0,
+        timeoutMs: Math.min(this.evolutionTimeoutMs, 5000),
+      });
+      const version = this.asString(response?.version);
+      this.remoteInfoCache = {
+        version,
+        checkedAt: now,
+      };
+      return version;
+    } catch {
+      this.remoteInfoCache = {
+        version: null,
+        checkedAt: now,
+      };
+      return null;
+    }
+  }
+
+  private async requestEvolution<TResponse = unknown>({
+    companyId,
+    method,
+    operation,
+    path,
+    data,
+    params,
+    timeoutMs,
+    maxRetries,
+  }: EvolutionRequestOptions): Promise<TResponse> {
+    this.ensureConfigured();
+
+    const normalizedPath = this.normalizeRequestPath(path);
+    const fullUrl = this.buildEvolutionUrl(normalizedPath, params);
+    const attempts = (maxRetries ?? this.evolutionMaxRetries) + 1;
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      this.logger.warn(`Evolution request: ${method} ${fullUrl}`);
+
+      const startedAt = Date.now();
+
+      try {
+        const response = await this.api.request<TResponse>({
+          method,
+          url: normalizedPath,
+          data,
+          params,
+          timeout: timeoutMs ?? this.evolutionTimeoutMs,
+        });
+
+        return response.data;
+      } catch (error) {
+        lastError = error;
+        await this.logEvolutionFailure({
+          companyId,
+          method,
+          operation,
+          fullUrl,
+          data,
+          params,
+          error,
+          responseTime: Date.now() - startedAt,
+          attempt,
+          attempts,
+        });
+
+        if (
+          attempt >= attempts ||
+          !this.shouldRetryEvolutionError(method, error)
+        ) {
+          break;
+        }
+
+        await this.sleep(300 * 2 ** (attempt - 1));
+      }
+    }
+
+    throw lastError;
+  }
+
+  private normalizeRequestPath(path: string): string {
+    return path.replace(/^\/+/, '');
+  }
+
+  private buildEvolutionUrl(
+    path: string,
+    params?: Record<string, string | number | boolean | undefined>,
+  ): string {
+    if (!this.evolutionApiUrl) {
+      throw new BadRequestException('EVOLUTION_API_URL nao configurada no servidor');
+    }
+
+    const url = new URL(path, `${this.evolutionApiUrl}/`);
+
+    for (const [key, value] of Object.entries(params || {})) {
+      if (value === undefined || value === null) {
+        continue;
+      }
+
+      url.searchParams.set(key, String(value));
+    }
+
+    return url.toString();
+  }
+
+  private shouldRetryEvolutionError(
+    method: EvolutionHttpMethod,
+    error: unknown,
+  ): boolean {
+    if (method !== 'GET') {
+      return false;
+    }
+
+    if (!axios.isAxiosError(error)) {
+      return false;
+    }
+
+    if (!error.response) {
+      return true;
+    }
+
+    return (
+      error.response.status === 408 ||
+      error.response.status === 429 ||
+      error.response.status >= 500
+    );
+  }
+
+  private shouldFallbackToFetchInstances(error: unknown): boolean {
+    if (!axios.isAxiosError(error)) {
+      return false;
+    }
+
+    const status = error.response?.status;
+
+    if (!status) {
+      return true;
+    }
+
+    return [404, 405, 500, 501, 502, 503, 504].includes(status);
+  }
+
+  private isAuthenticationError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    return status === 401 || status === 403;
+  }
+
+  private isInstanceAlreadyExistsError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    const message = this.extractAxiosMessage(error).toLowerCase();
+
+    if (!status || ![400, 403, 409, 500].includes(status)) {
+      return false;
+    }
+
+    return (
+      message.includes('already exist') ||
+      message.includes('instance exists') ||
+      message.includes('ja existe')
+    );
+  }
+
+  private extractStatusCode(error: unknown): number | null {
+    return axios.isAxiosError(error) && error.response?.status
+      ? error.response.status
+      : null;
+  }
+
+  private extractAxiosMessage(error: unknown): string {
+    if (!axios.isAxiosError(error)) {
+      return error instanceof Error ? error.message : 'erro desconhecido';
+    }
+
+    const responseData = error.response?.data;
+    if (typeof responseData === 'string' && responseData.trim()) {
+      return responseData;
+    }
+
+    const responseRecord = this.asRecord(responseData);
+    const message =
+      this.asString(responseRecord?.message) ||
+      this.asString(this.asRecord(responseRecord?.response)?.message);
+
+    return message || error.message || 'erro desconhecido';
+  }
+
+  private async logEvolutionFailure(input: {
+    companyId?: string;
+    method: string;
+    operation: string;
+    fullUrl: string;
+    data?: Record<string, unknown>;
+    params?: Record<string, string | number | boolean | undefined>;
+    error: unknown;
+    responseTime: number;
+    attempt: number;
+    attempts: number;
+  }): Promise<void> {
+    const status = this.extractStatusCode(input.error);
+    const responseData = axios.isAxiosError(input.error)
+      ? input.error.response?.data
+      : null;
+
+    this.logger.error(
+      JSON.stringify({
+        event: 'evolution.request.failed',
+        operation: input.operation,
+        method: input.method,
+        url: input.fullUrl,
+        status,
+        data: this.sanitizeForLogs(responseData),
+        params: this.sanitizeForLogs(input.params),
+        attempt: input.attempt,
+        attempts: input.attempts,
+      }),
+      input.error instanceof Error ? input.error.stack : undefined,
+    );
+
+    await this.prisma.apiLog.create({
+      data: {
+        method: input.method,
+        path: input.fullUrl,
+        statusCode: status || 424,
+        responseTime: input.responseTime,
+        status: 'FAILED',
+        provider: 'EVOLUTION',
+        errorMessage: this.extractAxiosMessage(input.error),
+        companyId: input.companyId || undefined,
+        payload: {
+          operation: input.operation,
+          request: this.sanitizeForLogs(input.data),
+          params: this.sanitizeForLogs(input.params),
+          response: this.sanitizeForLogs(responseData),
+          attempt: input.attempt,
+          attempts: input.attempts,
+        } as Prisma.InputJsonValue,
+      },
+    }).catch(() => undefined);
+  }
+
+  private sanitizeForLogs(value: unknown): unknown {
+    if (Array.isArray(value)) {
+      return value.map((item) => this.sanitizeForLogs(item));
+    }
+
+    if (!value || typeof value !== 'object') {
+      if (typeof value === 'string') {
+        return this.redactSensitiveUrl(value);
+      }
+      return value;
+    }
+
+    const record = value as Record<string, unknown>;
+
+    return Object.fromEntries(
+      Object.entries(record).map(([key, entryValue]) => {
+        const normalizedKey = key.toLowerCase();
+        if (
+          normalizedKey.includes('apikey') ||
+          normalizedKey.includes('authorization') ||
+          normalizedKey.includes('token') ||
+          normalizedKey.includes('password')
+        ) {
+          return [key, '<redacted>'];
+        }
+
+        if (normalizedKey === 'url' && typeof entryValue === 'string') {
+          return [key, this.redactSensitiveUrl(entryValue)];
+        }
+
+        return [key, this.sanitizeForLogs(entryValue)];
+      }),
+    );
+  }
+
+  private redactSensitiveUrl(value: string): string {
+    try {
+      const url = new URL(value);
+
+      for (const key of ['token', 'apikey', 'authorization']) {
+        if (url.searchParams.has(key)) {
+          url.searchParams.set(key, '<redacted>');
+        }
+      }
+
+      return url.toString();
+    } catch {
+      return value;
+    }
+  }
+
+  private readPositiveInteger(
+    rawValue: string | undefined,
+    fallback: number,
+  ): number {
+    const parsed = Number(rawValue);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+  }
+
+  private readBoundedInteger(
+    rawValue: string | undefined,
+    fallback: number,
+    min: number,
+    max: number,
+  ): number {
+    const parsed = this.readPositiveInteger(rawValue, fallback);
+    return Math.min(max, Math.max(min, parsed));
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private isNotFoundError(error: unknown): boolean {
