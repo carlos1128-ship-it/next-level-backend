@@ -1,0 +1,2 @@
+ALTER TABLE "Company"
+ADD COLUMN IF NOT EXISTS "evolutionConnected" BOOLEAN NOT NULL DEFAULT false;

@@ -17,7 +17,6 @@ import { IntegrationProvider } from '@prisma/client';
 import { ActiveCompanyGuard } from '../../common/guards/active-company.guard';
 import { MetaIntegrationService } from './meta.service';
 import { SaveMetaConfigDto } from './dto/save-meta-config.dto';
-import { WppconnectService } from '../integrations/wppconnect.service';
 
 @Controller('whatsapp')
 @UseGuards(ActiveCompanyGuard)
@@ -45,13 +44,12 @@ export class WhatsappConfigController {
 export class MetaStatusController {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly wppconnectService: WppconnectService,
     private readonly metaIntegrationService: MetaIntegrationService,
   ) {}
 
   @Get('status')
   async getConnectionStatus(@Query('companyId') companyId: string) {
-    const [company, wppHealth, metaHealth] = await Promise.all([
+    const [company, metaHealth] = await Promise.all([
       this.prisma.company.findUnique({
         where: { id: companyId },
         select: {
@@ -60,25 +58,16 @@ export class MetaStatusController {
           phoneNumber: true,
         },
       }),
-      this.wppconnectService.getHealthStatus(companyId),
       this.metaIntegrationService.getHealthStatus(companyId),
     ]);
 
-    const connectedViaMeta = metaHealth.connected;
-    const connectedViaWpp = !connectedViaMeta && wppHealth.connected;
-
     return {
-      connected: connectedViaMeta || connectedViaWpp,
-      method: connectedViaMeta ? 'meta' : connectedViaWpp ? 'wppconnect' : null,
+      connected: metaHealth.connected,
+      method: metaHealth.connected ? 'meta' : null,
       phoneNumberId: company?.metaPhoneNumberId ?? null,
-      phoneNumber: connectedViaMeta ? metaHealth.phoneNumber : wppHealth.phoneNumber,
-      status:
-        connectedViaMeta || connectedViaWpp
-          ? 'CONNECTED'
-          : wppHealth.awaitingQR
-            ? 'AWAITING_QR_SCAN'
-            : 'DISCONNECTED',
-      updatedAt: wppHealth.dbLastConnected,
+      phoneNumber: metaHealth.phoneNumber,
+      status: metaHealth.connected ? 'CONNECTED' : 'DISCONNECTED',
+      updatedAt: metaHealth.dbLastConnected,
     };
   }
 }

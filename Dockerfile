@@ -26,23 +26,11 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV PORT=3333
-ENV PUPPETEER_CACHE_DIR=/root/.cache/puppeteer
 
 RUN apt-get update && apt-get install -y \
     openssl \
     postgresql-client \
     wget \
-    libnss3 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libdrm2 \
-    libxkbcommon0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libxrandr2 \
-    libgbm1 \
-    libasound2 \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
@@ -51,8 +39,6 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/scripts ./scripts
-
-RUN npx puppeteer browsers install chrome
 
 EXPOSE 3333
 

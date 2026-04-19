@@ -1,12 +1,12 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import { IntegrationProvider, Prisma } from '@prisma/client';
+import { IntegrationProvider } from '@prisma/client';
 import { AiService } from '../ai/ai.service';
 import { RagService } from '../ai/rag.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MetaIntegrationService } from '../meta/meta.service';
 import { InstagramService } from '../integrations/instagram.service';
-import { WppconnectService } from '../integrations/wppconnect.service';
+import { EvolutionService } from '../integrations/evolution.service';
 import { AlertsService } from '../alerts/alerts.service';
 import { AttendantGateway } from './attendant.gateway';
 
@@ -23,7 +23,7 @@ export class AttendantService {
     private readonly ragService: RagService,
     private readonly metaIntegrationService: MetaIntegrationService,
     private readonly instagramService: InstagramService,
-    private readonly wppconnectService: WppconnectService,
+    private readonly evolutionService: EvolutionService,
     private readonly alertsService: AlertsService,
     private readonly attendantGateway: AttendantGateway,
   ) {}
@@ -341,72 +341,8 @@ export class AttendantService {
     };
   }
 
-  async createWhatsappSession(companyId: string) {
-    const result = await this.wppconnectService.createSession(companyId, { fresh: true });
-    return {
-      ...result,
-      message: 'Nova sessao iniciada somente por acao explicita do usuario.',
-    };
-  }
-
-  async getWhatsappQrCode(companyId: string) {
-    const [health, qrcode] = await Promise.all([
-      this.wppconnectService.getHealthStatus(companyId),
-      Promise.resolve(this.wppconnectService.getQrCode(companyId)),
-    ]);
-    const qrCode = qrcode || health.qrCode;
-
-    return {
-      qrcode: qrCode,
-      qrCode,
-      ready: Boolean(qrCode),
-      status: qrCode ? 'qr_ready' : health.lifecycleState,
-      connectionStatus: health.status,
-      lifecycleState: health.lifecycleState,
-      failureReason: health.failureReason,
-      connected: health.connected,
-      method: health.connected ? 'wppconnect' : null,
-      diagnosticSnapshot: health.diagnosticSnapshot,
-    };
-  }
-
-  async terminateWhatsappSession(companyId: string) {
-    return this.wppconnectService.terminateSession(companyId);
-  }
-
-  async getWhatsappStatus(companyId: string) {
-    const wppHealth = await this.wppconnectService.getHealthStatus(companyId);
-    return {
-      status: wppHealth.connected ? 'connected' : wppHealth.lifecycleState,
-      lifecycleState: wppHealth.lifecycleState,
-      qrcode: wppHealth.qrCode,
-      qrCode: wppHealth.qrCode,
-      connected: wppHealth.connected,
-      method: wppHealth.connected ? 'wppconnect' : null,
-      phoneNumber: wppHealth.phoneNumber,
-      qrRequired: wppHealth.qrRequired,
-      failureReason: wppHealth.failureReason,
-      diagnosticSnapshot: wppHealth.diagnosticSnapshot,
-      updatedAt: wppHealth.dbLastConnected,
-      quotaUsed: 0,
-      quotaLimit: 10000,
-    };
-  }
-
-  async getWhatsappHealth(companyId: string) {
-    const wppHealth = await this.wppconnectService.getHealthStatus(companyId);
-    return {
-      ...wppHealth,
-      method: wppHealth.connected ? 'wppconnect' : null,
-    };
-  }
-
-  async cleanupWhatsappSession(companyId: string) {
-    return this.wppconnectService.forceCleanupSession(companyId);
-  }
-
   async getConnectionStatus(companyId: string) {
-    const [company, wppHealth, metaHealth] = await Promise.all([
+    const [company, evolutionState, metaHealth, qrCode] = await Promise.all([
       this.prisma.company.findUnique({
         where: { id: companyId },
         select: {
@@ -415,34 +351,33 @@ export class AttendantService {
           phoneNumber: true,
         },
       }),
-      this.wppconnectService.getHealthStatus(companyId),
+      this.evolutionService.getConnectionStatus(companyId),
       this.metaIntegrationService.getHealthStatus(companyId),
+      this.evolutionService.getQRCode(companyId).catch(() => null),
     ]);
 
     const connectedViaMeta = metaHealth.connected;
-    const connectedViaWpp = !connectedViaMeta && wppHealth.connected;
-    const awaitingQr = !connectedViaMeta && wppHealth.awaitingQR;
+    const connectedViaEvolution = !connectedViaMeta && evolutionState === 'open';
+    const awaitingQr = !connectedViaMeta && !connectedViaEvolution && Boolean(qrCode);
 
     return {
-      connected: connectedViaMeta || connectedViaWpp,
+      connected: connectedViaMeta || connectedViaEvolution,
       method: connectedViaMeta
         ? 'meta'
-        : connectedViaWpp
-          ? 'wppconnect'
+        : connectedViaEvolution
+          ? 'evolution'
           : null,
-      status: connectedViaMeta || connectedViaWpp
+      status: connectedViaMeta || connectedViaEvolution
         ? 'connected'
         : awaitingQr
           ? 'qr_ready'
-          : wppHealth.qrRequired
-            ? 'needs_new_qr'
-            : wppHealth.lifecycleState,
+          : 'disconnected',
       phoneNumberId: company?.metaPhoneNumberId ?? null,
-      phoneNumber: connectedViaMeta ? metaHealth.phoneNumber : wppHealth.phoneNumber,
-      qrCode: connectedViaMeta ? null : wppHealth.qrCode,
-      qrRequired: wppHealth.qrRequired,
+      phoneNumber: connectedViaMeta ? metaHealth.phoneNumber : null,
+      qrCode: connectedViaMeta ? null : qrCode,
+      qrRequired: awaitingQr,
       sessionId: null,
-      updatedAt: connectedViaMeta ? metaHealth.dbLastConnected : wppHealth.dbLastConnected,
+      updatedAt: connectedViaMeta ? metaHealth.dbLastConnected : null,
     };
   }
 
@@ -698,8 +633,8 @@ export class AttendantService {
     }
 
     const connectionStatus = await this.getConnectionStatus(companyId);
-    if (connectionStatus.method === 'wppconnect') {
-      return this.wppconnectService.sendTextMessage(companyId, contactNumber, content);
+    if (connectionStatus.method === 'evolution') {
+      return this.evolutionService.sendTextMessage(companyId, contactNumber, content);
     }
 
     return this.metaIntegrationService.sendTextMessage(companyId, contactNumber, content);

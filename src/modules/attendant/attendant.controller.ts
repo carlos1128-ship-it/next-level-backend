@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
 import { ActiveCompanyGuard } from '../../common/guards/active-company.guard';
 import { AttendantService } from './attendant.service';
 import { UpdateBotConfigDto } from './dto/update-bot-config.dto';
@@ -6,7 +6,7 @@ import { UpdateBotConfigDto } from './dto/update-bot-config.dto';
 @Controller('attendant')
 @UseGuards(ActiveCompanyGuard)
 export class AttendantController {
-  constructor(private readonly attendantService: AttendantService) { }
+  constructor(private readonly attendantService: AttendantService) {}
 
   @Get('config')
   getConfig(@Req() req: { user: { companyId?: string | null } }, @Query('companyId') companyId?: string) {
@@ -106,33 +106,6 @@ export class AttendantController {
     return this.attendantService.getRoi(resolved!);
   }
 
-  @Post('whatsapp/instance')
-  createWhatsappInstance(
-    @Req() req: { user: { companyId?: string | null } },
-    @Query('companyId') companyId?: string,
-  ) {
-    const resolved = companyId || req.user.companyId;
-    return this.attendantService.createWhatsappSession(resolved!);
-  }
-
-  @Get('whatsapp/qrcode')
-  getWhatsappQrCode(
-    @Req() req: { user: { companyId?: string | null } },
-    @Query('companyId') companyId?: string,
-  ) {
-    const resolved = companyId || req.user.companyId;
-    return this.attendantService.getWhatsappQrCode(resolved!);
-  }
-
-  @Get('whatsapp/status')
-  getWhatsappStatus(
-    @Req() req: { user: { companyId?: string | null } },
-    @Query('companyId') companyId?: string,
-  ) {
-    const resolved = companyId || req.user.companyId;
-    return this.attendantService.getWhatsappStatus(resolved!);
-  }
-
   @Get('connection-status')
   getConnectionStatus(
     @Req() req: { user: { companyId?: string | null } },
@@ -141,37 +114,4 @@ export class AttendantController {
     const resolved = companyId || req.user.companyId;
     return this.attendantService.getConnectionStatus(resolved!);
   }
-
-  /**
-   * Health check detalhado — usado pela aba Atendente Virtual
-   * para verificar estado REAL da conexão WhatsApp.
-   */
-  @Get('whatsapp/health')
-  getWhatsappHealth(
-    @Req() req: { user: { companyId?: string | null } },
-    @Query('companyId') companyId?: string,
-  ) {
-    const resolved = companyId || req.user.companyId;
-    return this.attendantService.getWhatsappHealth(resolved!);
-  }
-
-  /**
-   * Cleanup forçado ao trocar de empresa.
-   */
-  @Post('whatsapp/cleanup')
-  cleanupWhatsappSession(
-    @Req() req: { user: { companyId?: string | null } },
-    @Query('companyId') companyId?: string,
-  ) {
-    const resolved = companyId || req.user.companyId;
-    return this.attendantService.cleanupWhatsappSession(resolved!);
-  }
-
-  @Delete('whatsapp/session/:companyId')
-  terminateWhatsappSession(
-    @Param('companyId') companyId: string,
-  ) {
-    return this.attendantService.terminateWhatsappSession(companyId);
-  }
-
 }

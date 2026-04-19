@@ -6,8 +6,8 @@ import { MetaIntegrationModule } from '../meta/meta.module';
 import { InstagramService } from './instagram.service';
 import { MetaGraphService } from './meta-graph.service';
 import { ShopeeScraperService } from './shopee-scraper.service';
-import { WppconnectService } from './wppconnect.service';
-import { WppSessionStateManager } from './wpp-session-state.manager';
+import { EvolutionController } from './evolution.controller';
+import { EvolutionService } from './evolution.service';
 
 import { DashboardModule } from '../dashboard/dashboard.module';
 import { AiModule } from '../ai/ai.module';
@@ -15,14 +15,13 @@ import { AiModule } from '../ai/ai.module';
 @Global()
 @Module({
   imports: [DashboardModule, AiModule, MetaIntegrationModule],
-  controllers: [IntegrationsController, IntegrationsOAuthController],
+  controllers: [IntegrationsController, IntegrationsOAuthController, EvolutionController],
   providers: [
     IntegrationsService, 
     InstagramService, 
     MetaGraphService,
     ShopeeScraperService,
-    WppSessionStateManager,
-    WppconnectService,
+    EvolutionService,
   ],
   exports: [
     IntegrationsService, 
@@ -30,8 +29,7 @@ import { AiModule } from '../ai/ai.module';
     InstagramService, 
     MetaGraphService,
     ShopeeScraperService,
-    WppSessionStateManager,
-    WppconnectService,
+    EvolutionService,
   ],
 })
 export class IntegrationsModule {}

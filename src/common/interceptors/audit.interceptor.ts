@@ -65,7 +65,6 @@ export class AuditInterceptor implements NestInterceptor {
       'cvv',
       'secret',
       'authorization',
-      'whatsappsessiontoken',
     ];
     if (!payload || typeof payload !== 'object') return payload;
     const clone: Record<string, any> = {};

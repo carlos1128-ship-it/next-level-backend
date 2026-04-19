@@ -94,14 +94,8 @@ model Company {
   metaAccessToken   String? @db.Text
   webhookVerifyToken String?
   phoneNumber       String?
-  whatsappStatus    String   @default("DISCONNECTED")
-  whatsappEnabled   Boolean  @default(false)
-  whatsappSessionName String?
-  whatsappSessionToken String? @db.Text
-  whatsappWid       String?
-  whatsappName      String?
-  whatsappAvatar    String? @db.Text
   lastConnectedAt   DateTime?
+  evolutionConnected Boolean  @default(false)
   instagramAccountId String?
   shopeeShopId       String?
   shopeeUser         String?
