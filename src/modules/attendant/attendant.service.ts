@@ -1,6 +1,9 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import { IntegrationProvider } from '@prisma/client';
+import {
+  IntegrationProvider,
+  WhatsappMessageProcessStatus,
+} from '@prisma/client';
 import { AiService } from '../ai/ai.service';
 import { RagService } from '../ai/rag.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -87,6 +90,14 @@ export class AttendantService {
       payload.text,
       payload.name,
     );
+  }
+
+  @OnEvent('whatsapp.message.process')
+  async handleWhatsappMessageProcess(payload: {
+    messageEventId: string;
+    companyId: string;
+  }) {
+    await this.processWhatsappMessageEvent(payload.messageEventId, payload.companyId);
   }
 
   @OnEvent('whatsapp.status.updated')
@@ -342,7 +353,7 @@ export class AttendantService {
   }
 
   async getConnectionStatus(companyId: string) {
-    const [company, evolutionState, metaHealth, qrCode] = await Promise.all([
+    const [company, evolutionSnapshot, metaHealth] = await Promise.all([
       this.prisma.company.findUnique({
         where: { id: companyId },
         select: {
@@ -351,14 +362,17 @@ export class AttendantService {
           phoneNumber: true,
         },
       }),
-      this.evolutionService.getConnectionStatus(companyId),
+      this.evolutionService.getConnectionSnapshot(companyId),
       this.metaIntegrationService.getHealthStatus(companyId),
-      this.evolutionService.getQRCode(companyId).catch(() => null),
     ]);
 
     const connectedViaMeta = metaHealth.connected;
-    const connectedViaEvolution = !connectedViaMeta && evolutionState === 'open';
-    const awaitingQr = !connectedViaMeta && !connectedViaEvolution && Boolean(qrCode);
+    const connectedViaEvolution =
+      !connectedViaMeta && Boolean(evolutionSnapshot.connected);
+    const awaitingQr =
+      !connectedViaMeta &&
+      !connectedViaEvolution &&
+      Boolean(evolutionSnapshot.qrRequired);
 
     return {
       connected: connectedViaMeta || connectedViaEvolution,
@@ -371,14 +385,85 @@ export class AttendantService {
         ? 'connected'
         : awaitingQr
           ? 'qr_ready'
-          : 'disconnected',
+          : evolutionSnapshot.status,
       phoneNumberId: company?.metaPhoneNumberId ?? null,
-      phoneNumber: connectedViaMeta ? metaHealth.phoneNumber : null,
-      qrCode: connectedViaMeta ? null : qrCode,
+      phoneNumber: connectedViaMeta ? metaHealth.phoneNumber : company?.phoneNumber ?? null,
+      qrCode: connectedViaMeta ? null : evolutionSnapshot.qrCode,
       qrRequired: awaitingQr,
-      sessionId: null,
-      updatedAt: connectedViaMeta ? metaHealth.dbLastConnected : null,
+      sessionId: evolutionSnapshot.instanceName,
+      updatedAt: connectedViaMeta
+        ? metaHealth.dbLastConnected
+        : evolutionSnapshot.updatedAt,
     };
+  }
+
+  private async processWhatsappMessageEvent(
+    messageEventId: string,
+    companyId: string,
+  ) {
+    const event = await this.prisma.whatsappMessageEvent.findFirst({
+      where: { id: messageEventId, companyId },
+    });
+
+    if (!event) {
+      return;
+    }
+
+    if (
+      event.status === WhatsappMessageProcessStatus.PROCESSED ||
+      event.status === WhatsappMessageProcessStatus.IGNORED
+    ) {
+      return;
+    }
+
+    const claimed = await this.prisma.whatsappMessageEvent.updateMany({
+      where: {
+        id: event.id,
+        status: {
+          in: [
+            WhatsappMessageProcessStatus.PENDING,
+            WhatsappMessageProcessStatus.FAILED,
+          ],
+        },
+      },
+      data: {
+        status: WhatsappMessageProcessStatus.PROCESSING,
+        errorMessage: null,
+      },
+    });
+
+    if (!claimed.count) {
+      return;
+    }
+
+    try {
+      await this.processIncomingMessage(
+        companyId,
+        IntegrationProvider.WHATSAPP,
+        event.remoteNumber,
+        event.text || '',
+        event.pushName,
+      );
+
+      await this.prisma.whatsappMessageEvent.update({
+        where: { id: event.id },
+        data: {
+          status: WhatsappMessageProcessStatus.PROCESSED,
+          processedAt: new Date(),
+          errorMessage: null,
+        },
+      });
+    } catch (error) {
+      await this.prisma.whatsappMessageEvent.update({
+        where: { id: event.id },
+        data: {
+          status: WhatsappMessageProcessStatus.FAILED,
+          errorMessage: (error as Error)?.message || 'Falha ao processar mensagem',
+        },
+      }).catch(() => undefined);
+
+      throw error;
+    }
   }
 
   private async processIncomingMessage(

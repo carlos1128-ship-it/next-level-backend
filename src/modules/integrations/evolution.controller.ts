@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   Post,
   Query,
   Req,
@@ -25,8 +26,12 @@ export class EvolutionController {
 
   @Public()
   @Post('webhook')
-  async receiveWebhook(@Body() payload: Record<string, unknown>) {
-    await this.evolutionService.processWebhook(payload);
+  async receiveWebhook(
+    @Body() payload: Record<string, unknown>,
+    @Query('token') token?: string,
+    @Headers('x-evolution-token') headerToken?: string,
+  ) {
+    await this.evolutionService.processWebhook(payload, token || headerToken);
     return { status: 'ok' };
   }
 
@@ -37,11 +42,7 @@ export class EvolutionController {
     @Body('companyId') companyId?: string,
   ) {
     const resolvedCompanyId = companyId || req.user?.companyId || '';
-    await this.evolutionService.createInstance(resolvedCompanyId);
-    return {
-      status: 'connecting',
-      message: 'Gerando QR Code... aguarde alguns segundos.',
-    };
+    return this.evolutionService.connectInstance(resolvedCompanyId);
   }
 
   @Get('qrcode')
@@ -51,12 +52,7 @@ export class EvolutionController {
     @Query('companyId') companyId?: string,
   ) {
     const resolvedCompanyId = companyId || req.user?.companyId || '';
-    const qrcode = await this.evolutionService.getQRCode(resolvedCompanyId);
-    return {
-      qrcode,
-      qrCode: qrcode,
-      ready: Boolean(qrcode),
-    };
+    return this.evolutionService.getQRCode(resolvedCompanyId);
   }
 
   @Get('status')
@@ -66,11 +62,7 @@ export class EvolutionController {
     @Query('companyId') companyId?: string,
   ) {
     const resolvedCompanyId = companyId || req.user?.companyId || '';
-    const state = await this.evolutionService.getConnectionStatus(resolvedCompanyId);
-    return {
-      connected: state === 'open',
-      state,
-    };
+    return this.evolutionService.getConnectionSnapshot(resolvedCompanyId);
   }
 
   @Delete('disconnect')

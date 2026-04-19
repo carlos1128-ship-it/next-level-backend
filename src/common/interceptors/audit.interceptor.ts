@@ -64,6 +64,7 @@ export class AuditInterceptor implements NestInterceptor {
       'api_key',
       'cvv',
       'secret',
+      'webhooktoken',
       'authorization',
     ];
     if (!payload || typeof payload !== 'object') return payload;

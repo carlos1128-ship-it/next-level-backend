@@ -43,7 +43,9 @@ function parseTrustProxy(raw: string | undefined): boolean | number {
 }
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    rawBody: true,
+  });
   const allowedOrigins = parseAllowedOrigins(process.env.CORS_ORIGINS);
   const expressApp = app.getHttpAdapter().getInstance();
   const trustProxy = parseTrustProxy(
@@ -88,6 +90,9 @@ async function bootstrap() {
       max: 600,
       standardHeaders: true,
       legacyHeaders: false,
+      skip: (req) =>
+        req.path.startsWith('/api/evolution/webhook') ||
+        req.path.startsWith('/webhooks/'),
     }),
   );
 

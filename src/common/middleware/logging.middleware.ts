@@ -11,6 +11,8 @@ const SENSITIVE_KEYS = [
   'api_key',
   'cvv',
   'secret',
+  'webhooktoken',
+  'x-evolution-token',
   'authorization',
   'cookie',
 ];

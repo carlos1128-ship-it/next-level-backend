@@ -1,10 +1,16 @@
-import { DynamicModule, Logger, Module } from '@nestjs/common';
+import { DynamicModule, Global, Logger, Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import {
+  PLATFORM_EVENTS_QUEUE,
   WEBHOOKS_QUEUE_ENABLED,
+  createRedisConnection,
+  getRedisUrl,
   isRedisConfigured,
 } from './queue.constants';
+import { PlatformEventProcessor } from './platform-event.processor';
+import { PlatformQueueService } from './platform-queue.service';
 
+@Global()
 @Module({})
 export class QueueModule {
   static register(): DynamicModule {
@@ -12,19 +18,27 @@ export class QueueModule {
     const queueEnabled = isRedisConfigured();
 
     if (!queueEnabled) {
-      logger.warn('REDIS_URL not configured. BullMQ disabled; webhooks will run inline.');
+      logger.warn('REDIS_URL not configured. BullMQ disabled; eventos da plataforma rodarao inline.');
       return {
         module: QueueModule,
-        providers: [{ provide: WEBHOOKS_QUEUE_ENABLED, useValue: false }],
-        exports: [WEBHOOKS_QUEUE_ENABLED],
+        providers: [
+          { provide: WEBHOOKS_QUEUE_ENABLED, useValue: false },
+          PlatformQueueService,
+        ],
+        exports: [WEBHOOKS_QUEUE_ENABLED, PlatformQueueService],
       };
     }
+
+    const redisUrl = getRedisUrl();
 
     return {
       module: QueueModule,
       imports: [
+        BullModule.forRoot({
+          connection: createRedisConnection(redisUrl),
+        }),
         BullModule.registerQueue({
-          name: 'webhooks_queue',
+          name: PLATFORM_EVENTS_QUEUE,
           defaultJobOptions: {
             attempts: 3,
             backoff: {
@@ -36,8 +50,12 @@ export class QueueModule {
           },
         }),
       ],
-      providers: [{ provide: WEBHOOKS_QUEUE_ENABLED, useValue: true }],
-      exports: [BullModule, WEBHOOKS_QUEUE_ENABLED],
+      providers: [
+        { provide: WEBHOOKS_QUEUE_ENABLED, useValue: true },
+        PlatformQueueService,
+        PlatformEventProcessor,
+      ],
+      exports: [BullModule, WEBHOOKS_QUEUE_ENABLED, PlatformQueueService],
     };
   }
 }

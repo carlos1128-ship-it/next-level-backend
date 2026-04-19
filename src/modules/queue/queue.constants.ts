@@ -1,4 +1,5 @@
 export const WEBHOOKS_QUEUE_ENABLED = 'WEBHOOKS_QUEUE_ENABLED';
+export const PLATFORM_EVENTS_QUEUE = 'platform_events_queue';
 
 export function getRedisUrl() {
   return process.env.REDIS_URL?.trim() || '';
@@ -13,6 +14,7 @@ export function createRedisConnection(url: string) {
   const database = parsed.pathname.replace('/', '');
 
   return {
+    url,
     host: parsed.hostname,
     port: Number(parsed.port || 6379),
     username: parsed.username || undefined,

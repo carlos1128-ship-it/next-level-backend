@@ -75,6 +75,22 @@ enum WebhookLogStatus {
   FAILED
 }
 
+enum WhatsappInstanceStatus {
+  DISCONNECTED
+  CONNECTING
+  QR_READY
+  CONNECTED
+  ERROR
+}
+
+enum WhatsappMessageProcessStatus {
+  PENDING
+  PROCESSING
+  PROCESSED
+  FAILED
+  IGNORED
+}
+
 model Company {
   id          String    @id @default(cuid())
   userId      String?
@@ -131,6 +147,8 @@ model Company {
   usageQuota          UsageQuota?
   apiLogs             ApiLog[]
   auditTrails         AuditTrail[]
+  whatsappInstance    WhatsappInstance?
+  whatsappMessageEvents WhatsappMessageEvent[]
 }
 
 model AdSpend {
@@ -596,4 +614,55 @@ model MarketTrend {
 
   @@index([companyId, createdAt])
   @@unique([companyId, term, createdAt])
+}
+
+model WhatsappInstance {
+  id               String                 @id @default(cuid())
+  companyId        String                 @unique
+  instanceName     String                 @unique
+  webhookTokenHash String
+  status           WhatsappInstanceStatus @default(DISCONNECTED)
+  connectionState  String                 @default("close")
+  qrCode           String?                @db.Text
+  pairingCode      String?
+  phoneNumber      String?
+  lastConnectionAt DateTime?
+  lastWebhookAt    DateTime?
+  lastError        String?                @db.Text
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+
+  company       Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  messageEvents WhatsappMessageEvent[]
+
+  @@index([status, updatedAt])
+}
+
+model WhatsappMessageEvent {
+  id                String                       @id @default(cuid())
+  companyId         String
+  instanceId        String
+  externalMessageId String
+  remoteJid         String
+  remoteNumber      String
+  pushName          String?
+  messageType       String?
+  text              String?                      @db.Text
+  fromMe            Boolean                      @default(false)
+  eventName         String
+  messageTimestamp  DateTime?
+  status            WhatsappMessageProcessStatus @default(PENDING)
+  errorMessage      String?                      @db.Text
+  rawPayload        Json
+  processedAt       DateTime?
+  createdAt         DateTime                     @default(now())
+  updatedAt         DateTime                     @updatedAt
+
+  company  Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  instance WhatsappInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, externalMessageId])
+  @@index([companyId, status, createdAt])
+  @@index([companyId, remoteNumber, createdAt])
+  @@index([instanceId, createdAt])
 }

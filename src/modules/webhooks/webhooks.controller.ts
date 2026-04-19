@@ -6,10 +6,14 @@ import {
   Logger,
   Post,
   Query,
+  Req,
+  Res,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { IntegrationProvider } from '@prisma/client';
+import { Request, Response } from 'express';
 import { Public } from '../../common/decorators/public.decorator';
+import { PrismaService } from '../../prisma/prisma.service';
 import { WebhooksMetaService } from './webhooks-meta.service';
 import { WebhookIngestService } from './webhook-ingest.service';
 import * as crypto from 'crypto';
@@ -18,6 +22,7 @@ import * as crypto from 'crypto';
 export class WebhooksController {
   constructor(
     private readonly configService: ConfigService,
+    private readonly prisma: PrismaService,
     private readonly webhooksMetaService: WebhooksMetaService,
     private readonly webhookIngestService: WebhookIngestService,
   ) {}
@@ -26,32 +31,50 @@ export class WebhooksController {
 
   @Public()
   @Get('meta')
-  verify(
+  async verify(
     @Query('hub.mode') mode: string,
     @Query('hub.verify_token') token: string,
     @Query('hub.challenge') challenge: string,
+    @Res() res: Response,
   ) {
-    const verifyToken =
+    const globalToken =
       this.configService.get<string>('META_WEBHOOK_VERIFY_TOKEN') ||
       this.configService.get<string>('META_VERIFY_TOKEN');
 
-    if (mode === 'subscribe' && verifyToken && token === verifyToken) {
-      return challenge;
+    const companyToken = token
+      ? await this.prisma.company.findFirst({
+          where: { webhookVerifyToken: token },
+          select: { id: true },
+        })
+      : null;
+
+    if (
+      mode === 'subscribe' &&
+      token &&
+      ((globalToken && token === globalToken) || companyToken)
+    ) {
+      return res.status(200).send(challenge);
     }
 
-    return { ok: false, message: 'Verificacao Meta falhou' };
+    return res.status(403).send('Verificacao Meta falhou');
   }
 
   @Public()
   @Post('meta')
   async handleMeta(
+    @Req() req: Request & { rawBody?: Buffer },
+    @Res() res: Response,
     @Headers('x-hub-signature-256') signature: string,
     @Body() body: Record<string, unknown>,
   ) {
     const provider = this.detectMetaProvider(body);
     const externalId = this.extractMetaExternalId(body);
-    const signatureValid = this.isValidMetaSignature(signature, body);
+    const signatureValid = this.isValidMetaSignature(signature, req.rawBody, body);
     const companyIdHint = this.extractCompanyId(body);
+
+    if (!signatureValid) {
+      return res.status(401).json({ ok: false, error: 'Assinatura Meta invalida' });
+    }
 
     try {
       const { event, companyId } = await this.webhookIngestService.registerEvent(
@@ -71,15 +94,15 @@ export class WebhooksController {
         }
       });
 
-      return {
+      return res.status(200).json({
         ok: true,
         eventId: event.id,
         companyId,
         signatureValid,
-      };
+      });
     } catch (error) {
       this.logger.error('Falha ao salvar webhook Meta', error as Error);
-      return { ok: true, stored: false, signatureValid };
+      return res.status(200).json({ ok: true, stored: false, signatureValid });
     }
   }
 
@@ -153,6 +176,7 @@ export class WebhooksController {
 
   private isValidMetaSignature(
     signature: string | undefined,
+    rawBody: Buffer | undefined,
     body: Record<string, unknown>,
   ): boolean {
     const appSecret =
@@ -161,15 +185,26 @@ export class WebhooksController {
 
     if (!appSecret || !signature) return true;
 
+    const payload = rawBody && rawBody.length > 0
+      ? rawBody
+      : Buffer.from(JSON.stringify(body));
+
     const expected =
       'sha256=' +
       crypto
         .createHmac('sha256', appSecret)
-        .update(JSON.stringify(body))
+        .update(payload)
         .digest('hex');
 
-    return expected === signature;
+    const expectedBuffer = Buffer.from(expected);
+    const signatureBuffer = Buffer.from(signature);
+    if (expectedBuffer.length !== signatureBuffer.length) {
+      return false;
+    }
+
+    return crypto.timingSafeEqual(expectedBuffer, signatureBuffer);
   }
+
   private extractCompanyId(payload: Record<string, unknown>): string | null {
     const direct = payload?.['companyId'] || payload?.['company_id'];
     if (typeof direct === 'string' && direct.trim()) return direct.trim();
