@@ -10,6 +10,7 @@ import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { LoggingMiddleware } from './common/middleware/logging.middleware';
 import { PrismaModule } from './prisma/prisma.module';
 import { ReportModule } from './report/report.module';
+import { validateEnvironment } from './config/env.validation';
 import { QueueModule } from './modules/queue/queue.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { AiModule } from './modules/ai/ai.module';
@@ -36,7 +37,7 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module';
 @Module({
   controllers: [AppController],
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }),
     QueueModule.register(),
     EventEmitterModule.forRoot(),
     ScheduleModule.forRoot(),
