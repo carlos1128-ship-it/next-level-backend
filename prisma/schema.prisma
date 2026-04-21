@@ -92,62 +92,64 @@ enum WhatsappMessageProcessStatus {
 }
 
 model Company {
-  id          String    @id @default(cuid())
-  userId      String?
-  name        String
-  sector      String?
-  segment     String?
-  document    String?
-  description String?
-  openedAt    DateTime?
-  slug        String    @unique @default(cuid())
-  currency    String    @default("BRL")
-  timezone    String    @default("America/Sao_Paulo")
-  defaultTaxRate Decimal? @db.Decimal(5, 2)
-  metaPhoneNumberId String?
-  metaWabaId        String?
-  whatsappBusinessId String?
-  metaAccessToken   String? @db.Text
-  webhookVerifyToken String?
-  phoneNumber       String?
-  lastConnectedAt   DateTime?
-  evolutionConnected Boolean  @default(false)
-  instagramAccountId String?
-  shopeeShopId       String?
-  shopeeUser         String?
-  shopeePass         String?
-  shopeeAccessToken  String?
-  shopeeRefreshToken String?
+  id                   String    @id @default(cuid())
+  userId               String?
+  name                 String
+  sector               String?
+  segment              String?
+  document             String?
+  description          String?
+  openedAt             DateTime?
+  slug                 String    @unique @default(cuid())
+  currency             String    @default("BRL")
+  timezone             String    @default("America/Sao_Paulo")
+  defaultTaxRate       Decimal?  @db.Decimal(5, 2)
+  metaPhoneNumberId    String?
+  metaWabaId           String?
+  whatsappBusinessId   String?
+  metaAccessToken      String?   @db.Text
+  webhookVerifyToken   String?
+  phoneNumber          String?
+  lastConnectedAt      DateTime?
+  evolutionConnected   Boolean   @default(false)
+  instagramAccountId   String?
+  shopeeShopId         String?
+  shopeeUser           String?
+  shopeePass           String?
+  shopeeAccessToken    String?
+  shopeeRefreshToken   String?
   shopeeTokenExpiresAt DateTime?
-  shopeeCookies      String? @db.Text
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  shopeeCookies        String?   @db.Text
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
-  users    User[]
-  sales    Sale[]
-  adSpends AdSpend[]
+  users                 User[]
+  sales                 Sale[]
+  adSpends              AdSpend[]
   financialTransactions FinancialTransaction[]
-  aiChatMessages       AiChatMessage[]
-  products            Product[]
-  customers           Customer[]
-  operationalCosts    OperationalCost[]
-  integrations        Integration[]
-  webhookEvents       WebhookEvent[]
-  webhookLogs         WebhookLog[]
-  alerts              Alert[]
-  forecastSnapshots   ForecastSnapshot[]
-  strategicActions    StrategicAction[]
-  competitors         Competitor[]
-  marketPrices        MarketPrice[]
-  marketTrends        MarketTrend[]
-  botConfig           BotConfig?
-  agentConfig         AgentConfig?
-  leads               Lead[]
-  conversations       Conversation[]
-  usageQuota          UsageQuota?
-  apiLogs             ApiLog[]
-  auditTrails         AuditTrail[]
-  whatsappInstance    WhatsappInstance?
+  aiChatMessages        AiChatMessage[]
+  products              Product[]
+  customers             Customer[]
+  operationalCosts      OperationalCost[]
+  integrations          Integration[]
+  webhookEvents         WebhookEvent[]
+  webhookLogs           WebhookLog[]
+  alerts                Alert[]
+  forecastSnapshots     ForecastSnapshot[]
+  strategicActions      StrategicAction[]
+  competitors           Competitor[]
+  marketPrices          MarketPrice[]
+  marketTrends          MarketTrend[]
+  botConfig             BotConfig?
+  agentConfig           AgentConfig?
+  leads                 Lead[]
+  conversations         Conversation[]
+  messages              Message[]
+  usageQuota            UsageQuota?
+  apiLogs               ApiLog[]
+  auditTrails           AuditTrail[]
+  whatsappInstance      WhatsappInstance?
+  whatsappConnection    WhatsappConnection?
   whatsappMessageEvents WhatsappMessageEvent[]
 }
 
@@ -167,34 +169,34 @@ model AdSpend {
 }
 
 model User {
-  id        String   @id @default(uuid())
-  email     String   @unique
-  password  String?
-  googleId  String?  @unique
-  plan      Plan     @default(COMUM)
-  admin     Boolean  @default(false)
-  detailLevel String @default("medium")
-  niche     UserNiche?
-  name      String?
-  companyId String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          String     @id @default(uuid())
+  email       String     @unique
+  password    String?
+  googleId    String?    @unique
+  plan        Plan       @default(COMUM)
+  admin       Boolean    @default(false)
+  detailLevel String     @default("medium")
+  niche       UserNiche?
+  name        String?
+  companyId   String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
 
-  company              Company?               @relation(fields: [companyId], references: [id], onDelete: SetNull)
-  sales                Sale[]
-  analyses             Analysis[]
+  company               Company?               @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  sales                 Sale[]
+  analyses              Analysis[]
   financialTransactions FinancialTransaction[]
-  aiChatMessages       AiChatMessage[]
-  refreshTokens        RefreshToken[]
+  aiChatMessages        AiChatMessage[]
+  refreshTokens         RefreshToken[]
 }
 
 model RefreshToken {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   userId    String
   tokenHash String
   expiresAt DateTime
   revokedAt DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -215,13 +217,13 @@ model Sale {
   userId      String?
   companyId   String
   amount      Decimal     @db.Decimal(12, 2)
-  productName String?     // Nome do produto (ou use category para agrupamento)
-  category    String?     // Categoria opcional para agrupamento no dashboard
+  productName String? // Nome do produto (ou use category para agrupamento)
+  category    String? // Categoria opcional para agrupamento no dashboard
   channel     SaleChannel @default(manual) // manual | shopify | meta
-  occurredAt  DateTime    // Timestamp real da venda (não o created_at)
+  occurredAt  DateTime // Timestamp real da venda (não o created_at)
   createdAt   DateTime    @default(now())
 
-  user    User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user    User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   @@index([userId])
@@ -264,13 +266,13 @@ model FinancialTransaction {
 }
 
 model AiChatMessage {
-  id         String    @id @default(cuid())
+  id         String     @id @default(cuid())
   userId     String
   companyId  String
   role       AiChatRole
   content    String
   tokensUsed Int?
-  createdAt  DateTime  @default(now())
+  createdAt  DateTime   @default(now())
 
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
@@ -295,7 +297,7 @@ model Product {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
   marketPrices MarketPrice[]
 
   @@index([companyId])
@@ -337,30 +339,30 @@ model OperationalCost {
 }
 
 model Integration {
-  id          String               @id @default(cuid())
-  companyId   String
-  provider    IntegrationProvider
-  accessToken String
+  id           String              @id @default(cuid())
+  companyId    String
+  provider     IntegrationProvider
+  accessToken  String
   refreshToken String?
-  externalId  String
-  status      String               @default("connected")
-  createdAt   DateTime             @default(now())
-  updatedAt   DateTime             @updatedAt
+  externalId   String
+  status       String              @default("connected")
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
-  @@index([companyId, provider])
   @@unique([companyId, provider])
   @@unique([provider, externalId])
+  @@index([companyId, provider])
 }
 
 model WebhookEvent {
-  id        String               @id @default(cuid())
+  id        String              @id @default(cuid())
   companyId String?
   provider  IntegrationProvider
   payload   Json
-  processed Boolean              @default(false)
-  createdAt DateTime             @default(now())
+  processed Boolean             @default(false)
+  createdAt DateTime            @default(now())
 
   company Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
@@ -369,13 +371,13 @@ model WebhookEvent {
 }
 
 model WebhookLog {
-  id        String           @id @default(cuid())
+  id        String              @id @default(cuid())
   companyId String?
   provider  IntegrationProvider
-  status    WebhookLogStatus @default(SUCCESS)
+  status    WebhookLogStatus    @default(SUCCESS)
   message   String?
   eventId   String?
-  createdAt DateTime         @default(now())
+  createdAt DateTime            @default(now())
 
   company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
 
@@ -397,12 +399,12 @@ model Alert {
 }
 
 model ForecastSnapshot {
-  id            String        @id @default(cuid())
+  id            String       @id @default(cuid())
   companyId     String
   type          ForecastType
   data          Json
-  accuracyScore Float         @default(0)
-  createdAt     DateTime      @default(now())
+  accuracyScore Float        @default(0)
+  createdAt     DateTime     @default(now())
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
@@ -411,15 +413,15 @@ model ForecastSnapshot {
 }
 
 model StrategicAction {
-  id           String                @id @default(cuid())
-  companyId    String
-  title        String
-  description  String
-  type         StrategicActionType
-  status       StrategicActionStatus @default(SUGGESTED)
-  impactScore  Int                   @default(50)
-  payload      Json
-  createdAt    DateTime              @default(now())
+  id          String                @id @default(cuid())
+  companyId   String
+  title       String
+  description String
+  type        StrategicActionType
+  status      StrategicActionStatus @default(SUGGESTED)
+  impactScore Int                   @default(50)
+  payload     Json
+  createdAt   DateTime              @default(now())
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
@@ -428,77 +430,132 @@ model StrategicAction {
 }
 
 model BotConfig {
-  id                    String   @id @default(cuid())
-  companyId             String   @unique
-  botName               String   @default("Atendente IA")
-  welcomeMessage        String?
-  toneOfVoice           String   @default("amigavel")
-  instructions          String?
-  isActive              Boolean  @default(true)
-  messageQuotaUsed      Int      @default(0)
-  messageQuotaLimit     Int      @default(100)
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  id                String   @id @default(cuid())
+  companyId         String   @unique
+  botName           String   @default("Atendente IA")
+  welcomeMessage    String?
+  toneOfVoice       String   @default("amigavel")
+  instructions      String?
+  isActive          Boolean  @default(true)
+  messageQuotaUsed  Int      @default(0)
+  messageQuotaLimit Int      @default(100)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 }
 
 model AgentConfig {
-  id             String   @id @default(cuid())
-  companyId      String   @unique
-  agentName      String   @default("Atendente")
-  tone           String   @default("Amigável")
-  welcomeMessage String   @db.Text
-  instructions   String   @db.Text
-  isOnline       Boolean  @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id                        String   @id @default(cuid())
+  companyId                 String   @unique
+  agentName                 String   @default("Atendente")
+  tone                      String   @default("Amigável")
+  welcomeMessage            String   @default("") @db.Text
+  instructions              String   @default("") @db.Text
+  systemPrompt              String   @default("") @db.Text
+  toneOfVoice               String   @default("consultivo")
+  internetSearchEnabled     Boolean  @default(false)
+  speechToTextEnabled       Boolean  @default(false)
+  imageUnderstandingEnabled Boolean  @default(false)
+  pauseForHuman             Boolean  @default(true)
+  debounceSeconds           Int      @default(3)
+  maxContextMessages        Int      @default(20)
+  isEnabled                 Boolean  @default(false)
+  modelProvider             String   @default("openai")
+  modelName                 String   @default("gpt-4o-mini")
+  isOnline                  Boolean  @default(true)
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 }
 
+model WhatsappConnection {
+  id               String    @id @default(cuid())
+  companyId        String    @unique
+  provider         String    @default("evolution")
+  instanceName     String    @unique
+  instanceToken    String?   @db.Text
+  status           String    @default("disconnected")
+  qrCode           String?   @db.Text
+  pairingCode      String?
+  phoneNumber      String?
+  webhookUrl       String?   @db.Text
+  lastConnectionAt DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, status])
+  @@index([status, updatedAt])
+}
+
 model Conversation {
-  id             String    @id @default(cuid())
-  companyId      String
-  contactNumber  String
-  contactName    String?
-  status         String    @default("Aguardando")
-  isPaused       Boolean   @default(false)
-  pausedUntil    DateTime?
-  lastMessageAt  DateTime  @default(now())
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
-  messages       Message[]
-  company        Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  id                 String    @id @default(cuid())
+  companyId          String
+  contactNumber      String
+  remoteJid          String?
+  contactName        String?
+  status             String    @default("Aguardando")
+  isPaused           Boolean   @default(false)
+  botPaused          Boolean   @default(false)
+  pausedUntil        DateTime?
+  lastMessagePreview String?   @db.Text
+  lastMessageAt      DateTime  @default(now())
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  messages           Message[]
+  company            Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   @@unique([companyId, contactNumber])
+  @@index([companyId, remoteJid])
   @@index([companyId, updatedAt])
   @@index([companyId, isPaused])
 }
 
 model Message {
-  id             String       @id @default(cuid())
-  conversationId String
-  content        String       @db.Text
-  role           String
-  timestamp      DateTime     @default(now())
-  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  id                String       @id @default(cuid())
+  companyId         String?
+  conversationId    String
+  externalMessageId String?
+  content           String       @default("") @db.Text
+  role              String       @default("user")
+  direction         String       @default("inbound")
+  contentType       String       @default("text")
+  text              String?      @db.Text
+  transcription     String?      @db.Text
+  mediaUrl          String?      @db.Text
+  aiResponse        String?      @db.Text
+  senderName        String?
+  senderPhone       String?
+  status            String       @default("received")
+  metadata          Json?
+  rawPayload        Json?
+  timestamp         DateTime     @default(now())
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  company           Company?     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversation      Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
+  @@unique([conversationId, externalMessageId])
+  @@index([companyId, createdAt])
+  @@index([conversationId, createdAt])
   @@index([conversationId, timestamp])
 }
 
 model Lead {
-  id               String      @id @default(cuid())
-  companyId        String
-  externalId       String
-  name             String?
-  status           LeadStatus  @default(NEW)
-  score            Int         @default(0)
-  lastInteraction  DateTime?
-  botPausedUntil   DateTime?
-  lastQuotedValue  Decimal?    @db.Decimal(12, 2)
-  createdAt        DateTime    @default(now())
-  updatedAt        DateTime    @updatedAt
+  id              String     @id @default(cuid())
+  companyId       String
+  externalId      String
+  name            String?
+  status          LeadStatus @default(NEW)
+  score           Int        @default(0)
+  lastInteraction DateTime?
+  botPausedUntil  DateTime?
+  lastQuotedValue Decimal?   @db.Decimal(12, 2)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
 
   company       Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
   conversations ChatConversation[]
@@ -508,11 +565,11 @@ model Lead {
 }
 
 model ChatConversation {
-  id        String    @id @default(cuid())
+  id        String     @id @default(cuid())
   leadId    String
   role      AiChatRole
   content   String
-  createdAt DateTime  @default(now())
+  createdAt DateTime   @default(now())
 
   lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
 
@@ -576,11 +633,11 @@ model Competitor {
   category  String?
   createdAt DateTime @default(now())
 
-  company      Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
   marketPrices MarketPrice[]
 
-  @@index([companyId, category])
   @@unique([companyId, name])
+  @@index([companyId, category])
 }
 
 model MarketPrice {
@@ -603,17 +660,17 @@ model MarketPrice {
 }
 
 model MarketTrend {
-  id                String   @id @default(cuid())
-  companyId         String
-  term              String
-  volume            Int      @default(0)
-  growthPercentage  Float    @default(0)
-  createdAt         DateTime @default(now())
+  id               String   @id @default(cuid())
+  companyId        String
+  term             String
+  volume           Int      @default(0)
+  growthPercentage Float    @default(0)
+  createdAt        DateTime @default(now())
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
-  @@index([companyId, createdAt])
   @@unique([companyId, term, createdAt])
+  @@index([companyId, createdAt])
 }
 
 model WhatsappInstance {

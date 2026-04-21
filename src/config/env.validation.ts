@@ -82,9 +82,18 @@ export function validateEnvironment(config: RawEnv): RawEnv {
   const parsed = z.record(z.string(), z.string().optional()).parse(config);
   const normalized: RawEnv = { ...parsed };
 
-  normalized.EVOLUTION_API_URL = normalizeUrl(
-    'EVOLUTION_API_URL',
-    normalized.EVOLUTION_API_URL,
+  normalized.EVOLUTION_BASE_URL = normalizeUrl(
+    'EVOLUTION_BASE_URL',
+    normalized.EVOLUTION_BASE_URL || normalized.EVOLUTION_API_URL,
+    { allowHttpLocalhost: true },
+  );
+  normalized.EVOLUTION_API_URL = normalized.EVOLUTION_BASE_URL;
+  normalized.N8N_API_URL = normalizeUrl('N8N_API_URL', normalized.N8N_API_URL, {
+    allowHttpLocalhost: true,
+  });
+  normalized.N8N_INBOUND_WEBHOOK_URL = normalizeUrl(
+    'N8N_INBOUND_WEBHOOK_URL',
+    normalized.N8N_INBOUND_WEBHOOK_URL,
     { allowHttpLocalhost: true },
   );
   normalized.BACKEND_URL = normalizeUrl('BACKEND_URL', normalized.BACKEND_URL, {
@@ -118,12 +127,12 @@ export function validateEnvironment(config: RawEnv): RawEnv {
     { min: 60000, max: 3600000 },
   );
 
-  const hasEvolutionUrl = Boolean(normalized.EVOLUTION_API_URL);
+  const hasEvolutionUrl = Boolean(normalized.EVOLUTION_BASE_URL);
   const hasEvolutionKey = Boolean(normalized.EVOLUTION_API_KEY?.trim());
 
   if (hasEvolutionUrl !== hasEvolutionKey) {
     throw new Error(
-      'EVOLUTION_API_URL e EVOLUTION_API_KEY precisam ser configuradas juntas',
+      'EVOLUTION_BASE_URL e EVOLUTION_API_KEY precisam ser configuradas juntas',
     );
   }
 
