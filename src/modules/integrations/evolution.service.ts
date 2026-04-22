@@ -948,14 +948,23 @@ export class EvolutionService {
     instanceName: string,
     companyId?: string,
   ): Promise<EvolutionRemoteInstance | null> {
-    const response = await this.requestEvolution<unknown>({
-      companyId,
-      method: 'GET',
-      operation: 'fetch-instances',
-      path: 'instance/fetchInstances',
-      params: { instanceName },
-      maxRetries: 0,
-    });
+    let response: unknown;
+    try {
+      response = await this.requestEvolution<unknown>({
+        companyId,
+        method: 'GET',
+        operation: 'fetch-instances',
+        path: 'instance/fetchInstances',
+        params: { instanceName },
+        maxRetries: 0,
+      });
+    } catch (error) {
+      if (this.isNotFoundError(error)) {
+        return null;
+      }
+
+      throw error;
+    }
 
     const match = this.extractRemoteInstances(response).find(
       (item) => item.instanceName === instanceName,
@@ -1217,6 +1226,10 @@ export class EvolutionService {
       return true;
     }
 
+    if (this.isPermanentEvolutionError(error)) {
+      return false;
+    }
+
     return (
       error.response.status === 408 ||
       error.response.status === 429 ||
@@ -1280,6 +1293,16 @@ export class EvolutionService {
       this.asString(this.asRecord(responseRecord?.response)?.message);
 
     return message || error.message || 'erro desconhecido';
+  }
+
+  private isPermanentEvolutionError(error: unknown): boolean {
+    const message = this.extractAxiosMessage(error).toLowerCase();
+
+    return (
+      message.includes('prismaclientknownrequesterror') ||
+      message.includes('does not exist in the current database') ||
+      message.includes('the table `public.instance` does not exist')
+    );
   }
 
   private async logEvolutionFailure(input: {

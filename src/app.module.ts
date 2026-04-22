@@ -17,7 +17,6 @@ import { AiModule } from './modules/ai/ai.module';
 import { AlertsModule } from './modules/alerts/alerts.module';
 import { AnalysisModule } from './modules/analysis/analysis.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
-import { AttendantModule } from './modules/attendant/attendant.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CompaniesModule } from './modules/companies/companies.module';
 import { CostsModule } from './modules/costs/costs.module';
@@ -33,6 +32,7 @@ import { SalesModule } from './modules/sales/sales.module';
 import { StrategyModule } from './modules/strategy/strategy.module';
 import { UserModule } from './modules/user/user.module';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
+import { WhatsappModule } from './modules/whatsapp/whatsapp.module';
 
 @Module({
   controllers: [AppController],
@@ -59,9 +59,9 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module';
     AlertsModule,
     AnalysisModule,
     IntegrationsModule,
+    WhatsappModule,
     StrategyModule,
     MarketIntelligenceModule,
-    AttendantModule,
     AdminModule,
     ReportModule,
   ],
