@@ -308,9 +308,13 @@ export class AttendantService {
 
     await this.prisma.message.create({
       data: {
+        companyId,
         conversationId: conversation.id,
         content: trimmedContent,
         role: 'human',
+        direction: 'outbound',
+        contentType: 'text',
+        status: 'sent',
       },
     });
 
@@ -501,9 +505,13 @@ export class AttendantService {
 
     await this.prisma.message.create({
       data: {
+        companyId,
         conversationId: conversation.id,
         content: text,
         role: 'user',
+        direction: 'inbound',
+        contentType: 'text',
+        status: 'received',
       },
     });
     await this.emitConversationUpdate(companyId, conversation.id, {
@@ -575,9 +583,13 @@ export class AttendantService {
         await this.dispatchOutboundMessage(companyId, externalId, transferMessage, provider);
         await this.prisma.message.create({
           data: {
+            companyId,
             conversationId: conversation.id,
             content: transferMessage,
             role: 'assistant',
+            direction: 'outbound',
+            contentType: 'text',
+            status: 'sent',
           },
         });
       } catch (error) {
@@ -656,9 +668,13 @@ export class AttendantService {
 
       await this.prisma.message.create({
         data: {
+          companyId,
           conversationId: conversation.id,
           content: transferMessage,
           role: 'assistant',
+          direction: 'outbound',
+          contentType: 'text',
+          status: 'sent',
         },
       });
       await this.emitConversationUpdate(companyId, conversation.id, {
@@ -685,9 +701,13 @@ export class AttendantService {
 
     await this.prisma.message.create({
       data: {
+        companyId,
         conversationId: conversation.id,
         content: reply,
         role: 'assistant',
+        direction: 'outbound',
+        contentType: 'text',
+        status: 'sent',
       },
     });
 

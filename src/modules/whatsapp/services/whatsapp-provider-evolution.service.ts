@@ -7,6 +7,7 @@ const DEFAULT_WEBHOOK_EVENTS = [
   'MESSAGES_UPSERT',
   'MESSAGES_UPDATE',
   'CONNECTION_UPDATE',
+  'SEND_MESSAGE',
 ];
 
 type EvolutionRequestMethod = 'GET' | 'POST' | 'DELETE';
@@ -70,7 +71,7 @@ export class WhatsappProviderEvolutionService {
     return this.baseUrl;
   }
 
-  async createInstance(companyId: string, instanceName: string) {
+  async createInstance(companyId: string, instanceName = this.buildInstanceName(companyId)) {
     this.ensureConfigured();
 
     try {
@@ -274,6 +275,10 @@ export class WhatsappProviderEvolutionService {
     });
   }
 
+  async sendText(instanceName: string, number: string, text: string) {
+    return this.sendTextMessage(instanceName, number, text);
+  }
+
   private async request<TResponse = unknown>(input: {
     method: EvolutionRequestMethod;
     path: string;
@@ -399,6 +404,10 @@ export class WhatsappProviderEvolutionService {
       .replace('@s.whatsapp.net', '')
       .replace('@c.us', '')
       .replace(/\D/g, '');
+  }
+
+  private buildInstanceName(companyId: string) {
+    return `nextlevel-${companyId}`;
   }
 
   private shouldFallbackToFetchInstances(error: unknown) {
