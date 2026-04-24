@@ -141,12 +141,9 @@ export function validateEnvironment(config: RawEnv): RawEnv {
     );
   }
 
-  if (
-    hasEvolutionUrl &&
-    !normalized.N8N_WEBHOOK_URL
-  ) {
+  if (hasEvolutionUrl && !normalized.BACKEND_URL) {
     throw new Error(
-      'N8N_WEBHOOK_URL precisa estar configurada para a Evolution apontar eventos ao n8n',
+      'BACKEND_URL precisa estar configurada para a Evolution apontar eventos ao backend',
     );
   }
 

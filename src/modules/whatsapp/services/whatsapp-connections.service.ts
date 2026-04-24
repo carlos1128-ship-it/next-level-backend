@@ -1,9 +1,11 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import axios from 'axios';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { ConnectWhatsappDto } from '../dto/connect-whatsapp.dto';
@@ -24,6 +26,8 @@ type EvolutionWebhookPayload = {
 
 @Injectable()
 export class WhatsappConnectionsService {
+  private readonly logger = new Logger(WhatsappConnectionsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
@@ -51,10 +55,9 @@ export class WhatsappConnectionsService {
       where: { companyId },
     });
 
-    const instanceName =
-      dto.instanceName?.trim() || existing?.instanceName || this.buildInstanceName(companyId);
+    const instanceName = await this.resolveInstanceName(companyId, dto, existing);
     const instanceToken = existing?.instanceToken || randomUUID();
-    const webhookUrl = this.resolveN8nInboundWebhookUrl();
+    const webhookUrl = this.buildProviderWebhookUrl(instanceName, instanceToken);
 
     const connection = await this.prisma.whatsappConnection.upsert({
       where: { companyId },
@@ -75,19 +78,14 @@ export class WhatsappConnectionsService {
       },
     });
 
-    await this.providerService.createInstance(companyId, connection.instanceName);
+    await this.providerService.createInstance(companyId, connection.instanceName, {
+      webhookUrl,
+      events: this.getWebhookEvents(),
+    });
+    await this.configureProviderWebhook(connection.instanceName, webhookUrl);
     const providerResult = await this.providerService.connectInstance(
       connection.instanceName,
     );
-
-    if (providerResult.status === 'connected' && webhookUrl) {
-      await this.providerService.setWebhook(
-        connection.instanceName,
-        webhookUrl,
-        this.getWebhookEvents(),
-        this.getAutomationHeaders(),
-      );
-    }
 
     const updated = await this.prisma.whatsappConnection.update({
       where: { id: connection.id },
@@ -187,14 +185,12 @@ export class WhatsappConnectionsService {
     if (event === 'CONNECTION_UPDATE') {
       const state = this.normalizeRemoteState(this.readString(data.state));
       const status = this.mapStateToStatus(state, connection.qrCode);
-      const webhookUrl = this.resolveN8nInboundWebhookUrl();
-      if (status === 'connected' && webhookUrl) {
-        await this.providerService.setWebhook(
-          connection.instanceName,
-          webhookUrl,
-          this.getWebhookEvents(),
-          this.getAutomationHeaders(),
-        ).catch(() => undefined);
+      const webhookUrl = this.buildProviderWebhookUrl(
+        connection.instanceName,
+        connection.instanceToken,
+      );
+      if (webhookUrl) {
+        await this.configureProviderWebhook(connection.instanceName, webhookUrl).catch(() => undefined);
       }
       await this.prisma.whatsappConnection.update({
         where: { id: connection.id },
@@ -212,6 +208,13 @@ export class WhatsappConnectionsService {
     if (event === 'MESSAGES_UPSERT' || event === 'MESSAGES_UPDATE') {
       const messages = Array.isArray(data.messages) ? data.messages : [];
       await this.conversationsService.ingestEvolutionMessages(connection, messages);
+      await this.forwardAutomationEvent(connection, payload).catch((error) => {
+        this.logger.warn(
+          `Falha ao encaminhar mensagem WhatsApp ao n8n para ${connection.instanceName}: ${
+            error instanceof Error ? error.message : 'erro desconhecido'
+          }`,
+        );
+      });
     }
   }
 
@@ -253,15 +256,13 @@ export class WhatsappConnectionsService {
 
     const remote = await this.providerService.getInstanceState(connection.instanceName);
     const nextStatus = this.mapStateToStatus(remote.state, connection.qrCode);
-    const webhookUrl = this.resolveN8nInboundWebhookUrl();
+    const webhookUrl = this.buildProviderWebhookUrl(
+      connection.instanceName,
+      connection.instanceToken,
+    );
 
-    if (nextStatus === 'connected' && webhookUrl) {
-      await this.providerService.setWebhook(
-        connection.instanceName,
-        webhookUrl,
-        this.getWebhookEvents(),
-        this.getAutomationHeaders(),
-      ).catch(() => undefined);
+    if (webhookUrl) {
+      await this.configureProviderWebhook(connection.instanceName, webhookUrl).catch(() => undefined);
     }
 
     return this.prisma.whatsappConnection.update({
@@ -318,7 +319,7 @@ export class WhatsappConnectionsService {
       qrCode: connection.qrCode,
       pairingCode: connection.pairingCode,
       phoneNumber: connection.phoneNumber,
-      webhookUrl: connection.webhookUrl,
+      webhookUrl: this.redactSensitiveUrl(connection.webhookUrl),
       lastConnectionAt: connection.lastConnectionAt?.toISOString() || null,
       createdAt: connection.createdAt.toISOString(),
       updatedAt: connection.updatedAt.toISOString(),
@@ -340,11 +341,69 @@ export class WhatsappConnectionsService {
     return `nextlevel-${companyId}`;
   }
 
+  private async resolveInstanceName(
+    companyId: string,
+    dto: ConnectWhatsappDto,
+    existing: { instanceName: string } | null,
+  ) {
+    const requested = this.readString(dto.instanceName);
+    if (requested) {
+      return requested;
+    }
+
+    if (existing?.instanceName) {
+      return existing.instanceName;
+    }
+
+    const legacy = await this.prisma.whatsappInstance.findUnique({
+      where: { companyId },
+      select: { instanceName: true },
+    });
+
+    return legacy?.instanceName || this.buildInstanceName(companyId);
+  }
+
   private resolveN8nInboundWebhookUrl() {
     return this.readString(
       this.configService.get<string>('N8N_WEBHOOK_URL') ||
         this.configService.get<string>('N8N_INBOUND_WEBHOOK_URL'),
     );
+  }
+
+  private buildProviderWebhookUrl(instanceName: string, token: string | null) {
+    if (!token) {
+      throw new BadRequestException('Token do webhook WhatsApp nao configurado');
+    }
+
+    const backendUrl = this.readString(
+      this.configService.get<string>('BACKEND_URL') ||
+        this.configService.get<string>('APP_URL') ||
+        this.configService.get<string>('PUBLIC_API_URL'),
+    );
+
+    if (!backendUrl) {
+      throw new BadRequestException('BACKEND_URL precisa estar configurada para webhooks da Evolution');
+    }
+
+    const url = new URL('api/whatsapp/webhooks/evolution', `${backendUrl.replace(/\/+$/, '')}/`);
+    url.searchParams.set('instance', instanceName);
+    url.searchParams.set('token', token);
+    return url.toString();
+  }
+
+  private async configureProviderWebhook(instanceName: string, webhookUrl: string) {
+    await this.providerService.setWebhook(
+      instanceName,
+      webhookUrl,
+      this.getWebhookEvents(),
+    );
+
+    const verified = await this.providerService.verifyWebhook(instanceName, webhookUrl);
+    if (!verified) {
+      this.logger.warn(
+        `Webhook Evolution configurado para ${instanceName}, mas a verificacao remota nao confirmou a URL esperada.`,
+      );
+    }
   }
 
   private getWebhookEvents() {
@@ -370,9 +429,103 @@ export class WhatsappConnectionsService {
       : undefined;
   }
 
+  private async forwardAutomationEvent(
+    connection: {
+      id: string;
+      companyId: string;
+      instanceName: string;
+      status: string;
+    },
+    payload: Record<string, unknown>,
+  ) {
+    const webhookUrl = this.resolveN8nInboundWebhookUrl();
+    const headers = this.getAutomationHeaders();
+
+    if (!webhookUrl || !headers) {
+      this.logger.warn(
+        `Automacao n8n nao configurada; evento de mensagem preservado apenas no backend para ${connection.instanceName}.`,
+      );
+      return;
+    }
+
+    await axios.post(
+      webhookUrl,
+      this.buildAutomationPayload(connection, payload),
+      {
+        timeout: 10000,
+        headers,
+      },
+    );
+  }
+
+  private buildAutomationPayload(
+    connection: {
+      id: string;
+      companyId: string;
+      instanceName: string;
+      status: string;
+    },
+    payload: Record<string, unknown>,
+  ) {
+    const data = this.asRecord(payload.data) || {};
+    const messages = Array.isArray(data.messages) ? data.messages : [];
+    const firstMessage = this.asRecord(messages[0]);
+    const normalizedData = firstMessage || data;
+    const normalizedEvent = this.normalizeAutomationEventName(
+      this.readString(payload.event),
+    );
+
+    return {
+      ...payload,
+      event: normalizedEvent,
+      data: normalizedData,
+      rawEvolutionPayload: payload,
+      instanceName: this.readString(payload.instanceName) || connection.instanceName,
+      instance: this.readString(payload.instance) || connection.instanceName,
+      companyId: connection.companyId,
+      whatsappConnectionId: connection.id,
+      connectionStatus: connection.status,
+      source: 'next-level-backend',
+    };
+  }
+
+  private normalizeAutomationEventName(event: string | null) {
+    if (event === 'MESSAGES_UPSERT') {
+      return 'messages.upsert';
+    }
+
+    if (event === 'MESSAGES_UPDATE') {
+      return 'messages.update';
+    }
+
+    return event || 'unknown';
+  }
+
+  private asRecord(value: unknown) {
+    return value && typeof value === 'object'
+      ? (value as Record<string, unknown>)
+      : null;
+  }
+
   private assertWebhookToken(expected: string | null, received?: string | null) {
     if (!expected || !received || expected !== received) {
       throw new UnauthorizedException('Token do webhook WhatsApp invalido');
+    }
+  }
+
+  private redactSensitiveUrl(value: string | null) {
+    if (!value) {
+      return null;
+    }
+
+    try {
+      const url = new URL(value);
+      if (url.searchParams.has('token')) {
+        url.searchParams.set('token', '<redacted>');
+      }
+      return url.toString();
+    } catch {
+      return value;
     }
   }
 

@@ -17,12 +17,32 @@ type RemoteStateSnapshot = {
   phoneNumber: string | null;
 };
 
+type RemoteInstanceLookup = RemoteStateSnapshot & {
+  exists: boolean;
+};
+
 type ConnectInstanceResult = {
   status: string;
   qrCode: string | null;
   pairingCode: string | null;
   phoneNumber: string | null;
 };
+
+type CreateInstanceOptions = {
+  webhookUrl?: string | null;
+  events?: string[];
+  webhookHeaders?: Record<string, string>;
+};
+
+class EvolutionProviderException extends BadRequestException {
+  constructor(
+    message: string,
+    readonly providerStatusCode: number | null,
+    readonly providerResponse: unknown,
+  ) {
+    super(message);
+  }
+}
 
 @Injectable()
 export class WhatsappProviderEvolutionService {
@@ -71,8 +91,28 @@ export class WhatsappProviderEvolutionService {
     return this.baseUrl;
   }
 
-  async createInstance(companyId: string, instanceName = this.buildInstanceName(companyId)) {
+  async createInstance(
+    companyId: string,
+    instanceName = this.buildInstanceName(companyId),
+    options: CreateInstanceOptions = {},
+  ) {
     this.ensureConfigured();
+
+    const remoteBefore = await this.findRemoteInstance(instanceName).catch(() => null);
+    if (remoteBefore?.exists) {
+      return { instanceName, reused: true, state: remoteBefore.state };
+    }
+
+    const webhook = options.webhookUrl
+      ? {
+          enabled: true,
+          url: options.webhookUrl,
+          byEvents: false,
+          base64: true,
+          events: options.events || DEFAULT_WEBHOOK_EVENTS,
+          headers: options.webhookHeaders || {},
+        }
+      : undefined;
 
     try {
       return await this.request({
@@ -88,6 +128,7 @@ export class WhatsappProviderEvolutionService {
           readMessages: false,
           readStatus: false,
           syncFullHistory: false,
+          ...(webhook ? { webhook } : {}),
           metadata: {
             companyId,
             source: 'next-level',
@@ -95,10 +136,19 @@ export class WhatsappProviderEvolutionService {
         },
       });
     } catch (error) {
-      if (!this.isConflictMessage(error)) {
+      if (!this.canReuseAfterCreateFailure(error)) {
         throw error;
       }
-      return { instanceName, reused: true };
+
+      const remoteAfter = await this.findRemoteInstance(instanceName).catch(() => null);
+      if (!remoteAfter?.exists) {
+        throw error;
+      }
+
+      this.logger.warn(
+        `Evolution create-instance falhou, mas a instancia ${instanceName} existe; seguindo com reuso seguro.`,
+      );
+      return { instanceName, reused: true, state: remoteAfter.state };
     }
   }
 
@@ -115,7 +165,10 @@ export class WhatsappProviderEvolutionService {
 
     const instanceName = typeof input === 'string' ? input : input.instanceName;
     if (typeof input !== 'string') {
-      await this.createInstance('', instanceName);
+      await this.createInstance('', instanceName, {
+        webhookUrl: input.webhookUrl,
+        webhookHeaders: input.webhookHeaders,
+      });
       if (input.webhookUrl) {
         await this.setWebhook(
           instanceName,
@@ -191,6 +244,54 @@ export class WhatsappProviderEvolutionService {
     return this.getConnectionState(instanceName);
   }
 
+  async findRemoteInstance(instanceName: string): Promise<RemoteInstanceLookup> {
+    this.ensureConfigured();
+
+    try {
+      const response = await this.request<{
+        instance?: { state?: string; ownerJid?: string; number?: string };
+      }>({
+        method: 'GET',
+        path: `instance/connectionState/${encodeURIComponent(instanceName)}`,
+      });
+
+      const instance = response?.instance;
+      if (instance) {
+        return {
+          exists: true,
+          state: this.normalizeRemoteState(this.readString(instance.state)),
+          phoneNumber: this.normalizePhone(
+            this.readString(instance.number) || this.readString(instance.ownerJid),
+          ),
+        };
+      }
+    } catch (error) {
+      if (
+        !this.shouldFallbackToFetchInstances(error) &&
+        this.extractStatusCode(error) !== 403
+      ) {
+        throw error;
+      }
+    }
+
+    const response = await this.request<unknown>({
+      method: 'GET',
+      path: 'instance/fetchInstances',
+      params: { instanceName },
+    });
+
+    const instance = this.extractFetchedInstance(response, instanceName);
+    if (!instance) {
+      return { exists: false, state: 'close', phoneNumber: null };
+    }
+
+    return {
+      exists: true,
+      state: this.normalizeRemoteState(instance.state),
+      phoneNumber: this.normalizePhone(instance.number),
+    };
+  }
+
   async setWebhook(
     instanceName: string,
     webhookUrl: string,
@@ -235,6 +336,37 @@ export class WhatsappProviderEvolutionService {
         },
       },
     });
+  }
+
+  async getWebhook(instanceName: string) {
+    this.ensureConfigured();
+
+    return this.request<unknown>({
+      method: 'GET',
+      path: `webhook/find/${encodeURIComponent(instanceName)}`,
+    });
+  }
+
+  async verifyWebhook(instanceName: string, expectedUrl: string) {
+    try {
+      const response = await this.getWebhook(instanceName);
+      const webhook = this.asRecord(this.asRecord(response)?.webhook) || this.asRecord(response);
+      const nestedWebhook = this.asRecord(webhook?.webhook);
+      const remoteUrl =
+        this.readString(webhook?.url) ||
+        this.readString(nestedWebhook?.url);
+      const enabled =
+        webhook?.enabled === true ||
+        nestedWebhook?.enabled === true ||
+        this.readString(webhook?.enabled)?.toLowerCase() === 'true';
+
+      return Boolean(enabled && remoteUrl === expectedUrl);
+    } catch (error) {
+      this.logger.warn(
+        `Nao foi possivel verificar webhook Evolution para ${instanceName}: ${this.extractErrorMessage(error)}`,
+      );
+      return false;
+    }
   }
 
   async logoutInstance(instanceName: string) {
@@ -299,10 +431,19 @@ export class WhatsappProviderEvolutionService {
       return response.data;
     } catch (error) {
       const message = this.extractErrorMessage(error);
+      const statusCode = this.extractStatusCode(error);
+      const responseData = axios.isAxiosError(error) ? error.response?.data : null;
       this.logger.error(
-        `Falha no provider Evolution ${input.method} ${normalizedPath}: ${message}`,
+        JSON.stringify({
+          event: 'evolution.provider.failure',
+          method: input.method,
+          path: normalizedPath,
+          statusCode,
+          message,
+          response: this.sanitizeForLogs(responseData),
+        }),
       );
-      throw new BadRequestException(message);
+      throw new EvolutionProviderException(message, statusCode, responseData);
     }
   }
 
@@ -411,11 +552,14 @@ export class WhatsappProviderEvolutionService {
   }
 
   private shouldFallbackToFetchInstances(error: unknown) {
+    const statusCode = this.extractStatusCode(error);
     const message = this.extractErrorMessage(error).toLowerCase();
     return (
+      !statusCode ||
+      [404, 405, 500, 501, 502, 503, 504].includes(statusCode) ||
       message.includes('not found') ||
       message.includes('nao encontrado') ||
-      message.includes('não encontrado') ||
+      message.includes('nao existe') ||
       message.includes('fetchinstances')
     );
   }
@@ -426,18 +570,45 @@ export class WhatsappProviderEvolutionService {
       message.includes('already exist') ||
       message.includes('already exists') ||
       message.includes('instance exists') ||
-      message.includes('ja existe') ||
-      message.includes('já existe')
+      message.includes('ja existe')
     );
   }
 
   private isAuthenticationMessage(error: unknown) {
+    const statusCode = this.extractStatusCode(error);
+    if (statusCode === 401 || statusCode === 403) {
+      return true;
+    }
+
     const message = this.extractErrorMessage(error).toLowerCase();
     return message.includes('unauthorized') || message.includes('forbidden');
   }
 
+  private canReuseAfterCreateFailure(error: unknown) {
+    const statusCode = this.extractStatusCode(error);
+    if (statusCode && [400, 403, 409, 500].includes(statusCode)) {
+      return true;
+    }
+
+    return this.isConflictMessage(error);
+  }
+
+  private extractStatusCode(error: unknown) {
+    if (error instanceof EvolutionProviderException) {
+      return error.providerStatusCode;
+    }
+
+    return axios.isAxiosError(error) && error.response?.status
+      ? error.response.status
+      : null;
+  }
+
   private extractErrorMessage(error: unknown) {
     if (error instanceof BadRequestException) {
+      if (error instanceof EvolutionProviderException) {
+        return error.message;
+      }
+
       const response = error.getResponse();
       if (typeof response === 'string') return response;
       const record = this.asRecord(response);
@@ -457,9 +628,57 @@ export class WhatsappProviderEvolutionService {
     return (
       this.readString(record?.message) ||
       this.readString(this.asRecord(record?.response)?.message) ||
+      this.readString(record?.error) ||
       error.message ||
       'Falha ao comunicar com a Evolution API'
     );
+  }
+
+  private sanitizeForLogs(value: unknown): unknown {
+    if (Array.isArray(value)) {
+      return value.map((item) => this.sanitizeForLogs(item));
+    }
+
+    if (!value || typeof value !== 'object') {
+      if (typeof value === 'string') {
+        return this.redactSensitiveUrl(value);
+      }
+      return value;
+    }
+
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entryValue]) => {
+        const normalizedKey = key.toLowerCase();
+        if (
+          normalizedKey.includes('apikey') ||
+          normalizedKey.includes('authorization') ||
+          normalizedKey.includes('token') ||
+          normalizedKey.includes('password')
+        ) {
+          return [key, '<redacted>'];
+        }
+
+        if (normalizedKey === 'url' && typeof entryValue === 'string') {
+          return [key, this.redactSensitiveUrl(entryValue)];
+        }
+
+        return [key, this.sanitizeForLogs(entryValue)];
+      }),
+    );
+  }
+
+  private redactSensitiveUrl(value: string) {
+    try {
+      const url = new URL(value);
+      for (const key of ['token', 'apikey', 'authorization']) {
+        if (url.searchParams.has(key)) {
+          url.searchParams.set(key, '<redacted>');
+        }
+      }
+      return url.toString();
+    } catch {
+      return value;
+    }
   }
 
   private ensureConfigured() {

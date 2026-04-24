@@ -120,10 +120,14 @@ export class WhatsappConnectionsController {
   async receiveEvolutionWebhook(
     @Body() payload: Record<string, unknown>,
     @Query('token') token?: string,
+    @Query('instance') instanceName?: string,
     @Headers('x-provider-token') headerToken?: string,
   ) {
     await this.whatsappConnectionsService.handleEvolutionWebhook(
-      payload,
+      {
+        ...payload,
+        instance: payload.instance || instanceName,
+      },
       token || headerToken,
     );
     return { status: 'ok' };
