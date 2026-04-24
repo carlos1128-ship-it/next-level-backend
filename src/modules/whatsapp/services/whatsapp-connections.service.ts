@@ -82,7 +82,34 @@ export class WhatsappConnectionsService {
       webhookUrl,
       events: this.getWebhookEvents(),
     });
-    await this.configureProviderWebhook(connection.instanceName, webhookUrl);
+    await this.ensureWebhookIfMissing(connection.instanceName, webhookUrl);
+
+    const remoteState = await this.providerService
+      .getInstanceState(connection.instanceName)
+      .catch(() => null);
+
+    if (remoteState?.state === 'open') {
+      await this.providerService.restartInstance(connection.instanceName).catch((error) => {
+        this.logger.warn(
+          `Restart Evolution ignorado para ${connection.instanceName}: ${this.extractErrorMessage(error)}`,
+        );
+      });
+
+      const updated = await this.prisma.whatsappConnection.update({
+        where: { id: connection.id },
+        data: {
+          status: 'connected',
+          qrCode: null,
+          pairingCode: null,
+          phoneNumber: remoteState.phoneNumber || connection.phoneNumber,
+          webhookUrl,
+          lastConnectionAt: connection.lastConnectionAt || new Date(),
+        },
+      });
+
+      return this.buildSnapshot(updated);
+    }
+
     const providerResult = await this.providerService.connectInstance(
       connection.instanceName,
     );
@@ -110,6 +137,20 @@ export class WhatsappConnectionsService {
 
     if (!connection) {
       throw new BadRequestException('Nenhuma conexao WhatsApp encontrada para a empresa');
+    }
+
+    return this.connect(companyId, {
+      instanceName: connection.instanceName,
+    });
+  }
+
+  async restart(companyId: string) {
+    const connection = await this.prisma.whatsappConnection.findUnique({
+      where: { companyId },
+    });
+
+    if (!connection) {
+      return this.connect(companyId, {});
     }
 
     return this.connect(companyId, {
@@ -189,9 +230,6 @@ export class WhatsappConnectionsService {
         connection.instanceName,
         connection.instanceToken,
       );
-      if (webhookUrl) {
-        await this.configureProviderWebhook(connection.instanceName, webhookUrl).catch(() => undefined);
-      }
       await this.prisma.whatsappConnection.update({
         where: { id: connection.id },
         data: {
@@ -256,14 +294,6 @@ export class WhatsappConnectionsService {
 
     const remote = await this.providerService.getInstanceState(connection.instanceName);
     const nextStatus = this.mapStateToStatus(remote.state, connection.qrCode);
-    const webhookUrl = this.buildProviderWebhookUrl(
-      connection.instanceName,
-      connection.instanceToken,
-    );
-
-    if (webhookUrl) {
-      await this.configureProviderWebhook(connection.instanceName, webhookUrl).catch(() => undefined);
-    }
 
     return this.prisma.whatsappConnection.update({
       where: { id: connection.id },
@@ -272,7 +302,7 @@ export class WhatsappConnectionsService {
         phoneNumber: remote.phoneNumber || connection.phoneNumber,
         qrCode: nextStatus === 'connected' ? null : connection.qrCode,
         pairingCode: nextStatus === 'connected' ? null : connection.pairingCode,
-        webhookUrl: webhookUrl || connection.webhookUrl,
+        webhookUrl: connection.webhookUrl,
         lastConnectionAt:
           nextStatus === 'connected' ? connection.lastConnectionAt || new Date() : connection.lastConnectionAt,
       },
@@ -304,6 +334,8 @@ export class WhatsappConnectionsService {
         pairingCode: null,
         phoneNumber: null,
         webhookUrl: null,
+        webhookStatus: 'pending',
+        automationStatus: this.resolveAutomationStatus(),
         lastConnectionAt: null,
         createdAt: null,
         updatedAt: null,
@@ -320,6 +352,8 @@ export class WhatsappConnectionsService {
       pairingCode: connection.pairingCode,
       phoneNumber: connection.phoneNumber,
       webhookUrl: this.redactSensitiveUrl(connection.webhookUrl),
+      webhookStatus: connection.webhookUrl ? 'configured' : 'pending',
+      automationStatus: this.resolveAutomationStatus(),
       lastConnectionAt: connection.lastConnectionAt?.toISOString() || null,
       createdAt: connection.createdAt.toISOString(),
       updatedAt: connection.updatedAt.toISOString(),
@@ -406,6 +440,36 @@ export class WhatsappConnectionsService {
     }
   }
 
+  private async ensureWebhookIfMissing(instanceName: string, webhookUrl: string) {
+    let currentWebhook: unknown = null;
+
+    try {
+      currentWebhook = await this.providerService.getWebhook(instanceName);
+    } catch (error) {
+      this.logger.warn(
+        `Nao foi possivel consultar webhook Evolution para ${instanceName}; tentando provisionar uma vez: ${this.extractErrorMessage(error)}`,
+      );
+    }
+
+    const current = this.extractWebhookState(currentWebhook);
+    if (current.enabled && current.url === webhookUrl) {
+      return;
+    }
+
+    try {
+      await this.configureProviderWebhook(instanceName, webhookUrl);
+    } catch (error) {
+      if (this.isInstanceRequiresWebhookError(error)) {
+        this.logger.warn(
+          `Evolution recusou webhook/set para ${instanceName} porque a instancia exige webhook no create; seguindo sem bloquear QR.`,
+        );
+        return;
+      }
+
+      throw error;
+    }
+  }
+
   private getWebhookEvents() {
     return [
       'QRCODE_UPDATED',
@@ -427,6 +491,12 @@ export class WhatsappConnectionsService {
           'x-internal-automation-token': token,
         }
       : undefined;
+  }
+
+  private resolveAutomationStatus() {
+    return this.resolveN8nInboundWebhookUrl() && this.getAutomationHeaders()
+      ? 'configured'
+      : 'pending';
   }
 
   private async forwardAutomationEvent(
@@ -581,6 +651,45 @@ export class WhatsappConnectionsService {
     }
 
     return 'error';
+  }
+
+  private extractWebhookState(payload: unknown) {
+    const root = this.asRecord(payload);
+    const webhook = this.asRecord(root?.webhook) || root;
+    const nested = this.asRecord(webhook?.webhook);
+    const rawEnabled = webhook?.enabled ?? nested?.enabled;
+
+    return {
+      url:
+        this.readString(webhook?.url) ||
+        this.readString(nested?.url),
+      enabled:
+        rawEnabled === true ||
+        this.readString(rawEnabled)?.toLowerCase() === 'true',
+    };
+  }
+
+  private isInstanceRequiresWebhookError(error: unknown) {
+    const statusCode =
+      error instanceof BadRequestException ? error.getStatus() : null;
+    const message = this.extractErrorMessage(error).toLowerCase();
+    return (
+      statusCode === 400 &&
+      message.includes('instance') &&
+      message.includes('requires') &&
+      message.includes('webhook')
+    );
+  }
+
+  private extractErrorMessage(error: unknown) {
+    if (error instanceof BadRequestException) {
+      const response = error.getResponse();
+      if (typeof response === 'string') return response;
+      const record = this.asRecord(response);
+      return this.readString(record?.message) || error.message;
+    }
+
+    return error instanceof Error ? error.message : 'erro desconhecido';
   }
 
   private readString(value: unknown) {

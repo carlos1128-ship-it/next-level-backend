@@ -75,7 +75,6 @@ export class WhatsappProviderEvolutionService {
         ...(this.apiKey
           ? {
               apikey: this.apiKey,
-              Authorization: `Bearer ${this.apiKey}`,
             }
           : {}),
         'Content-Type': 'application/json',
@@ -169,14 +168,6 @@ export class WhatsappProviderEvolutionService {
         webhookUrl: input.webhookUrl,
         webhookHeaders: input.webhookHeaders,
       });
-      if (input.webhookUrl) {
-        await this.setWebhook(
-          instanceName,
-          input.webhookUrl,
-          DEFAULT_WEBHOOK_EVENTS,
-          input.webhookHeaders,
-        );
-      }
     }
 
     const response = await this.request<Record<string, unknown>>({
@@ -390,6 +381,15 @@ export class WhatsappProviderEvolutionService {
   async disconnectInstance(instanceName: string) {
     await this.logoutInstance(instanceName);
     await this.deleteInstance(instanceName);
+  }
+
+  async restartInstance(instanceName: string) {
+    this.ensureConfigured();
+
+    return this.request({
+      method: 'POST',
+      path: `instance/restart/${encodeURIComponent(instanceName)}`,
+    });
   }
 
   async sendTextMessage(instanceName: string, to: string, text: string) {
