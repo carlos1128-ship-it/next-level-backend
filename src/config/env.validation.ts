@@ -91,9 +91,14 @@ export function validateEnvironment(config: RawEnv): RawEnv {
   normalized.N8N_API_URL = normalizeUrl('N8N_API_URL', normalized.N8N_API_URL, {
     allowHttpLocalhost: true,
   });
+  normalized.N8N_WEBHOOK_URL = normalizeUrl(
+    'N8N_WEBHOOK_URL',
+    normalized.N8N_WEBHOOK_URL || normalized.N8N_INBOUND_WEBHOOK_URL,
+    { allowHttpLocalhost: true },
+  );
   normalized.N8N_INBOUND_WEBHOOK_URL = normalizeUrl(
     'N8N_INBOUND_WEBHOOK_URL',
-    normalized.N8N_INBOUND_WEBHOOK_URL,
+    normalized.N8N_WEBHOOK_URL,
     { allowHttpLocalhost: true },
   );
   normalized.BACKEND_URL = normalizeUrl('BACKEND_URL', normalized.BACKEND_URL, {
@@ -138,14 +143,16 @@ export function validateEnvironment(config: RawEnv): RawEnv {
 
   if (
     hasEvolutionUrl &&
-    !(
-      normalized.BACKEND_URL ||
-      normalized.APP_URL ||
-      normalized.PUBLIC_API_URL
-    )
+    !normalized.N8N_WEBHOOK_URL
   ) {
     throw new Error(
-      'BACKEND_URL, APP_URL ou PUBLIC_API_URL precisa estar configurada para a Evolution montar o webhook',
+      'N8N_WEBHOOK_URL precisa estar configurada para a Evolution apontar eventos ao n8n',
+    );
+  }
+
+  if (normalized.N8N_WEBHOOK_URL && !normalized.INTERNAL_AUTOMATION_TOKEN?.trim()) {
+    throw new Error(
+      'INTERNAL_AUTOMATION_TOKEN precisa estar configurado para a automacao n8n',
     );
   }
 

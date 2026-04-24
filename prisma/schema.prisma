@@ -449,6 +449,7 @@ model AgentConfig {
   id                        String   @id @default(cuid())
   companyId                 String   @unique
   agentName                 String   @default("Atendente")
+  companyDescription        String   @default("") @db.Text
   tone                      String   @default("Amigável")
   welcomeMessage            String   @default("") @db.Text
   instructions              String   @default("") @db.Text
@@ -460,6 +461,8 @@ model AgentConfig {
   pauseForHuman             Boolean  @default(true)
   debounceSeconds           Int      @default(3)
   maxContextMessages        Int      @default(20)
+  splitRepliesEnabled       Boolean  @default(false)
+  messageBufferEnabled      Boolean  @default(true)
   isEnabled                 Boolean  @default(false)
   modelProvider             String   @default("openai")
   modelName                 String   @default("gpt-4o-mini")
@@ -485,30 +488,34 @@ model WhatsappConnection {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversations Conversation[]
 
   @@index([companyId, status])
   @@index([status, updatedAt])
 }
 
 model Conversation {
-  id                 String    @id @default(cuid())
-  companyId          String
-  contactNumber      String
-  remoteJid          String?
-  contactName        String?
-  status             String    @default("Aguardando")
-  isPaused           Boolean   @default(false)
-  botPaused          Boolean   @default(false)
-  pausedUntil        DateTime?
-  lastMessagePreview String?   @db.Text
-  lastMessageAt      DateTime  @default(now())
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
-  messages           Message[]
-  company            Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  id                   String              @id @default(cuid())
+  companyId            String
+  whatsappConnectionId String?
+  contactNumber        String
+  remoteJid            String?
+  contactName          String?
+  status               String              @default("Aguardando")
+  isPaused             Boolean             @default(false)
+  botPaused            Boolean             @default(false)
+  pausedUntil          DateTime?
+  lastMessagePreview   String?             @db.Text
+  lastMessageAt        DateTime            @default(now())
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  messages             Message[]
+  company              Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  whatsappConnection   WhatsappConnection? @relation(fields: [whatsappConnectionId], references: [id], onDelete: SetNull)
 
   @@unique([companyId, contactNumber])
+  @@index([whatsappConnectionId])
   @@index([companyId, remoteJid])
   @@index([companyId, updatedAt])
   @@index([companyId, isPaused])
@@ -516,7 +523,7 @@ model Conversation {
 
 model Message {
   id                String       @id @default(cuid())
-  companyId         String?
+  companyId         String
   conversationId    String
   externalMessageId String?
   content           String       @default("") @db.Text
@@ -535,7 +542,7 @@ model Message {
   timestamp         DateTime     @default(now())
   createdAt         DateTime     @default(now())
   updatedAt         DateTime     @updatedAt
-  company           Company?     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company           Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
   conversation      Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@unique([conversationId, externalMessageId])

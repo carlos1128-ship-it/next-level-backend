@@ -57,6 +57,17 @@ export class WhatsappConnectionsController {
     return this.whatsappConnectionsService.getCurrent(companyId);
   }
 
+  @Get('connect/status')
+  @UseGuards(ActiveCompanyGuard)
+  getCurrentConnectionStatus(
+    @Req() req: AuthenticatedRequest,
+    @Query('companyId') companyId?: string,
+  ) {
+    return this.whatsappConnectionsService.getCurrent(
+      companyId || req.user?.companyId || '',
+    );
+  }
+
   @Post('connection/connect')
   @UseGuards(ActiveCompanyGuard)
   connect(

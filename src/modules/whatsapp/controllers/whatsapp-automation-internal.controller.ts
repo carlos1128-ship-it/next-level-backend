@@ -33,11 +33,13 @@ export class WhatsappAutomationInternalController {
 
     return {
       companyId: connection?.companyId || null,
+      whatsappConnectionId: connection?.id || null,
       companyName: connection?.company?.name || null,
       sector: connection?.company?.sector || null,
       segment: connection?.company?.segment || null,
       timezone: connection?.company?.timezone || 'America/Sao_Paulo',
       instanceName,
+      status: connection?.status || 'not_found',
       connectionStatus: connection?.status || 'not_found',
     };
   }
@@ -62,6 +64,15 @@ export class WhatsappAutomationInternalController {
 
   @Post('log-conversation-state')
   logConversationState(
+    @Body() payload: Record<string, unknown>,
+    @Headers() headers: Record<string, string | string[] | undefined>,
+  ) {
+    this.assertAutomationToken(headers);
+    return this.conversationsService.logConversationState(payload);
+  }
+
+  @Post('conversation-state')
+  updateConversationState(
     @Body() payload: Record<string, unknown>,
     @Headers() headers: Record<string, string | string[] | undefined>,
   ) {

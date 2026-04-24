@@ -16,6 +16,10 @@ export class UpdateAgentConfigDto {
 
   @IsOptional()
   @IsString()
+  companyDescription?: string;
+
+  @IsOptional()
+  @IsString()
   welcomeMessage?: string;
 
   @IsOptional()
@@ -54,6 +58,14 @@ export class UpdateAgentConfigDto {
   @IsOptional()
   @IsBoolean()
   imageUnderstandingEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  splitRepliesEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  messageBufferEnabled?: boolean;
 
   @IsOptional()
   @IsString()

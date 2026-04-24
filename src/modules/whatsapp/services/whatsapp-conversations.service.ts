@@ -130,6 +130,7 @@ export class WhatsappConversationsService {
 
     const contentType = this.readString(payload.contentType) || 'text';
     const text =
+      this.readString(payload.content) ||
       this.readString(payload.text) ||
       this.readString(payload.transcription) ||
       this.readString(payload.aiResponse) ||
@@ -139,6 +140,10 @@ export class WhatsappConversationsService {
       : 'inbound';
     const now = new Date();
     const remoteNumber = this.normalizeRemoteNumber(remoteJid);
+    const connection = await this.prisma.whatsappConnection.findUnique({
+      where: { companyId },
+      select: { id: true },
+    });
 
     const conversation = await this.prisma.conversation.upsert({
       where: {
@@ -148,6 +153,7 @@ export class WhatsappConversationsService {
         },
       },
       update: {
+        whatsappConnectionId: connection?.id,
         remoteJid,
         contactName: this.readString(payload.contactName) || undefined,
         botPaused:
@@ -157,6 +163,7 @@ export class WhatsappConversationsService {
       },
       create: {
         companyId,
+        whatsappConnectionId: connection?.id,
         contactNumber: remoteNumber,
         remoteJid,
         contactName: this.readString(payload.contactName),
@@ -224,6 +231,10 @@ export class WhatsappConversationsService {
     }
 
     const remoteNumber = this.normalizeRemoteNumber(remoteJid);
+    const connection = await this.prisma.whatsappConnection.findUnique({
+      where: { companyId },
+      select: { id: true },
+    });
     const conversation = await this.prisma.conversation.upsert({
       where: {
         companyId_contactNumber: {
@@ -232,15 +243,19 @@ export class WhatsappConversationsService {
         },
       },
       update: {
+        whatsappConnectionId: connection?.id,
         remoteJid,
         botPaused: Boolean(payload.botPaused),
+        isPaused: Boolean(payload.botPaused),
         contactName: this.readString(payload.contactName) || undefined,
       },
       create: {
         companyId,
+        whatsappConnectionId: connection?.id,
         contactNumber: remoteNumber,
         remoteJid,
         botPaused: Boolean(payload.botPaused),
+        isPaused: Boolean(payload.botPaused),
         contactName: this.readString(payload.contactName),
       },
     });
@@ -268,14 +283,18 @@ export class WhatsappConversationsService {
           },
         },
         update: {
+          whatsappConnectionId: connection.id,
           contactName: parsed.pushName || undefined,
+          remoteJid: parsed.remoteJid,
           status: 'open',
           lastMessagePreview: parsed.content,
           lastMessageAt: timestamp,
         },
         create: {
           companyId: connection.companyId,
+          whatsappConnectionId: connection.id,
           contactNumber: parsed.remoteNumber,
+          remoteJid: parsed.remoteJid,
           contactName: parsed.pushName,
           status: 'open',
           lastMessagePreview: parsed.content,
@@ -316,6 +335,37 @@ export class WhatsappConversationsService {
     }
   }
 
+  async liveFeed(companyId: string, limit = 30) {
+    const conversations = await this.prisma.conversation.findMany({
+      where: { companyId },
+      include: {
+        messages: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        },
+      },
+      orderBy: { lastMessageAt: 'desc' },
+      take: Math.min(100, Math.max(1, limit)),
+    });
+
+    return conversations.map((conversation) => {
+      const lastMessage = conversation.messages[0];
+      return {
+        id: conversation.id,
+        companyId: conversation.companyId,
+        whatsappConnectionId: conversation.whatsappConnectionId,
+        remoteJid: conversation.remoteJid,
+        contactName: conversation.contactName,
+        contactNumber: conversation.contactNumber,
+        status: conversation.status,
+        botPaused: conversation.botPaused || conversation.isPaused,
+        lastMessage: lastMessage?.content || conversation.lastMessagePreview || '',
+        lastMessageDirection: lastMessage?.direction || null,
+        lastMessageAt: conversation.lastMessageAt.toISOString(),
+      };
+    });
+  }
+
   private parseEvolutionMessage(rawMessage: unknown) {
     const message = rawMessage as EvolutionMessage;
     const externalMessageId = this.readString(message?.key?.id);
@@ -336,6 +386,7 @@ export class WhatsappConversationsService {
 
     return {
       externalMessageId,
+      remoteJid,
       remoteNumber: this.normalizeRemoteNumber(remoteJid),
       pushName: this.readString(message.pushName),
       fromMe,

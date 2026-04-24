@@ -255,11 +255,7 @@ export class WhatsappConnectionsService {
     const nextStatus = this.mapStateToStatus(remote.state, connection.qrCode);
     const webhookUrl = this.resolveN8nInboundWebhookUrl();
 
-    if (
-      nextStatus === 'connected' &&
-      webhookUrl &&
-      connection.webhookUrl !== webhookUrl
-    ) {
+    if (nextStatus === 'connected' && webhookUrl) {
       await this.providerService.setWebhook(
         connection.instanceName,
         webhookUrl,
@@ -346,7 +342,8 @@ export class WhatsappConnectionsService {
 
   private resolveN8nInboundWebhookUrl() {
     return this.readString(
-      this.configService.get<string>('N8N_INBOUND_WEBHOOK_URL'),
+      this.configService.get<string>('N8N_WEBHOOK_URL') ||
+        this.configService.get<string>('N8N_INBOUND_WEBHOOK_URL'),
     );
   }
 
@@ -356,6 +353,7 @@ export class WhatsappConnectionsService {
       'MESSAGES_UPSERT',
       'MESSAGES_UPDATE',
       'CONNECTION_UPDATE',
+      'SEND_MESSAGE',
     ];
   }
 
