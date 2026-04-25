@@ -29,6 +29,7 @@ type ConnectInstanceResult = {
   code: string | null;
   pairingCode: string | null;
   phoneNumber: string | null;
+  count: number | null;
 };
 
 type CreateInstanceOptions = {
@@ -102,11 +103,6 @@ export class WhatsappProviderEvolutionService {
   ) {
     this.ensureConfigured();
 
-    const remoteBefore = await this.findRemoteInstance(instanceName).catch(() => null);
-    if (remoteBefore?.exists) {
-      return { instanceName, reused: true, state: remoteBefore.state };
-    }
-
     const webhook = options.webhookUrl
       ? this.buildWebhookPayload(options.webhookUrl, options.events, options.webhookHeaders)
       : undefined;
@@ -137,15 +133,10 @@ export class WhatsappProviderEvolutionService {
         throw error;
       }
 
-      const remoteAfter = await this.findRemoteInstance(instanceName).catch(() => null);
-      if (!remoteAfter?.exists) {
-        throw error;
-      }
-
       this.logger.warn(
-        `Evolution create-instance falhou, mas a instancia ${instanceName} existe; seguindo com reuso seguro.`,
+        `Evolution create-instance falhou para ${instanceName}; seguindo com reuso seguro sem consultar fetchInstances.`,
       );
-      return { instanceName, reused: true, state: remoteAfter.state };
+      return { instanceName, reused: true, state: 'unknown' };
     }
   }
 
@@ -176,18 +167,24 @@ export class WhatsappProviderEvolutionService {
     const qrCode = this.extractQrCode(response);
     const code = this.extractQrText(response);
     const pairingCode = this.extractPairingCode(response);
-    const state = await this.getConnectionState(instanceName).catch(() => ({
-      state: qrCode || code || pairingCode ? 'connecting' : 'close',
-      phoneNumber: null,
-    }));
     const hasQrSignal = Boolean(qrCode || code || pairingCode);
+    const state = this.extractConnectState(response);
+    const count = this.extractCount(response);
+    const phoneNumber = this.extractPhoneNumber(response);
 
     return {
-      status: hasQrSignal ? 'qr_pending' : this.mapStateToStatus(state.state, hasQrSignal),
+      status: hasQrSignal
+        ? 'qr_pending'
+        : state === 'open'
+          ? 'connected'
+          : count !== null
+            ? 'qr_not_ready'
+            : 'provider_warming_up',
       qrCode,
       code,
       pairingCode,
-      phoneNumber: state.phoneNumber,
+      phoneNumber,
+      count,
     };
   }
 
@@ -543,6 +540,38 @@ export class WhatsappProviderEvolutionService {
     );
   }
 
+  private extractConnectState(payload: Record<string, unknown> | null | undefined) {
+    const data = this.asRecord(payload?.data);
+    const instance = this.asRecord(payload?.instance) || this.asRecord(data?.instance);
+    return this.normalizeRemoteState(
+      this.readString(payload?.state) ||
+        this.readString(data?.state) ||
+        this.readString(instance?.state) ||
+        this.readString(payload?.status) ||
+        this.readString(data?.status),
+    );
+  }
+
+  private extractPhoneNumber(payload: Record<string, unknown> | null | undefined) {
+    const data = this.asRecord(payload?.data);
+    const instance = this.asRecord(payload?.instance) || this.asRecord(data?.instance);
+    return this.normalizePhone(
+      this.readString(payload?.number) ||
+        this.readString(payload?.ownerJid) ||
+        this.readString(data?.number) ||
+        this.readString(data?.ownerJid) ||
+        this.readString(instance?.number) ||
+        this.readString(instance?.ownerJid),
+    );
+  }
+
+  private extractCount(payload: Record<string, unknown> | null | undefined) {
+    const data = this.asRecord(payload?.data);
+    const raw = payload?.count ?? data?.count;
+    const count = Number(raw);
+    return Number.isFinite(count) ? count : null;
+  }
+
   private buildWebhookPayload(
     webhookUrl: string,
     events: string[] = DEFAULT_WEBHOOK_EVENTS,
@@ -609,7 +638,11 @@ export class WhatsappProviderEvolutionService {
     }
 
     if (path === 'instance/create') {
-      return 2;
+      return 1;
+    }
+
+    if (path.startsWith('instance/connect/')) {
+      return 1;
     }
 
     return 3;

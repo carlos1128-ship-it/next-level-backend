@@ -92,6 +92,18 @@ export class WhatsappConnectionsController {
     );
   }
 
+  @Post('connect/qr')
+  @UseGuards(ActiveCompanyGuard)
+  requestQr(
+    @Req() req: AuthenticatedRequest,
+    @Body('companyId') bodyCompanyId?: string,
+    @Query('companyId') queryCompanyId?: string,
+  ) {
+    return this.whatsappConnectionsService.requestQr(
+      bodyCompanyId || queryCompanyId || req.user?.companyId || '',
+    );
+  }
+
   @Post('connect/restart')
   @UseGuards(ActiveCompanyGuard)
   restartConnection(

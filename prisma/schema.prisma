@@ -483,6 +483,7 @@ model WhatsappConnection {
   status                   String    @default("not_configured")
   connectionState          String    @default("close")
   qrCode                   String?   @db.Text
+  qrCodeText               String?   @db.Text
   pairingCode              String?
   phoneNumber              String?
   webhookUrl               String?   @db.Text
@@ -501,6 +502,10 @@ model WhatsappConnection {
   lastConnectedAt          DateTime?
   lastDisconnectedAt       DateTime?
   lastEvolutionSyncAt      DateTime?
+  lastConnectStartAt       DateTime?
+  lastQrRequestAt          DateTime?
+  lastRepairAt             DateTime?
+  providerRetryAfterUntil  DateTime?
   operationLockUntil       DateTime?
   createdAt                DateTime  @default(now())
   updatedAt                DateTime  @updatedAt
