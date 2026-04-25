@@ -26,6 +26,7 @@ type RemoteInstanceLookup = RemoteStateSnapshot & {
 type ConnectInstanceResult = {
   status: string;
   qrCode: string | null;
+  code: string | null;
   pairingCode: string | null;
   phoneNumber: string | null;
 };
@@ -173,15 +174,18 @@ export class WhatsappProviderEvolutionService {
     });
 
     const qrCode = this.extractQrCode(response);
-    const pairingCode = this.readString(response?.pairingCode);
+    const code = this.extractQrText(response);
+    const pairingCode = this.extractPairingCode(response);
     const state = await this.getConnectionState(instanceName).catch(() => ({
-      state: qrCode ? 'connecting' : 'close',
+      state: qrCode || code || pairingCode ? 'connecting' : 'close',
       phoneNumber: null,
     }));
+    const hasQrSignal = Boolean(qrCode || code || pairingCode);
 
     return {
-      status: qrCode ? 'qr_pending' : this.mapStateToStatus(state.state, qrCode),
+      status: hasQrSignal ? 'qr_pending' : this.mapStateToStatus(state.state, hasQrSignal),
       qrCode,
+      code,
       pairingCode,
       phoneNumber: state.phoneNumber,
     };
@@ -507,10 +511,35 @@ export class WhatsappProviderEvolutionService {
     const qrcode = this.asRecord(payload?.qrcode) || this.asRecord(data?.qrcode);
     return this.normalizeQrCode(
       this.readString(payload?.code) ||
+        this.readString(payload?.qrcode) ||
         this.readString(payload?.base64) ||
+        this.readString(qrcode?.code) ||
         this.readString(qrcode?.base64) ||
         this.readString(data?.code) ||
+        this.readString(data?.qrcode) ||
         this.readString(data?.base64),
+    );
+  }
+
+  private extractQrText(payload: Record<string, unknown> | null | undefined) {
+    const data = this.asRecord(payload?.data);
+    const qrcode = this.asRecord(payload?.qrcode) || this.asRecord(data?.qrcode);
+    return (
+      this.readString(payload?.code) ||
+      this.readString(payload?.qrcode) ||
+      this.readString(qrcode?.code) ||
+      this.readString(data?.code) ||
+      this.readString(data?.qrcode)
+    );
+  }
+
+  private extractPairingCode(payload: Record<string, unknown> | null | undefined) {
+    const data = this.asRecord(payload?.data);
+    return (
+      this.readString(payload?.pairingCode) ||
+      this.readString(payload?.pairing_code) ||
+      this.readString(data?.pairingCode) ||
+      this.readString(data?.pairing_code)
     );
   }
 
@@ -637,13 +666,17 @@ export class WhatsappProviderEvolutionService {
     return null;
   }
 
-  private mapStateToStatus(state: string, qrCode: string | null) {
+  private mapStateToStatus(state: string, hasQrSignal: boolean) {
     if (state === 'open') {
       return 'connected';
     }
 
-    if (qrCode || state === 'connecting') {
+    if (hasQrSignal) {
       return 'qr_pending';
+    }
+
+    if (state === 'connecting') {
+      return 'connecting';
     }
 
     if (state === 'close') {
