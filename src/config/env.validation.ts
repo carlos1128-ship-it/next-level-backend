@@ -96,6 +96,11 @@ export function validateEnvironment(config: RawEnv): RawEnv {
     normalized.N8N_WEBHOOK_URL || normalized.N8N_INBOUND_WEBHOOK_URL,
     { allowHttpLocalhost: true },
   );
+  normalized.N8N_AGENT_WEBHOOK_URL = normalizeUrl(
+    'N8N_AGENT_WEBHOOK_URL',
+    normalized.N8N_AGENT_WEBHOOK_URL || normalized.N8N_WEBHOOK_URL,
+    { allowHttpLocalhost: true },
+  );
   normalized.N8N_INBOUND_WEBHOOK_URL = normalizeUrl(
     'N8N_INBOUND_WEBHOOK_URL',
     normalized.N8N_WEBHOOK_URL,
@@ -147,7 +152,10 @@ export function validateEnvironment(config: RawEnv): RawEnv {
     );
   }
 
-  if (normalized.N8N_WEBHOOK_URL && !normalized.INTERNAL_AUTOMATION_TOKEN?.trim()) {
+  if (
+    (normalized.N8N_AGENT_WEBHOOK_URL || normalized.N8N_WEBHOOK_URL) &&
+    !normalized.INTERNAL_AUTOMATION_TOKEN?.trim()
+  ) {
     throw new Error(
       'INTERNAL_AUTOMATION_TOKEN precisa estar configurado para a automacao n8n',
     );

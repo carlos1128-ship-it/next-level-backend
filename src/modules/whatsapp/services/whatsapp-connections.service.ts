@@ -101,6 +101,7 @@ export class WhatsappConnectionsService {
   private readonly logger = new Logger(WhatsappConnectionsService.name);
   private readonly operationLocks = new Map<string, string>();
   private readonly providerActionCooldowns = new Map<string, number>();
+  private readonly processedMessageEvents = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -485,23 +486,25 @@ export class WhatsappConnectionsService {
       return;
     }
 
-    if (event === 'MESSAGES_UPSERT' || event === 'MESSAGES_UPDATE') {
-      const messages = Array.isArray(data.messages) ? data.messages : [];
-      await this.conversationsService.ingestEvolutionMessages(connection, messages);
+    if (event === 'SEND_MESSAGE') {
+      this.logWhatsappEvent('whatsapp.webhook.message.ignored_from_me', {
+        companyId: connection.companyId,
+        instanceName,
+        event,
+        reason: 'send_message_event',
+      });
+      return;
+    }
 
-      if (
-        event === 'MESSAGES_UPSERT' &&
-        connection.status === 'connected' &&
-        (await this.isAutomationEnabled(connection.companyId))
-      ) {
-        void this.forwardAutomationEvent(connection, payload).catch((error) => {
-          this.logger.warn(
-            `Falha ao encaminhar mensagem WhatsApp ao n8n para ${connection.instanceName}: ${
-              error instanceof Error ? error.message : 'erro desconhecido'
-            }`,
-          );
-        });
+    if (event === 'MESSAGES_UPSERT' || event === 'MESSAGES_UPDATE') {
+      const messages = this.extractWebhookMessages(payload);
+      if (event === 'MESSAGES_UPSERT') {
+        await this.handleIncomingAutomationMessage(connection, payload);
+        await this.conversationsService.ingestEvolutionMessages(connection, messages);
+        return;
       }
+
+      await this.conversationsService.ingestEvolutionMessages(connection, messages);
     }
   }
 
@@ -1257,6 +1260,7 @@ export class WhatsappConnectionsService {
       ? {
           Authorization: `Bearer ${token}`,
           'x-internal-automation-token': token,
+          'x-nextlevel-internal-token': token,
         }
       : undefined;
   }
@@ -1267,7 +1271,15 @@ export class WhatsappConnectionsService {
       : 'pending';
   }
 
-  private async forwardAutomationEvent(
+  private resolveN8nAgentWebhookUrl() {
+    return this.readString(
+      this.configService.get<string>('N8N_AGENT_WEBHOOK_URL') ||
+        this.configService.get<string>('N8N_WEBHOOK_URL') ||
+        this.configService.get<string>('N8N_INBOUND_WEBHOOK_URL'),
+    );
+  }
+
+  private async handleIncomingAutomationMessage(
     connection: {
       id: string;
       companyId: string;
@@ -1276,7 +1288,139 @@ export class WhatsappConnectionsService {
     },
     payload: Record<string, unknown>,
   ) {
-    const webhookUrl = this.resolveN8nInboundWebhookUrl();
+    const normalized = this.extractIncomingMessage(payload);
+
+    this.logWhatsappEvent('whatsapp.webhook.message.received', {
+      companyId: connection.companyId,
+      instanceName: connection.instanceName,
+      event: 'MESSAGES_UPSERT',
+      messageId: normalized.messageId,
+      remoteJid: normalized.remoteJid,
+      fromMe: normalized.fromMe,
+      messageType: normalized.messageType,
+    });
+
+    if (!normalized.remoteJid || !normalized.messageId) {
+      this.logWhatsappEvent('whatsapp.webhook.message.duplicate', {
+        companyId: connection.companyId,
+        instanceName: connection.instanceName,
+        reason: 'missing_remote_or_message_id',
+      });
+      return;
+    }
+
+    if (normalized.fromMe) {
+      this.logWhatsappEvent('whatsapp.webhook.message.ignored_from_me', {
+        companyId: connection.companyId,
+        instanceName: connection.instanceName,
+        messageId: normalized.messageId,
+      });
+      return;
+    }
+
+    if (this.isIgnoredRemoteJid(normalized.remoteJid)) {
+      return;
+    }
+
+    const idempotencyKey = `whatsapp:event:${connection.instanceName}:${normalized.messageId}`;
+    if (await this.isDuplicateMessageEvent(idempotencyKey, connection.companyId, normalized.messageId)) {
+      this.logWhatsappEvent('whatsapp.webhook.message.duplicate', {
+        companyId: connection.companyId,
+        instanceName: connection.instanceName,
+        messageId: normalized.messageId,
+      });
+      return;
+    }
+
+    this.markMessageEventProcessing(idempotencyKey);
+    this.logWhatsappEvent('whatsapp.webhook.company.resolved', {
+      companyId: connection.companyId,
+      instanceName: connection.instanceName,
+    });
+
+    const agentConfig = await this.prisma.agentConfig.findUnique({
+      where: { companyId: connection.companyId },
+    });
+
+    if (!agentConfig) {
+      this.logWhatsappEvent('whatsapp.webhook.agent_inactive', {
+        companyId: connection.companyId,
+        instanceName: connection.instanceName,
+        reason: 'missing_agent_config',
+      });
+      return;
+    }
+
+    this.logWhatsappEvent('whatsapp.webhook.agent_config.loaded', {
+      companyId: connection.companyId,
+      instanceName: connection.instanceName,
+      attendantActive: agentConfig.isEnabled,
+    });
+
+    if (!agentConfig.isEnabled) {
+      this.logWhatsappEvent('whatsapp.webhook.agent_inactive', {
+        companyId: connection.companyId,
+        instanceName: connection.instanceName,
+        reason: 'attendant_inactive',
+      });
+      return;
+    }
+
+    try {
+      await this.forwardIncomingWhatsappMessageToN8n(
+        connection,
+        payload,
+        normalized,
+        agentConfig,
+      );
+    } catch (error) {
+      this.logWhatsappEvent('whatsapp.webhook.forward_to_n8n.failed', {
+        companyId: connection.companyId,
+        instanceName: connection.instanceName,
+        messageId: normalized.messageId,
+        message: this.extractErrorMessage(error),
+      });
+    }
+  }
+
+  private async forwardIncomingWhatsappMessageToN8n(
+    connection: {
+      id: string;
+      companyId: string;
+      instanceName: string;
+      status: string;
+    },
+    payload: Record<string, unknown>,
+    message: {
+      remoteJid: string | null;
+      fromMe: boolean;
+      messageId: string | null;
+      pushName: string | null;
+      messageType: string;
+      text: string | null;
+    },
+    agentConfig: {
+      id: string;
+      agentName: string;
+      tone: string;
+      companyDescription: string;
+      welcomeMessage: string;
+      instructions: string;
+      systemPrompt: string;
+      toneOfVoice: string;
+      internetSearchEnabled: boolean;
+      speechToTextEnabled: boolean;
+      imageUnderstandingEnabled: boolean;
+      pauseForHuman: boolean;
+      debounceSeconds: number;
+      maxContextMessages: number;
+      splitRepliesEnabled: boolean;
+      messageBufferEnabled: boolean;
+      modelProvider: string;
+      modelName: string;
+    },
+  ) {
+    const webhookUrl = this.resolveN8nAgentWebhookUrl();
     const headers = this.getAutomationHeaders();
 
     if (!webhookUrl || !headers) {
@@ -1286,14 +1430,26 @@ export class WhatsappConnectionsService {
       return;
     }
 
+    this.logWhatsappEvent('whatsapp.webhook.forward_to_n8n.begin', {
+      companyId: connection.companyId,
+      instanceName: connection.instanceName,
+      messageId: message.messageId,
+    });
+
     await axios.post(
       webhookUrl,
-      this.buildAutomationPayload(connection, payload),
+      this.buildAutomationPayload(connection, payload, message, agentConfig),
       {
         timeout: 10000,
         headers,
       },
     );
+
+    this.logWhatsappEvent('whatsapp.webhook.forward_to_n8n.success', {
+      companyId: connection.companyId,
+      instanceName: connection.instanceName,
+      messageId: message.messageId,
+    });
   }
 
   private buildAutomationPayload(
@@ -1304,26 +1460,91 @@ export class WhatsappConnectionsService {
       status: string;
     },
     payload: Record<string, unknown>,
+    message: {
+      remoteJid: string | null;
+      fromMe: boolean;
+      messageId: string | null;
+      pushName: string | null;
+      messageType: string;
+      text: string | null;
+    },
+    agentConfig: {
+      id: string;
+      agentName: string;
+      tone: string;
+      companyDescription: string;
+      welcomeMessage: string;
+      instructions: string;
+      systemPrompt: string;
+      toneOfVoice: string;
+      internetSearchEnabled: boolean;
+      speechToTextEnabled: boolean;
+      imageUnderstandingEnabled: boolean;
+      pauseForHuman: boolean;
+      debounceSeconds: number;
+      maxContextMessages: number;
+      splitRepliesEnabled: boolean;
+      messageBufferEnabled: boolean;
+      modelProvider: string;
+      modelName: string;
+    },
   ) {
-    const data = this.asRecord(payload.data) || {};
-    const messages = Array.isArray(data.messages) ? data.messages : [];
-    const firstMessage = this.asRecord(messages[0]);
-    const normalizedData = firstMessage || data;
-    const normalizedEvent = this.normalizeAutomationEventName(
-      this.readString(payload.event),
-    );
-
     return {
-      ...payload,
-      event: normalizedEvent,
-      data: normalizedData,
-      rawEvolutionPayload: payload,
-      instanceName: this.readString(payload.instanceName) || connection.instanceName,
-      instance: this.readString(payload.instance) || connection.instanceName,
+      source: 'evolution',
+      event: 'MESSAGES_UPSERT',
       companyId: connection.companyId,
+      instanceName: connection.instanceName,
       whatsappConnectionId: connection.id,
-      connectionStatus: connection.status,
-      source: 'next-level-backend',
+      remoteJid: message.remoteJid,
+      fromMe: false,
+      messageId: message.messageId,
+      pushName: message.pushName,
+      messageType: message.messageType,
+      message: message.text || '',
+      text: message.text || '',
+      raw: payload,
+      rawEvolutionPayload: payload,
+      agentConfig: {
+        id: agentConfig.id,
+        name: agentConfig.agentName,
+        agentName: agentConfig.agentName,
+        tone: agentConfig.tone || agentConfig.toneOfVoice,
+        toneOfVoice: agentConfig.toneOfVoice || agentConfig.tone,
+        companyDescription: agentConfig.companyDescription,
+        initialMessage: agentConfig.welcomeMessage,
+        welcomeMessage: agentConfig.welcomeMessage,
+        instructions: agentConfig.instructions,
+        systemPrompt: agentConfig.systemPrompt || agentConfig.instructions,
+        model: agentConfig.modelName,
+        modelProvider: agentConfig.modelProvider,
+        modelName: agentConfig.modelName,
+        debounceSeconds: agentConfig.debounceSeconds,
+        contextWindow: agentConfig.maxContextMessages,
+        maxContextMessages: agentConfig.maxContextMessages,
+        internetSearchEnabled: agentConfig.internetSearchEnabled,
+        audioToTextEnabled: agentConfig.speechToTextEnabled,
+        speechToTextEnabled: agentConfig.speechToTextEnabled,
+        imageReadingEnabled: agentConfig.imageUnderstandingEnabled,
+        imageUnderstandingEnabled: agentConfig.imageUnderstandingEnabled,
+        splitResponsesEnabled: agentConfig.splitRepliesEnabled,
+        splitRepliesEnabled: agentConfig.splitRepliesEnabled,
+        bufferEnabled: agentConfig.messageBufferEnabled,
+        messageBufferEnabled: agentConfig.messageBufferEnabled,
+        humanPauseEnabled: agentConfig.pauseForHuman,
+        pauseForHuman: agentConfig.pauseForHuman,
+        attendantActive: true,
+      },
+      reply: {
+        provider: 'evolution',
+        baseUrl: this.readString(this.configService.get<string>('EVOLUTION_BASE_URL')),
+        instanceName: connection.instanceName,
+        to: message.remoteJid,
+      },
+      memory: {
+        sessionKey: `${connection.companyId}:${message.remoteJid}`,
+        bufferKey: `buffer:${connection.companyId}:${message.remoteJid}`,
+        humanPauseKey: `paused:${connection.companyId}:${message.remoteJid}`,
+      },
     };
   }
 
@@ -1337,6 +1558,137 @@ export class WhatsappConnectionsService {
     }
 
     return event || 'unknown';
+  }
+
+  private extractWebhookMessages(payload: Record<string, unknown>) {
+    const data = this.asRecord(payload.data) || {};
+    if (Array.isArray(data.messages)) {
+      return data.messages;
+    }
+
+    if (data.key || data.message || data.remoteJid || data.id) {
+      return [data];
+    }
+
+    return [];
+  }
+
+  private extractIncomingMessage(payload: Record<string, unknown>) {
+    const data = this.asRecord(payload.data) || {};
+    const messages = this.extractWebhookMessages(payload);
+    const firstMessage = this.asRecord(messages[0]) || data;
+    const key = this.asRecord(firstMessage.key) || this.asRecord(data.key) || {};
+    const rawMessage =
+      this.asRecord(firstMessage.message) ||
+      this.asRecord(data.message) ||
+      {};
+    const content = this.unwrapWebhookMessage(rawMessage);
+    const messageType = this.detectWebhookMessageType(content);
+
+    return {
+      remoteJid:
+        this.readString(key.remoteJid) ||
+        this.readString(firstMessage.remoteJid) ||
+        this.readString(data.remoteJid) ||
+        this.readString(payload.remoteJid),
+      fromMe: Boolean(key.fromMe ?? firstMessage.fromMe ?? data.fromMe),
+      messageId:
+        this.readString(key.id) ||
+        this.readString(firstMessage.id) ||
+        this.readString(data.id) ||
+        this.readString(payload.messageId),
+      pushName:
+        this.readString(firstMessage.pushName) ||
+        this.readString(data.pushName) ||
+        this.readString(payload.pushName),
+      messageType,
+      text:
+        this.extractWebhookText(content) ||
+        this.readString(firstMessage.text) ||
+        this.readString(data.text) ||
+        (messageType === 'audio' ? '[audio]' : null),
+    };
+  }
+
+  private unwrapWebhookMessage(message: Record<string, unknown>) {
+    let current: Record<string, unknown> | null = message;
+
+    for (let depth = 0; depth < 5 && current; depth += 1) {
+      const next =
+        this.asRecord(current.ephemeralMessage)?.message ||
+        this.asRecord(current.viewOnceMessage)?.message ||
+        this.asRecord(current.viewOnceMessageV2)?.message ||
+        this.asRecord(current.viewOnceMessageV2Extension)?.message;
+
+      if (!next || typeof next !== 'object') {
+        break;
+      }
+
+      current = next as Record<string, unknown>;
+    }
+
+    return current || {};
+  }
+
+  private extractWebhookText(content: Record<string, unknown>) {
+    return (
+      this.readString(content.conversation) ||
+      this.readString(this.asRecord(content.extendedTextMessage)?.text) ||
+      this.readString(this.asRecord(content.imageMessage)?.caption) ||
+      this.readString(this.asRecord(content.videoMessage)?.caption) ||
+      this.readString(this.asRecord(content.documentMessage)?.caption) ||
+      this.readString(this.asRecord(content.buttonsResponseMessage)?.selectedDisplayText) ||
+      this.readString(this.asRecord(content.listResponseMessage)?.title)
+    );
+  }
+
+  private detectWebhookMessageType(content: Record<string, unknown>) {
+    if (content.audioMessage) return 'audio';
+    if (content.imageMessage) return 'image';
+    if (content.videoMessage) return 'video';
+    if (content.documentMessage) return 'document';
+    return 'text';
+  }
+
+  private isIgnoredRemoteJid(remoteJid: string) {
+    return remoteJid.includes('@broadcast') || remoteJid.includes('@g.us');
+  }
+
+  private async isDuplicateMessageEvent(
+    idempotencyKey: string,
+    companyId: string,
+    messageId: string,
+  ) {
+    const now = Date.now();
+    this.cleanupProcessedMessageEvents(now);
+
+    const blockedUntil = this.processedMessageEvents.get(idempotencyKey);
+    if (blockedUntil && blockedUntil > now) {
+      return true;
+    }
+
+    const existing = await this.prisma.message.findFirst({
+      where: {
+        companyId,
+        externalMessageId: messageId,
+        direction: 'inbound',
+      },
+      select: { id: true },
+    });
+
+    return Boolean(existing);
+  }
+
+  private markMessageEventProcessing(idempotencyKey: string) {
+    this.processedMessageEvents.set(idempotencyKey, Date.now() + 10 * 60 * 1000);
+  }
+
+  private cleanupProcessedMessageEvents(now = Date.now()) {
+    for (const [key, expiresAt] of this.processedMessageEvents.entries()) {
+      if (expiresAt <= now) {
+        this.processedMessageEvents.delete(key);
+      }
+    }
   }
 
   private async saveWebhookEvent(companyId: string, payload: Record<string, unknown>) {

@@ -1,4 +1,4 @@
-import { IsBoolean, IsOptional, IsString } from 'class-validator';
+import { IsBoolean, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
 
 export class UpdateBotConfigDto {
   @IsOptional()
@@ -26,10 +26,86 @@ export class UpdateBotConfigDto {
   instructions?: string;
 
   @IsOptional()
+  @IsString()
+  systemPrompt?: string;
+
+  @IsOptional()
+  @IsString()
+  companyDescription?: string;
+
+  @IsOptional()
+  @IsString()
+  model?: string;
+
+  @IsOptional()
+  @IsString()
+  modelName?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  internetSearchEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  audioToTextEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  speechToTextEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  imageReadingEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  imageUnderstandingEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  splitResponsesEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  splitRepliesEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  bufferEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  messageBufferEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  humanPauseEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  pauseForHuman?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  attendantActive?: boolean;
+
+  @IsOptional()
   @IsBoolean()
   isActive?: boolean;
 
   @IsOptional()
   @IsBoolean()
   isOnline?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(300)
+  debounceSeconds?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  contextWindow?: number;
 }

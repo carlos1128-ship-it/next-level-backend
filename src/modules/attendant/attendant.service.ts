@@ -136,11 +136,33 @@ export class AttendantService {
       botName: config.agentName,
       agentName: config.agentName,
       welcomeMessage: config.welcomeMessage,
+      initialMessage: config.welcomeMessage,
+      companyDescription: config.companyDescription,
+      systemPrompt: config.systemPrompt,
       toneOfVoice: config.tone,
       tone: config.tone,
       instructions: config.instructions,
-      isActive: config.isOnline,
+      isActive: config.isEnabled,
+      isEnabled: config.isEnabled,
       isOnline: config.isOnline,
+      attendantActive: config.isEnabled,
+      internetSearchEnabled: config.internetSearchEnabled,
+      audioToTextEnabled: config.speechToTextEnabled,
+      speechToTextEnabled: config.speechToTextEnabled,
+      imageReadingEnabled: config.imageUnderstandingEnabled,
+      imageUnderstandingEnabled: config.imageUnderstandingEnabled,
+      splitResponsesEnabled: config.splitRepliesEnabled,
+      splitRepliesEnabled: config.splitRepliesEnabled,
+      bufferEnabled: config.messageBufferEnabled,
+      messageBufferEnabled: config.messageBufferEnabled,
+      humanPauseEnabled: config.pauseForHuman,
+      pauseForHuman: config.pauseForHuman,
+      debounceSeconds: config.debounceSeconds,
+      contextWindow: config.maxContextMessages,
+      maxContextMessages: config.maxContextMessages,
+      model: config.modelName,
+      modelName: config.modelName,
+      modelProvider: config.modelProvider,
       metaPhoneNumberId: company?.metaPhoneNumberId ?? null,
       metaWabaId: company?.metaWabaId ?? null,
       phoneNumber: company?.phoneNumber ?? null,
@@ -160,6 +182,24 @@ export class AttendantService {
       toneOfVoice?: string;
       tone?: string;
       instructions?: string;
+      systemPrompt?: string;
+      companyDescription?: string;
+      model?: string;
+      modelName?: string;
+      internetSearchEnabled?: boolean;
+      audioToTextEnabled?: boolean;
+      speechToTextEnabled?: boolean;
+      imageReadingEnabled?: boolean;
+      imageUnderstandingEnabled?: boolean;
+      splitResponsesEnabled?: boolean;
+      splitRepliesEnabled?: boolean;
+      bufferEnabled?: boolean;
+      messageBufferEnabled?: boolean;
+      humanPauseEnabled?: boolean;
+      pauseForHuman?: boolean;
+      attendantActive?: boolean;
+      debounceSeconds?: number;
+      contextWindow?: number;
       isActive?: boolean;
       isOnline?: boolean;
     }>,
@@ -171,8 +211,27 @@ export class AttendantService {
       data: {
         agentName: data.agentName?.trim() || data.botName?.trim() || config.agentName,
         tone: data.tone?.trim() || data.toneOfVoice?.trim() || config.tone,
+        toneOfVoice: data.toneOfVoice?.trim() || data.tone?.trim() || config.toneOfVoice,
         welcomeMessage: data.welcomeMessage?.trim() || config.welcomeMessage,
         instructions: data.instructions?.trim() || config.instructions,
+        systemPrompt: data.systemPrompt?.trim() || config.systemPrompt,
+        companyDescription: data.companyDescription?.trim() || config.companyDescription,
+        internetSearchEnabled: data.internetSearchEnabled ?? config.internetSearchEnabled,
+        speechToTextEnabled:
+          data.audioToTextEnabled ?? data.speechToTextEnabled ?? config.speechToTextEnabled,
+        imageUnderstandingEnabled:
+          data.imageReadingEnabled ??
+          data.imageUnderstandingEnabled ??
+          config.imageUnderstandingEnabled,
+        splitRepliesEnabled:
+          data.splitResponsesEnabled ?? data.splitRepliesEnabled ?? config.splitRepliesEnabled,
+        messageBufferEnabled:
+          data.bufferEnabled ?? data.messageBufferEnabled ?? config.messageBufferEnabled,
+        pauseForHuman: data.humanPauseEnabled ?? data.pauseForHuman ?? config.pauseForHuman,
+        debounceSeconds: data.debounceSeconds ?? config.debounceSeconds,
+        maxContextMessages: data.contextWindow ?? config.maxContextMessages,
+        modelName: data.modelName?.trim() || data.model?.trim() || config.modelName,
+        isEnabled: data.attendantActive ?? data.isActive ?? config.isEnabled,
         isOnline: data.isOnline ?? data.isActive ?? config.isOnline,
       },
     });
