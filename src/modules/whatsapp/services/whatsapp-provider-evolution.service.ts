@@ -9,6 +9,8 @@ const DEFAULT_WEBHOOK_EVENTS = [
   'CONNECTION_UPDATE',
   'SEND_MESSAGE',
 ];
+const MIN_PROVIDER_CALL_INTERVAL_MS = 2500;
+const RATE_LIMIT_COOLDOWN_MS = 60000;
 
 type EvolutionRequestMethod = 'GET' | 'POST' | 'DELETE';
 
@@ -52,6 +54,7 @@ export class WhatsappProviderEvolutionService {
   private readonly apiKey: string | null;
   private readonly timeoutMs: number;
   private readonly lastCallByInstance = new Map<string, number>();
+  private readonly rateLimitedUntilByInstance = new Map<string, number>();
 
   constructor(private readonly configService: ConfigService) {
     this.baseUrl = this.readString(
@@ -66,7 +69,7 @@ export class WhatsappProviderEvolutionService {
     this.timeoutMs = this.readPositiveInt(
       this.configService.get<string>('EVOLUTION_API_TIMEOUT_MS') ||
         this.configService.get<string>('WHATSAPP_PROVIDER_TIMEOUT_MS'),
-      20000,
+      30000,
     );
 
     this.api = axios.create({
@@ -293,6 +296,8 @@ export class WhatsappProviderEvolutionService {
     const fallbackPayload = {
       enabled: true,
       url: webhookUrl,
+      webhook_by_events: false,
+      webhook_base64: true,
       events,
       base64: true,
       headers: headers || {},
@@ -380,7 +385,7 @@ export class WhatsappProviderEvolutionService {
     return this.request({
       method: 'DELETE',
       path: `instance/logout/${encodeURIComponent(instanceName)}`,
-    }).catch(() => undefined);
+    });
   }
 
   async deleteInstance(instanceName: string) {
@@ -389,7 +394,7 @@ export class WhatsappProviderEvolutionService {
     return this.request({
       method: 'DELETE',
       path: `instance/delete/${encodeURIComponent(instanceName)}`,
-    }).catch(() => undefined);
+    });
   }
 
   async disconnectInstance(instanceName: string) {
@@ -439,7 +444,7 @@ export class WhatsappProviderEvolutionService {
       input.params,
       input.data,
     );
-    const maxAttempts = 3;
+    const maxAttempts = this.resolveMaxAttempts(input.method, normalizedPath);
     let lastError: unknown = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -459,7 +464,16 @@ export class WhatsappProviderEvolutionService {
         const statusCode = this.extractStatusCode(error);
         const responseData = axios.isAxiosError(error) ? error.response?.data : null;
         const retryAfterMs = this.extractRetryAfterMs(error);
-        const shouldRetry = attempt < maxAttempts && this.isTransientProviderError(error);
+        if (statusCode === 429) {
+          this.rateLimitedUntilByInstance.set(
+            instanceName || 'global',
+            Date.now() + (retryAfterMs || RATE_LIMIT_COOLDOWN_MS),
+          );
+        }
+        const shouldRetry =
+          statusCode !== 429 &&
+          attempt < maxAttempts &&
+          this.isTransientProviderError(error);
 
         this.logger.error(
           JSON.stringify({
@@ -517,8 +531,17 @@ export class WhatsappProviderEvolutionService {
   private async throttleInstance(instanceName: string) {
     const key = instanceName || 'global';
     const now = Date.now();
+    const rateLimitedUntil = this.rateLimitedUntilByInstance.get(key) || 0;
+    if (rateLimitedUntil > now) {
+      throw new EvolutionProviderException(
+        'A Evolution limitou as requisicoes. Aguarde alguns segundos antes de tentar novamente.',
+        429,
+        { retryAfterMs: rateLimitedUntil - now },
+      );
+    }
+
     const lastCallAt = this.lastCallByInstance.get(key) || 0;
-    const waitMs = Math.max(0, 1500 - (now - lastCallAt));
+    const waitMs = Math.max(0, MIN_PROVIDER_CALL_INTERVAL_MS - (now - lastCallAt));
 
     if (waitMs > 0) {
       await this.sleep(waitMs);
@@ -549,6 +572,18 @@ export class WhatsappProviderEvolutionService {
 
   private getBackoffMs(attempt: number) {
     return attempt === 1 ? 2000 : 5000;
+  }
+
+  private resolveMaxAttempts(method: EvolutionRequestMethod, path: string) {
+    if (method === 'DELETE') {
+      return 1;
+    }
+
+    if (path === 'instance/create') {
+      return 2;
+    }
+
+    return 3;
   }
 
   private sleep(ms: number) {
@@ -668,7 +703,7 @@ export class WhatsappProviderEvolutionService {
   }
 
   private buildInstanceName(companyId: string) {
-    return `nextlevel-${companyId}`;
+    return `nextlevel-company-${companyId}-g1`;
   }
 
   private shouldFallbackToFetchInstances(error: unknown) {

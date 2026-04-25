@@ -478,8 +478,10 @@ model WhatsappConnection {
   companyId                String    @unique
   provider                 String    @default("evolution")
   instanceName             String    @unique
+  instanceId               String?
   instanceToken            String?   @db.Text
-  status                   String    @default("idle")
+  status                   String    @default("not_configured")
+  connectionState          String    @default("close")
   qrCode                   String?   @db.Text
   pairingCode              String?
   phoneNumber              String?
@@ -489,11 +491,17 @@ model WhatsappConnection {
   webhookLastError         String?   @db.Text
   webhookConfigHash        String?
   userRequestedDisconnect  Boolean   @default(false)
+  sessionGeneration        Int       @default(1)
   lastEvolutionState       String?
   lastConnectionEventAt    DateTime?
   lastQrAt                 DateTime?
+  lastQrGeneratedAt        DateTime?
   lastError                String?   @db.Text
   lastConnectionAt         DateTime?
+  lastConnectedAt          DateTime?
+  lastDisconnectedAt       DateTime?
+  lastEvolutionSyncAt      DateTime?
+  operationLockUntil       DateTime?
   createdAt                DateTime  @default(now())
   updatedAt                DateTime  @updatedAt
 

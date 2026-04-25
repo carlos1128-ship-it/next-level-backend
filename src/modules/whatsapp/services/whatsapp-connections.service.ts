@@ -16,6 +16,11 @@ import { WhatsappProviderEvolutionService } from './whatsapp-provider-evolution.
 
 const OPERATION_LOCK_TTL_MS = 45000;
 const WEBHOOK_RECONFIGURE_COOLDOWN_MS = 60000;
+const REMOTE_SYNC_COOLDOWN_MS = 8000;
+const CONNECT_ACTION_COOLDOWN_MS = 60000;
+const DISCONNECT_ACTION_COOLDOWN_MS = 60000;
+const INSTANCE_CYCLE_COOLDOWN_MS = 120000;
+const LEGACY_SHARED_INSTANCE_NAMES = new Set(['next-text', 'next-test']);
 
 type EvolutionWebhookPayload = {
   event?: string;
@@ -37,8 +42,10 @@ type ConnectionRecord = {
   companyId: string;
   provider: string;
   instanceName: string;
+  instanceId: string | null;
   instanceToken: string | null;
   status: string;
+  connectionState: string;
   qrCode: string | null;
   pairingCode: string | null;
   phoneNumber: string | null;
@@ -48,11 +55,17 @@ type ConnectionRecord = {
   webhookLastError: string | null;
   webhookConfigHash: string | null;
   userRequestedDisconnect: boolean;
+  sessionGeneration: number;
   lastEvolutionState: string | null;
   lastConnectionEventAt: Date | null;
   lastQrAt: Date | null;
+  lastQrGeneratedAt: Date | null;
   lastError: string | null;
   lastConnectionAt: Date | null;
+  lastConnectedAt: Date | null;
+  lastDisconnectedAt: Date | null;
+  lastEvolutionSyncAt: Date | null;
+  operationLockUntil: Date | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -61,6 +74,7 @@ type ConnectionRecord = {
 export class WhatsappConnectionsService {
   private readonly logger = new Logger(WhatsappConnectionsService.name);
   private readonly operationLocks = new Map<string, string>();
+  private readonly providerActionCooldowns = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -112,7 +126,21 @@ export class WhatsappConnectionsService {
       });
 
       if (!connection) {
-        return this.connectUnlocked(companyId, {});
+        return this.buildSnapshot(null);
+      }
+
+      if (connection.userRequestedDisconnect) {
+        const updated = await this.prisma.whatsappConnection.update({
+          where: { id: connection.id },
+          data: {
+            status: 'disconnected_requires_new_qr',
+            connectionState: connection.lastEvolutionState || 'close',
+            qrCode: null,
+            pairingCode: null,
+            lastError: 'Conexao encerrada pelo usuario. Para conectar novamente, gere um novo QR Code.',
+          },
+        });
+        return this.buildSnapshot(updated);
       }
 
       const remoteState = this.providerService.isConfigured()
@@ -120,16 +148,11 @@ export class WhatsappConnectionsService {
         : null;
 
       if (remoteState?.state === 'open') {
-        await this.providerService.restartInstance(connection.instanceName).catch((error) => {
-          this.logger.warn(
-            `Restart Evolution ignorado para ${connection.instanceName}: ${this.extractErrorMessage(error)}`,
-          );
-        });
-
         const updated = await this.prisma.whatsappConnection.update({
           where: { id: connection.id },
           data: {
             status: 'connected',
+            connectionState: remoteState.state,
             qrCode: null,
             pairingCode: null,
             phoneNumber: remoteState.phoneNumber || connection.phoneNumber,
@@ -137,19 +160,19 @@ export class WhatsappConnectionsService {
             lastEvolutionState: remoteState.state,
             lastConnectionEventAt: new Date(),
             lastConnectionAt: connection.lastConnectionAt || new Date(),
+            lastConnectedAt: connection.lastConnectedAt || new Date(),
+            lastEvolutionSyncAt: new Date(),
             lastError: null,
           },
         });
         return this.buildSnapshot(updated);
       }
 
-      if (['creating', 'qr_pending', 'connecting'].includes(connection.status)) {
+      if (['creating_instance', 'qr_required', 'qr_pending', 'connecting'].includes(connection.status)) {
         return this.buildSnapshot(connection);
       }
 
-      return this.connectUnlocked(companyId, {
-        instanceName: connection.instanceName,
-      });
+      return this.connectExistingInstanceForQr(connection);
     });
   }
 
@@ -175,11 +198,35 @@ export class WhatsappConnectionsService {
       });
 
       if (this.providerService.isConfigured()) {
-        await this.providerService.disconnectInstance(connection.instanceName).catch((error) => {
+        try {
+          this.assertProviderActionAllowed(connection.instanceName, 'disconnect', DISCONNECT_ACTION_COOLDOWN_MS);
+          await this.providerService.logoutInstance(connection.instanceName);
+          this.assertProviderActionAllowed(connection.instanceName, 'delete', INSTANCE_CYCLE_COOLDOWN_MS);
+          await this.providerService.deleteInstance(connection.instanceName);
+        } catch (error) {
+          const message = this.buildProviderUserMessage(error);
+          const updated = await this.prisma.whatsappConnection.update({
+            where: { id: connection.id },
+            data: {
+              status: this.isProviderRateLimitError(error)
+                ? 'rate_limited'
+                : 'disconnected_pending_provider_cleanup',
+              userRequestedDisconnect: true,
+              qrCode: null,
+              pairingCode: null,
+              phoneNumber: null,
+              connectionState: 'close',
+              lastEvolutionState: 'close',
+              lastConnectionEventAt: new Date(),
+              lastDisconnectedAt: new Date(),
+              lastError: message,
+            },
+          });
           this.logger.warn(
-            `Falha ao desconectar Evolution para ${connection.instanceName}: ${this.extractErrorMessage(error)}`,
+            `Falha ao limpar sessao Evolution para ${connection.instanceName}: ${this.extractErrorMessage(error)}`,
           );
-        });
+          return this.buildSnapshot(updated);
+        }
       }
 
       const updated = await this.prisma.whatsappConnection.update({
@@ -190,8 +237,13 @@ export class WhatsappConnectionsService {
           qrCode: null,
           pairingCode: null,
           phoneNumber: null,
+          webhookEnabled: false,
+          webhookLastError: null,
+          connectionState: 'close',
           lastEvolutionState: 'close',
           lastConnectionEventAt: new Date(),
+          lastDisconnectedAt: new Date(),
+          lastError: null,
         },
       });
 
@@ -231,6 +283,13 @@ export class WhatsappConnectionsService {
         return;
       }
 
+      if (!['creating_instance', 'qr_required', 'qr_pending', 'connecting'].includes(connection.status)) {
+        this.logger.warn(
+          `QR Evolution ignorado para ${connection.instanceName}; status local ${connection.status} nao espera QR.`,
+        );
+        return;
+      }
+
       const qrCode = this.normalizeQrCode(
         this.readString(data.qrcode?.base64) || this.readString(data.code),
       );
@@ -238,10 +297,12 @@ export class WhatsappConnectionsService {
       await this.prisma.whatsappConnection.update({
         where: { id: connection.id },
         data: {
-          status: qrCode ? 'qr_pending' : 'creating',
+          status: qrCode ? 'qr_pending' : 'creating_instance',
+          connectionState: 'connecting',
           qrCode,
           pairingCode: this.readString(data.pairingCode),
           lastQrAt: qrCode ? new Date() : connection.lastQrAt,
+          lastQrGeneratedAt: qrCode ? new Date() : connection.lastQrGeneratedAt,
           lastConnectionEventAt: new Date(),
           lastError: null,
         },
@@ -251,6 +312,14 @@ export class WhatsappConnectionsService {
 
     if (event === 'CONNECTION_UPDATE') {
       const state = this.normalizeRemoteState(this.readString(data.state));
+      if (
+        state === connection.lastEvolutionState &&
+        connection.lastConnectionEventAt &&
+        Date.now() - connection.lastConnectionEventAt.getTime() < 5000
+      ) {
+        return;
+      }
+
       const phoneNumber = this.normalizePhone(
         this.readString(data.phone) ||
           this.readString(data.number) ||
@@ -262,15 +331,22 @@ export class WhatsappConnectionsService {
         where: { id: connection.id },
         data: {
           status: nextStatus,
+          connectionState: state,
           qrCode: state === 'open' ? null : connection.qrCode,
           pairingCode: state === 'open' ? null : connection.pairingCode,
           phoneNumber: state === 'open' ? phoneNumber || connection.phoneNumber : connection.phoneNumber,
           userRequestedDisconnect:
-            state === 'open' ? false : connection.userRequestedDisconnect,
+            state === 'open' && !connection.userRequestedDisconnect ? false : connection.userRequestedDisconnect,
           lastEvolutionState: state,
           lastConnectionEventAt: new Date(),
           lastConnectionAt:
             state === 'open' ? connection.lastConnectionAt || new Date() : connection.lastConnectionAt,
+          lastConnectedAt:
+            state === 'open' && !connection.userRequestedDisconnect
+              ? connection.lastConnectedAt || new Date()
+              : connection.lastConnectedAt,
+          lastDisconnectedAt:
+            state === 'close' ? new Date() : connection.lastDisconnectedAt,
           lastError:
             connection.userRequestedDisconnect && state === 'open'
               ? 'Evolution ainda informou open apos disconnect solicitado'
@@ -284,7 +360,11 @@ export class WhatsappConnectionsService {
       const messages = Array.isArray(data.messages) ? data.messages : [];
       await this.conversationsService.ingestEvolutionMessages(connection, messages);
 
-      if (event === 'MESSAGES_UPSERT') {
+      if (
+        event === 'MESSAGES_UPSERT' &&
+        connection.status === 'connected' &&
+        (await this.isAutomationEnabled(connection.companyId))
+      ) {
         void this.forwardAutomationEvent(connection, payload).catch((error) => {
           this.logger.warn(
             `Falha ao encaminhar mensagem WhatsApp ao n8n para ${connection.instanceName}: ${
@@ -320,8 +400,37 @@ export class WhatsappConnectionsService {
       where: { companyId },
     });
 
-    const instanceName = await this.resolveInstanceName(companyId, dto, existing);
-    const instanceToken = existing?.instanceToken || randomUUID();
+    if (existing?.status === 'connected' && !existing.userRequestedDisconnect) {
+      const remoteState = this.providerService.isConfigured()
+        ? await this.providerService.getInstanceState(existing.instanceName).catch(() => null)
+        : null;
+
+      if (remoteState?.state === 'open') {
+        const verified = await this.prisma.whatsappConnection.update({
+          where: { id: existing.id },
+          data: {
+            status: 'connected',
+            connectionState: remoteState.state,
+            phoneNumber: remoteState.phoneNumber || existing.phoneNumber,
+            qrCode: null,
+            pairingCode: null,
+            lastEvolutionState: remoteState.state,
+            lastConnectionEventAt: new Date(),
+            lastConnectedAt: existing.lastConnectedAt || new Date(),
+            lastConnectionAt: existing.lastConnectionAt || new Date(),
+            lastEvolutionSyncAt: new Date(),
+            lastError: null,
+          },
+        });
+        return this.buildSnapshot(verified);
+      }
+    }
+
+    const sessionGeneration = this.resolveNextSessionGeneration(existing);
+    const instanceName = await this.resolveInstanceName(companyId, dto, existing, sessionGeneration);
+    const instanceToken = this.shouldRotateInstance(existing, instanceName)
+      ? randomUUID()
+      : existing?.instanceToken || randomUUID();
     const webhookUrl = this.buildProviderWebhookUrl(instanceName, instanceToken);
 
     const connection = await this.prisma.whatsappConnection.upsert({
@@ -331,7 +440,12 @@ export class WhatsappConnectionsService {
         instanceName,
         instanceToken,
         webhookUrl,
-        status: 'creating',
+        status: 'creating_instance',
+        connectionState: 'connecting',
+        sessionGeneration,
+        qrCode: null,
+        pairingCode: null,
+        phoneNumber: null,
         userRequestedDisconnect: false,
         lastError: null,
       },
@@ -341,68 +455,92 @@ export class WhatsappConnectionsService {
         instanceName,
         instanceToken,
         webhookUrl,
-        status: 'creating',
+        status: 'creating_instance',
+        connectionState: 'connecting',
+        sessionGeneration,
       },
     });
 
-    await this.providerService.createInstance(companyId, connection.instanceName, {
-      webhookUrl,
-      events: this.getWebhookEvents(),
-    });
-    await this.ensureWebhookIfMissing(connection.instanceName, webhookUrl);
-
-    const remoteState = await this.providerService
-      .getInstanceState(connection.instanceName)
-      .catch(() => null);
-
-    if (remoteState?.state === 'open') {
+    try {
+      this.assertProviderActionAllowed(connection.instanceName, 'create', INSTANCE_CYCLE_COOLDOWN_MS);
+      await this.providerService.createInstance(companyId, connection.instanceName, {
+        webhookUrl,
+        events: this.getWebhookEvents(),
+      });
+      await this.ensureWebhookIfMissing(connection.instanceName, webhookUrl);
+      return this.connectExistingInstanceForQr(connection);
+    } catch (error) {
       const updated = await this.prisma.whatsappConnection.update({
         where: { id: connection.id },
         data: {
-          status: 'connected',
-          qrCode: null,
-          pairingCode: null,
-          phoneNumber: remoteState.phoneNumber || connection.phoneNumber,
-          webhookUrl,
+          status: this.isProviderRateLimitError(error) ? 'rate_limited' : 'error',
+          connectionState: 'close',
+          lastError: this.buildProviderUserMessage(error),
+        },
+      });
+      return this.buildSnapshot(updated);
+    }
+  }
+
+  private async connectExistingInstanceForQr(connection: ConnectionRecord) {
+    try {
+      this.assertProviderActionAllowed(connection.instanceName, 'connect', CONNECT_ACTION_COOLDOWN_MS);
+      const providerResult = await this.providerService.connectInstance(
+        connection.instanceName,
+      );
+      const now = new Date();
+      const nextStatus =
+        providerResult.status === 'connected'
+          ? 'connected'
+          : providerResult.qrCode
+            ? 'qr_pending'
+            : 'qr_required';
+      const updated = await this.prisma.whatsappConnection.update({
+        where: { id: connection.id },
+        data: {
+          status: nextStatus,
+          connectionState:
+            providerResult.status === 'connected' ? 'open' : 'connecting',
+          qrCode: providerResult.qrCode,
+          pairingCode: providerResult.pairingCode,
+          phoneNumber: providerResult.phoneNumber || connection.phoneNumber,
           userRequestedDisconnect: false,
-          lastEvolutionState: remoteState.state,
-          lastConnectionEventAt: new Date(),
-          lastConnectionAt: connection.lastConnectionAt || new Date(),
+          lastEvolutionState:
+            providerResult.status === 'connected' ? 'open' : connection.lastEvolutionState,
+          lastConnectionEventAt: now,
+          lastQrAt: providerResult.qrCode ? now : connection.lastQrAt,
+          lastQrGeneratedAt: providerResult.qrCode ? now : connection.lastQrGeneratedAt,
+          lastConnectionAt:
+            providerResult.status === 'connected' ? now : connection.lastConnectionAt,
+          lastConnectedAt:
+            providerResult.status === 'connected' ? now : connection.lastConnectedAt,
           lastError: null,
         },
       });
 
       return this.buildSnapshot(updated);
+    } catch (error) {
+      const updated = await this.prisma.whatsappConnection.update({
+        where: { id: connection.id },
+        data: {
+          status: this.isProviderRateLimitError(error) ? 'rate_limited' : 'error',
+          connectionState: 'close',
+          lastError: this.buildProviderUserMessage(error),
+        },
+      });
+      return this.buildSnapshot(updated);
     }
-
-    const providerResult = await this.providerService.connectInstance(
-      connection.instanceName,
-    );
-
-    const updated = await this.prisma.whatsappConnection.update({
-      where: { id: connection.id },
-      data: {
-        status: providerResult.status,
-        qrCode: providerResult.qrCode,
-        pairingCode: providerResult.pairingCode,
-        phoneNumber: providerResult.phoneNumber || connection.phoneNumber,
-        webhookUrl,
-        userRequestedDisconnect: false,
-        lastEvolutionState:
-          providerResult.status === 'connected' ? 'open' : connection.lastEvolutionState,
-        lastConnectionEventAt: new Date(),
-        lastQrAt: providerResult.qrCode ? new Date() : connection.lastQrAt,
-        lastConnectionAt:
-          providerResult.status === 'connected' ? new Date() : connection.lastConnectionAt,
-        lastError: null,
-      },
-    });
-
-    return this.buildSnapshot(updated);
   }
 
   private async syncRemoteState(connection: ConnectionRecord) {
     if (!this.providerService.isConfigured()) {
+      return connection;
+    }
+
+    if (
+      connection.lastEvolutionSyncAt &&
+      Date.now() - connection.lastEvolutionSyncAt.getTime() < REMOTE_SYNC_COOLDOWN_MS
+    ) {
       return connection;
     }
 
@@ -413,8 +551,10 @@ export class WhatsappConnectionsService {
         where: { id: connection.id },
         data: {
           status: connection.status === 'disconnecting' ? 'disconnecting' : 'disconnected',
+          connectionState: remote.state,
           lastEvolutionState: remote.state,
           lastConnectionEventAt: new Date(),
+          lastEvolutionSyncAt: new Date(),
           lastError: 'Evolution ainda informou open apos disconnect solicitado',
         },
       });
@@ -426,14 +566,20 @@ export class WhatsappConnectionsService {
       where: { id: connection.id },
       data: {
         status: nextStatus,
+        connectionState: remote.state,
         phoneNumber: remote.phoneNumber || connection.phoneNumber,
         qrCode: nextStatus === 'connected' ? null : connection.qrCode,
         pairingCode: nextStatus === 'connected' ? null : connection.pairingCode,
         webhookUrl: connection.webhookUrl,
         lastEvolutionState: remote.state,
         lastConnectionEventAt: new Date(),
+        lastEvolutionSyncAt: new Date(),
         lastConnectionAt:
           nextStatus === 'connected' ? connection.lastConnectionAt || new Date() : connection.lastConnectionAt,
+        lastConnectedAt:
+          nextStatus === 'connected' ? connection.lastConnectedAt || new Date() : connection.lastConnectedAt,
+        lastDisconnectedAt:
+          nextStatus === 'disconnected' ? new Date() : connection.lastDisconnectedAt,
       },
     });
   }
@@ -445,7 +591,7 @@ export class WhatsappConnectionsService {
         companyId: null,
         provider: 'evolution',
         instanceName: null,
-        status: 'idle',
+        status: 'not_configured',
         qrCode: null,
         pairingCode: null,
         phoneNumber: null,
@@ -465,6 +611,7 @@ export class WhatsappConnectionsService {
       provider: connection.provider,
       instanceName: connection.instanceName,
       status: connection.status,
+      connectionState: connection.connectionState,
       qrCode: connection.qrCode,
       pairingCode: connection.pairingCode,
       phoneNumber: connection.phoneNumber,
@@ -476,7 +623,10 @@ export class WhatsappConnectionsService {
           : 'pending',
       automationStatus: this.resolveAutomationStatus(),
       lastError: connection.lastError,
-      lastConnectionAt: connection.lastConnectionAt?.toISOString() || null,
+      sessionGeneration: connection.sessionGeneration,
+      userRequestedDisconnect: connection.userRequestedDisconnect,
+      lastConnectionAt: connection.lastConnectedAt?.toISOString() || connection.lastConnectionAt?.toISOString() || null,
+      lastDisconnectedAt: connection.lastDisconnectedAt?.toISOString() || null,
       createdAt: connection.createdAt.toISOString(),
       updatedAt: connection.updatedAt.toISOString(),
     };
@@ -494,20 +644,57 @@ export class WhatsappConnectionsService {
   }
 
   private buildInstanceName(companyId: string) {
-    return `nextlevel-${companyId}`;
+    return `nextlevel-company-${companyId}`;
+  }
+
+  private buildGeneratedInstanceName(companyId: string, sessionGeneration: number) {
+    return `${this.buildInstanceName(companyId)}-g${Math.max(sessionGeneration, 1)}`;
+  }
+
+  private resolveNextSessionGeneration(
+    existing: { sessionGeneration?: number; status?: string; userRequestedDisconnect?: boolean; instanceName?: string } | null,
+  ) {
+    if (!existing) {
+      return 1;
+    }
+
+    return this.shouldRotateInstance(existing, existing.instanceName || '')
+      ? (existing.sessionGeneration || 1) + 1
+      : existing.sessionGeneration || 1;
+  }
+
+  private shouldRotateInstance(
+    existing: { status?: string; userRequestedDisconnect?: boolean; instanceName?: string } | null,
+    instanceName: string,
+  ) {
+    if (!existing) {
+      return false;
+    }
+
+    return (
+      Boolean(existing.userRequestedDisconnect) ||
+      ['disconnected', 'disconnected_requires_new_qr', 'disconnected_pending_provider_cleanup'].includes(existing.status || '') ||
+      this.isLegacySharedInstanceName(instanceName)
+    );
+  }
+
+  private isLegacySharedInstanceName(instanceName: string | null | undefined) {
+    const normalized = this.readString(instanceName)?.toLowerCase();
+    return Boolean(normalized && LEGACY_SHARED_INSTANCE_NAMES.has(normalized));
   }
 
   private async resolveInstanceName(
     companyId: string,
     dto: ConnectWhatsappDto,
-    existing: { instanceName: string } | null,
+    existing: { instanceName: string; status?: string; userRequestedDisconnect?: boolean } | null,
+    sessionGeneration: number,
   ) {
     const requested = this.readString(dto.instanceName);
     if (requested) {
       return requested;
     }
 
-    if (existing?.instanceName) {
+    if (existing?.instanceName && !this.shouldRotateInstance(existing, existing.instanceName)) {
       return existing.instanceName;
     }
 
@@ -516,7 +703,11 @@ export class WhatsappConnectionsService {
       select: { instanceName: true },
     });
 
-    return legacy?.instanceName || this.buildInstanceName(companyId);
+    if (legacy?.instanceName && !this.isLegacySharedInstanceName(legacy.instanceName)) {
+      return legacy.instanceName;
+    }
+
+    return this.buildGeneratedInstanceName(companyId, sessionGeneration);
   }
 
   private resolveN8nInboundWebhookUrl() {
@@ -767,12 +958,30 @@ export class WhatsappConnectionsService {
   private async withOperationLock<T>(companyId: string, operation: () => Promise<T>) {
     const key = `whatsapp:${companyId}`;
     const token = randomUUID();
+    const now = new Date();
+    const lockUntil = new Date(now.getTime() + OPERATION_LOCK_TTL_MS);
 
     if (this.operationLocks.has(key)) {
       throw new ConflictException('Operacao de conexao ja esta em andamento');
     }
 
+    const current = await this.prisma.whatsappConnection.findUnique({
+      where: { companyId },
+      select: { operationLockUntil: true },
+    });
+
+    if (current?.operationLockUntil && current.operationLockUntil > now) {
+      throw new ConflictException('Operacao de conexao ja esta em andamento');
+    }
+
     this.operationLocks.set(key, token);
+    await this.prisma.whatsappConnection
+      .update({
+        where: { companyId },
+        data: { operationLockUntil: lockUntil },
+      })
+      .catch(() => undefined);
+
     const timeout = setTimeout(() => {
       if (this.operationLocks.get(key) === token) {
         this.operationLocks.delete(key);
@@ -786,7 +995,40 @@ export class WhatsappConnectionsService {
       if (this.operationLocks.get(key) === token) {
         this.operationLocks.delete(key);
       }
+      await this.prisma.whatsappConnection
+        .update({
+          where: { companyId },
+          data: { operationLockUntil: null },
+        })
+        .catch(() => undefined);
     }
+  }
+
+  private assertProviderActionAllowed(
+    instanceName: string,
+    action: string,
+    cooldownMs: number,
+  ) {
+    const key = `${instanceName}:${action}`;
+    const now = Date.now();
+    const blockedUntil = this.providerActionCooldowns.get(key) || 0;
+
+    if (blockedUntil > now) {
+      throw new ConflictException(
+        'A Evolution limitou as requisicoes. Aguarde alguns segundos antes de tentar novamente.',
+      );
+    }
+
+    this.providerActionCooldowns.set(key, now + cooldownMs);
+  }
+
+  private async isAutomationEnabled(companyId: string) {
+    const config = await this.prisma.agentConfig.findUnique({
+      where: { companyId },
+      select: { isEnabled: true },
+    });
+
+    return config?.isEnabled === true;
   }
 
   private resolveWebhookStatus(connection: ConnectionRecord, state: string) {
@@ -954,6 +1196,27 @@ export class WhatsappConnectionsService {
       message.includes('requires') &&
       message.includes('webhook')
     );
+  }
+
+  private isProviderRateLimitError(error: unknown) {
+    return (
+      (error as { providerStatusCode?: number })?.providerStatusCode === 429 ||
+      this.extractErrorMessage(error).toLowerCase().includes('limitou') ||
+      this.extractErrorMessage(error).toLowerCase().includes('too many requests')
+    );
+  }
+
+  private buildProviderUserMessage(error: unknown) {
+    if (this.isProviderRateLimitError(error)) {
+      return 'A Evolution limitou as requisicoes. Aguarde alguns segundos antes de tentar novamente.';
+    }
+
+    const message = this.extractErrorMessage(error);
+    if (message.toLowerCase().includes('timeout')) {
+      return 'A Evolution esta aquecendo ou demorou para responder. Tente novamente em alguns segundos.';
+    }
+
+    return message;
   }
 
   private extractErrorMessage(error: unknown) {
