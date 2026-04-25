@@ -646,6 +646,10 @@ export class WhatsappProviderEvolutionService {
       return 1;
     }
 
+    if (path.startsWith('instance/connectionState/')) {
+      return 1;
+    }
+
     if (path === 'instance/create') {
       return 1;
     }
@@ -655,6 +659,10 @@ export class WhatsappProviderEvolutionService {
     }
 
     if (path.startsWith('webhook/')) {
+      return 1;
+    }
+
+    if (path === 'instance/fetchInstances') {
       return 1;
     }
 
@@ -788,8 +796,11 @@ export class WhatsappProviderEvolutionService {
   private shouldFallbackToFetchInstances(error: unknown) {
     const statusCode = this.extractStatusCode(error);
     const message = this.extractErrorMessage(error).toLowerCase();
+    if (!statusCode) {
+      return false;
+    }
+
     return (
-      !statusCode ||
       [404, 405, 500, 501, 502, 503, 504].includes(statusCode) ||
       message.includes('not found') ||
       message.includes('nao encontrado') ||

@@ -30,8 +30,24 @@ const LEGACY_SHARED_INSTANCE_NAMES = new Set(['next-text', 'next-test']);
 type EvolutionWebhookPayload = {
   event?: string;
   instance?: string;
+  instanceName?: string;
+  state?: string;
+  status?: string;
+  connection?: string;
+  connectionStatus?: string;
+  phone?: string;
+  number?: string;
+  ownerJid?: string;
+  qrcode?: { base64?: string; code?: string } | string;
+  pairingCode?: string;
+  code?: string;
   data?: {
+    instance?: string;
+    instanceName?: string;
     state?: string;
+    status?: string;
+    connection?: string;
+    connectionStatus?: string;
     qrcode?: { base64?: string; code?: string } | string;
     pairingCode?: string;
     code?: string;
@@ -102,7 +118,14 @@ export class WhatsappConnectionsService {
       return this.buildSnapshot(null);
     }
 
-    return this.buildSnapshot(connection);
+    const current = await this.trySyncRemoteStateForSnapshot(connection);
+    this.logWhatsappEvent('frontend.status.returned', {
+      companyId: current.companyId,
+      instanceName: current.instanceName,
+      internalStatus: current.status,
+      evolutionState: current.lastEvolutionState || current.connectionState,
+    });
+    return this.buildSnapshot(current);
   }
 
   async connect(companyId: string, dto: ConnectWhatsappDto) {
@@ -293,10 +316,19 @@ export class WhatsappConnectionsService {
     payload: Record<string, unknown>,
     token?: string | null,
   ) {
-    const event = this.readString(payload.event);
-    const instanceName = this.readString(payload.instance);
+    const event = this.normalizeWebhookEventName(
+      this.readString(payload.event) ||
+        this.readString(payload.eventName) ||
+        this.readString(payload.type),
+    );
+    const instanceName = this.extractWebhookInstanceName(payload);
 
     if (!event || !instanceName) {
+      this.logWhatsappEvent('webhook.received', {
+        event: event || 'unknown',
+        instanceName: instanceName || null,
+        ignored: 'missing_event_or_instance',
+      });
       return;
     }
 
@@ -305,19 +337,42 @@ export class WhatsappConnectionsService {
     });
 
     if (!connection) {
+      this.logWhatsappEvent('webhook.received', {
+        event,
+        instanceName,
+        ignored: 'unknown_instance',
+      });
       return;
     }
 
     this.assertWebhookToken(connection.instanceToken, token);
     await this.saveWebhookEvent(connection.companyId, payload);
 
-    const data = (payload as EvolutionWebhookPayload).data || {};
+    this.logWhatsappEvent('webhook.received', {
+      companyId: connection.companyId,
+      instanceName,
+      event,
+      internalStatus: connection.status,
+    });
+
+    const data = this.asRecord((payload as EvolutionWebhookPayload).data) || {};
 
     if (event === 'QRCODE_UPDATED') {
       if (connection.userRequestedDisconnect) {
         this.logger.warn(
           `QR Evolution ignorado para ${connection.instanceName}; disconnect solicitado pelo usuario.`,
         );
+        return;
+      }
+
+      const webhookState = this.extractWebhookConnectionState(payload);
+      if (webhookState === 'open' || connection.status === 'connected') {
+        this.logWhatsappEvent('webhook.ignored_stale_qr', {
+          companyId: connection.companyId,
+          instanceName,
+          evolutionState: webhookState || connection.lastEvolutionState,
+          internalStatus: connection.status,
+        });
         return;
       }
 
@@ -356,11 +411,26 @@ export class WhatsappConnectionsService {
           lastError: null,
         },
       });
+      this.logWhatsappEvent('webhook.qrcode_updated', {
+        companyId: connection.companyId,
+        instanceName,
+        internalStatus: hasQrSignal ? 'qr_pending' : 'creating_instance',
+      });
       return;
     }
 
     if (event === 'CONNECTION_UPDATE') {
-      const state = this.normalizeRemoteState(this.readString(data.state));
+      const state = this.extractWebhookConnectionState(payload);
+      if (state === 'unknown') {
+        this.logWhatsappEvent('webhook.connection_update', {
+          companyId: connection.companyId,
+          instanceName,
+          evolutionState: state,
+          internalStatus: connection.status,
+          ignored: 'missing_state',
+        });
+        return;
+      }
       if (
         state === connection.lastEvolutionState &&
         connection.lastConnectionEventAt &&
@@ -370,7 +440,10 @@ export class WhatsappConnectionsService {
       }
 
       const phoneNumber = this.normalizePhone(
-        this.readString(data.phone) ||
+        this.readString(payload.phone) ||
+          this.readString(payload.number) ||
+          this.readString(payload.ownerJid) ||
+          this.readString(data.phone) ||
           this.readString(data.number) ||
           this.readString(data.ownerJid),
       );
@@ -402,6 +475,12 @@ export class WhatsappConnectionsService {
               ? 'Evolution ainda informou open apos disconnect solicitado'
               : null,
         },
+      });
+      this.logWhatsappEvent('webhook.connection_update', {
+        companyId: connection.companyId,
+        instanceName,
+        evolutionState: state,
+        internalStatus: nextStatus,
       });
       return;
     }
@@ -775,6 +854,77 @@ export class WhatsappConnectionsService {
           nextStatus === 'disconnected' ? new Date() : connection.lastDisconnectedAt,
       },
     });
+  }
+
+  private async trySyncRemoteStateForSnapshot(connection: ConnectionRecord) {
+    if (!this.shouldSyncRemoteStateForSnapshot(connection)) {
+      return connection;
+    }
+
+    try {
+      const synced = await this.syncRemoteState(connection);
+      this.logWhatsappEvent('connect.state.synced', {
+        companyId: synced.companyId,
+        instanceName: synced.instanceName,
+        evolutionState: synced.lastEvolutionState || synced.connectionState,
+        internalStatus: synced.status,
+      });
+      return synced;
+    } catch (error) {
+      const retryAfterUntil = this.resolveProviderRetryAfterUntil(error);
+      const data: Prisma.WhatsappConnectionUpdateInput = {
+        lastEvolutionSyncAt: new Date(),
+      };
+
+      if (retryAfterUntil) {
+        data.providerRetryAfterUntil = retryAfterUntil;
+      }
+
+      if (connection.status !== 'connected') {
+        data.lastError = this.buildProviderUserMessage(error);
+      }
+
+      const updated = await this.prisma.whatsappConnection.update({
+        where: { id: connection.id },
+        data,
+      });
+
+      this.logWhatsappEvent(this.isProviderRateLimitError(error) ? 'rate_limit.hit' : 'connect.state.sync_failed', {
+        companyId: connection.companyId,
+        instanceName: connection.instanceName,
+        internalStatus: connection.status,
+        message: this.buildProviderUserMessage(error),
+      });
+      return updated;
+    }
+  }
+
+  private shouldSyncRemoteStateForSnapshot(connection: ConnectionRecord) {
+    if (!this.providerService.isConfigured() || connection.userRequestedDisconnect) {
+      return false;
+    }
+
+    if (this.getProviderRetryAfterSeconds(connection) > 0) {
+      return false;
+    }
+
+    if (
+      connection.lastEvolutionSyncAt &&
+      Date.now() - connection.lastEvolutionSyncAt.getTime() < REMOTE_SYNC_COOLDOWN_MS
+    ) {
+      return false;
+    }
+
+    return [
+      'creating_instance',
+      'qr_required',
+      'qr_pending',
+      'connecting',
+      'qr_not_ready',
+      'provider_warming_up',
+      'repair_ready',
+      'error',
+    ].includes(connection.status);
   }
 
   private buildSnapshot(connection: ConnectionRecord | null, forcedRetryAfterSeconds?: number | null) {
@@ -1366,19 +1516,23 @@ export class WhatsappConnectionsService {
     const normalized = value?.trim().toLowerCase();
 
     if (!normalized) {
-      return 'close';
+      return 'unknown';
     }
 
-    if (normalized === 'connected') {
+    if (normalized === 'connected' || normalized === 'open') {
       return 'open';
     }
 
-    if (normalized === 'disconnected') {
+    if (normalized === 'disconnected' || normalized === 'close' || normalized === 'closed' || normalized === 'logout') {
       return 'close';
     }
 
-    if (normalized === 'created') {
+    if (normalized === 'created' || normalized === 'connecting' || normalized === 'pending') {
       return 'connecting';
+    }
+
+    if (normalized === 'qrcode' || normalized === 'qr') {
+      return 'qrcode';
     }
 
     return normalized;
@@ -1397,9 +1551,81 @@ export class WhatsappConnectionsService {
     return normalized || null;
   }
 
+  private extractWebhookInstanceName(payload: Record<string, unknown>) {
+    const data = this.asRecord(payload.data);
+    return (
+      this.readString(payload.instance) ||
+      this.readString(payload.instanceName) ||
+      this.readString(data?.instance) ||
+      this.readString(data?.instanceName) ||
+      this.readString(this.asRecord(data?.instance)?.instanceName) ||
+      this.readString(this.asRecord(data?.instance)?.name)
+    );
+  }
+
+  private extractWebhookConnectionState(payload: Record<string, unknown>) {
+    const data = this.asRecord(payload.data);
+    const instance = this.asRecord(data?.instance) || this.asRecord(payload.instance);
+    const rawState =
+      this.readString(data?.state) ||
+        this.readString(data?.status) ||
+        this.readString(data?.connection) ||
+        this.readString(data?.connectionStatus) ||
+        this.readString(payload.state) ||
+        this.readString(payload.status) ||
+        this.readString(payload.connection) ||
+        this.readString(payload.connectionStatus) ||
+        this.readString(instance?.state) ||
+        this.readString(instance?.status) ||
+        this.readString(instance?.connectionStatus);
+
+    return rawState ? this.normalizeRemoteState(rawState) : 'unknown';
+  }
+
+  private normalizeWebhookEventName(event: string | null) {
+    if (!event) {
+      return null;
+    }
+
+    const normalized = event.trim().toUpperCase().replace(/[.-]/g, '_');
+    if (normalized === 'CONNECTION_UPDATE' || normalized === 'QRCODE_UPDATED') {
+      return normalized;
+    }
+
+    if (normalized === 'MESSAGES_UPSERT' || normalized === 'MESSAGES_UPDATE') {
+      return normalized;
+    }
+
+    if (normalized === 'SEND_MESSAGE') {
+      return normalized;
+    }
+
+    if (normalized.includes('CONNECTION') && normalized.includes('UPDATE')) {
+      return 'CONNECTION_UPDATE';
+    }
+
+    if (normalized.includes('QRCODE') || normalized.includes('QR_CODE')) {
+      return 'QRCODE_UPDATED';
+    }
+
+    if (normalized.includes('MESSAGES') && normalized.includes('UPSERT')) {
+      return 'MESSAGES_UPSERT';
+    }
+
+    if (normalized.includes('MESSAGES') && normalized.includes('UPDATE')) {
+      return 'MESSAGES_UPDATE';
+    }
+
+    return normalized;
+  }
+
   private mapStateToStatus(state: string, qrCode: string | null) {
     if (state === 'open') {
       return 'connected';
+    }
+
+    if (state === 'qrcode') {
+      return 'qr_pending';
     }
 
     if (qrCode) {

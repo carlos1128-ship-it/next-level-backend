@@ -167,4 +167,24 @@ export class WhatsappConnectionsController {
     );
     return { status: 'ok' };
   }
+
+  @Public()
+  @Post('webhooks/evolution/:eventName')
+  async receiveEvolutionWebhookByEvent(
+    @Param('eventName') eventName: string,
+    @Body() payload: Record<string, unknown>,
+    @Query('token') token?: string,
+    @Query('instance') instanceName?: string,
+    @Headers('x-provider-token') headerToken?: string,
+  ) {
+    await this.whatsappConnectionsService.handleEvolutionWebhook(
+      {
+        ...payload,
+        event: payload.event || eventName,
+        instance: payload.instance || instanceName,
+      },
+      token || headerToken,
+    );
+    return { status: 'ok' };
+  }
 }
