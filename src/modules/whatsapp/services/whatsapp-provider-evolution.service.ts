@@ -68,10 +68,13 @@ export class WhatsappProviderEvolutionService {
       this.configService.get<string>('EVOLUTION_API_KEY') ||
         this.configService.get<string>('WHATSAPP_PROVIDER_API_KEY'),
     );
-    this.timeoutMs = this.readPositiveInt(
-      this.configService.get<string>('EVOLUTION_API_TIMEOUT_MS') ||
-        this.configService.get<string>('WHATSAPP_PROVIDER_TIMEOUT_MS'),
-      30000,
+    this.timeoutMs = Math.max(
+      20000,
+      this.readPositiveInt(
+        this.configService.get<string>('EVOLUTION_API_TIMEOUT_MS') ||
+          this.configService.get<string>('WHATSAPP_PROVIDER_TIMEOUT_MS'),
+        30000,
+      ),
     );
 
     this.api = axios.create({
@@ -507,14 +510,14 @@ export class WhatsappProviderEvolutionService {
     const data = this.asRecord(payload?.data);
     const qrcode = this.asRecord(payload?.qrcode) || this.asRecord(data?.qrcode);
     return this.normalizeQrCode(
-      this.readString(payload?.code) ||
-        this.readString(payload?.qrcode) ||
-        this.readString(payload?.base64) ||
-        this.readString(qrcode?.code) ||
+      this.readString(payload?.base64) ||
         this.readString(qrcode?.base64) ||
-        this.readString(data?.code) ||
+        this.readString(data?.base64) ||
+        this.readString(payload?.qrcode) ||
         this.readString(data?.qrcode) ||
-        this.readString(data?.base64),
+        this.readString(payload?.code) ||
+        this.readString(qrcode?.code) ||
+        this.readString(data?.code),
     );
   }
 
@@ -642,6 +645,10 @@ export class WhatsappProviderEvolutionService {
     }
 
     if (path.startsWith('instance/connect/')) {
+      return 1;
+    }
+
+    if (path.startsWith('webhook/')) {
       return 1;
     }
 

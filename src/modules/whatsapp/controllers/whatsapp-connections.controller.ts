@@ -38,6 +38,17 @@ export class WhatsappConnectionsController {
     );
   }
 
+  @Get('connection/status')
+  @UseGuards(ActiveCompanyGuard)
+  getConnectionStatusByConnectionRoute(
+    @Req() req: AuthenticatedRequest,
+    @Query('companyId') companyId?: string,
+  ) {
+    return this.whatsappConnectionsService.getCurrent(
+      companyId || req.user?.companyId || '',
+    );
+  }
+
   @Post('connect/start')
   @UseGuards(ActiveCompanyGuard)
   startConnection(

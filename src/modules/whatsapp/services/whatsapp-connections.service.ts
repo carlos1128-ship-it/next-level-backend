@@ -567,7 +567,22 @@ export class WhatsappConnectionsService {
           },
         });
       } else {
-        await this.ensureWebhookIfMissing(connection.instanceName, webhookUrl);
+        await this.ensureWebhookIfMissing(connection.instanceName, webhookUrl).catch(async (error) => {
+          const message = this.extractErrorMessage(error);
+          this.logger.warn(
+            `Webhook Evolution pendente para ${connection.instanceName}; seguindo para QR sem bloquear: ${message}`,
+          );
+          await this.prisma.whatsappConnection.update({
+            where: { id: connection.id },
+            data: {
+              webhookUrl,
+              webhookEnabled: false,
+              webhookLastConfiguredAt: new Date(),
+              webhookLastError: message,
+              webhookConfigHash: this.hashWebhookConfig(webhookUrl, this.getWebhookEvents()),
+            },
+          });
+        });
       }
 
       const prepared = await this.prisma.whatsappConnection.update({
