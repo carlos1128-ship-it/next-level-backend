@@ -536,7 +536,11 @@ export class WhatsappConnectionsService {
 
     try {
       let webhookAlreadyProvisionedByCreate = false;
-      if (!existing || existing.instanceName !== connection.instanceName) {
+      const shouldProvisionRemoteInstance =
+        !existing ||
+        existing.instanceName !== connection.instanceName ||
+        this.shouldProvisionRemoteInstance(existing, connection.instanceName);
+      if (shouldProvisionRemoteInstance) {
         this.assertProviderActionAllowed(connection.instanceName, 'create', INSTANCE_CYCLE_COOLDOWN_MS);
         const createResult = await this.providerService.createInstance(companyId, connection.instanceName, {
           webhookUrl,
@@ -546,6 +550,7 @@ export class WhatsappConnectionsService {
         this.logWhatsappEvent(createResult.reused ? 'whatsapp.connect.instance.reused' : 'whatsapp.connect.instance.created', {
           companyId,
           instanceName: connection.instanceName,
+          source: existing?.instanceName === connection.instanceName ? 'local_db_repair' : 'new_mapping',
         });
       } else {
         this.logWhatsappEvent('whatsapp.connect.instance.reused', {
@@ -565,23 +570,6 @@ export class WhatsappConnectionsService {
             webhookLastError: null,
             webhookConfigHash: this.hashWebhookConfig(webhookUrl, this.getWebhookEvents()),
           },
-        });
-      } else {
-        await this.ensureWebhookIfMissing(connection.instanceName, webhookUrl).catch(async (error) => {
-          const message = this.extractErrorMessage(error);
-          this.logger.warn(
-            `Webhook Evolution pendente para ${connection.instanceName}; seguindo para QR sem bloquear: ${message}`,
-          );
-          await this.prisma.whatsappConnection.update({
-            where: { id: connection.id },
-            data: {
-              webhookUrl,
-              webhookEnabled: false,
-              webhookLastConfiguredAt: new Date(),
-              webhookLastError: message,
-              webhookConfigHash: this.hashWebhookConfig(webhookUrl, this.getWebhookEvents()),
-            },
-          });
         });
       }
 
@@ -923,6 +911,21 @@ export class WhatsappConnectionsService {
       ['disconnected', 'disconnected_requires_new_qr', 'disconnected_pending_provider_cleanup'].includes(existing.status || '') ||
       this.isLegacySharedInstanceName(instanceName)
     );
+  }
+
+  private shouldProvisionRemoteInstance(
+    existing: { status?: string; userRequestedDisconnect?: boolean; instanceName?: string; lastQrAt?: Date | null; lastConnectedAt?: Date | null },
+    instanceName: string,
+  ) {
+    if (existing.userRequestedDisconnect || this.isLegacySharedInstanceName(instanceName)) {
+      return false;
+    }
+
+    if (existing.lastQrAt || existing.lastConnectedAt) {
+      return false;
+    }
+
+    return ['error', 'not_configured', 'creating_instance', 'provider_warming_up'].includes(existing.status || '');
   }
 
   private isLegacySharedInstanceName(instanceName: string | null | undefined) {

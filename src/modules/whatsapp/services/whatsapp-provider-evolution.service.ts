@@ -324,6 +324,9 @@ export class WhatsappProviderEvolutionService {
       if (this.isAuthenticationMessage(error)) {
         throw error;
       }
+      if (!this.isWebhookPayloadShapeError(error)) {
+        throw error;
+      }
     }
 
     try {
@@ -341,6 +344,9 @@ export class WhatsappProviderEvolutionService {
       });
     } catch (error) {
       if (this.isAuthenticationMessage(error)) {
+        throw error;
+      }
+      if (!this.isWebhookPayloadShapeError(error)) {
         throw error;
       }
     }
@@ -812,13 +818,26 @@ export class WhatsappProviderEvolutionService {
     return message.includes('unauthorized') || message.includes('forbidden');
   }
 
+  private isWebhookPayloadShapeError(error: unknown) {
+    const statusCode = this.extractStatusCode(error);
+    const message = this.extractErrorMessage(error).toLowerCase();
+    return (
+      [400, 422].includes(statusCode || 0) &&
+      message.includes('webhook')
+    );
+  }
+
   private canReuseAfterCreateFailure(error: unknown) {
     const statusCode = this.extractStatusCode(error);
-    if (statusCode && [400, 403, 409, 500].includes(statusCode)) {
+    if (statusCode === 409) {
       return true;
     }
 
-    return this.isConflictMessage(error);
+    if (statusCode && [400, 403].includes(statusCode)) {
+      return this.isConflictMessage(error);
+    }
+
+    return !statusCode && this.isConflictMessage(error);
   }
 
   private extractStatusCode(error: unknown) {
