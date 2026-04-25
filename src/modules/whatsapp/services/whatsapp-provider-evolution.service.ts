@@ -51,6 +51,7 @@ export class WhatsappProviderEvolutionService {
   private readonly baseUrl: string | null;
   private readonly apiKey: string | null;
   private readonly timeoutMs: number;
+  private readonly lastCallByInstance = new Map<string, number>();
 
   constructor(private readonly configService: ConfigService) {
     this.baseUrl = this.readString(
@@ -65,7 +66,7 @@ export class WhatsappProviderEvolutionService {
     this.timeoutMs = this.readPositiveInt(
       this.configService.get<string>('EVOLUTION_API_TIMEOUT_MS') ||
         this.configService.get<string>('WHATSAPP_PROVIDER_TIMEOUT_MS'),
-      10000,
+      20000,
     );
 
     this.api = axios.create({
@@ -103,14 +104,7 @@ export class WhatsappProviderEvolutionService {
     }
 
     const webhook = options.webhookUrl
-      ? {
-          enabled: true,
-          url: options.webhookUrl,
-          byEvents: false,
-          base64: true,
-          events: options.events || DEFAULT_WEBHOOK_EVENTS,
-          headers: options.webhookHeaders || {},
-        }
+      ? this.buildWebhookPayload(options.webhookUrl, options.events, options.webhookHeaders)
       : undefined;
 
     try {
@@ -183,7 +177,7 @@ export class WhatsappProviderEvolutionService {
     }));
 
     return {
-      status: qrCode ? 'waiting_qr' : this.mapStateToStatus(state.state, qrCode),
+      status: qrCode ? 'qr_pending' : this.mapStateToStatus(state.state, qrCode),
       qrCode,
       pairingCode,
       phoneNumber: state.phoneNumber,
@@ -290,22 +284,51 @@ export class WhatsappProviderEvolutionService {
     headers?: Record<string, string>,
   ) {
     this.ensureConfigured();
+    if (!events.length) {
+      throw new BadRequestException('Eventos de webhook Evolution nao podem estar vazios');
+    }
 
     const path = `webhook/set/${encodeURIComponent(instanceName)}`;
-    const flatPayload = {
+    const primaryPayload = this.buildWebhookPayload(webhookUrl, events, headers);
+    const fallbackPayload = {
       enabled: true,
       url: webhookUrl,
-      webhookByEvents: false,
-      webhookBase64: true,
       events,
+      base64: true,
       headers: headers || {},
     };
 
     try {
+      this.logger.log(
+        JSON.stringify({
+          event: 'evolution.webhook.payload',
+          instanceName,
+          payload: this.sanitizeForLogs(primaryPayload),
+        }),
+      );
       return await this.request({
         method: 'POST',
         path,
-        data: flatPayload,
+        data: primaryPayload,
+      });
+    } catch (error) {
+      if (this.isAuthenticationMessage(error)) {
+        throw error;
+      }
+    }
+
+    try {
+      this.logger.log(
+        JSON.stringify({
+          event: 'evolution.webhook.payload.fallback',
+          instanceName,
+          payload: this.sanitizeForLogs(fallbackPayload),
+        }),
+      );
+      return await this.request({
+        method: 'POST',
+        path,
+        data: fallbackPayload,
       });
     } catch (error) {
       if (this.isAuthenticationMessage(error)) {
@@ -316,16 +339,7 @@ export class WhatsappProviderEvolutionService {
     return this.request({
       method: 'POST',
       path,
-      data: {
-        webhook: {
-          enabled: true,
-          url: webhookUrl,
-          byEvents: false,
-          base64: true,
-          events,
-          headers: headers || {},
-        },
-      },
+      data: { webhook: fallbackPayload },
     });
   }
 
@@ -380,7 +394,6 @@ export class WhatsappProviderEvolutionService {
 
   async disconnectInstance(instanceName: string) {
     await this.logoutInstance(instanceName);
-    await this.deleteInstance(instanceName);
   }
 
   async restartInstance(instanceName: string) {
@@ -421,30 +434,58 @@ export class WhatsappProviderEvolutionService {
 
     const normalizedPath = input.path.replace(/^\/+/, '');
 
-    try {
-      const response = await this.api.request<TResponse>({
-        method: input.method,
-        url: normalizedPath,
-        data: input.data,
-        params: input.params,
-      });
-      return response.data;
-    } catch (error) {
-      const message = this.extractErrorMessage(error);
-      const statusCode = this.extractStatusCode(error);
-      const responseData = axios.isAxiosError(error) ? error.response?.data : null;
-      this.logger.error(
-        JSON.stringify({
-          event: 'evolution.provider.failure',
+    const instanceName = this.extractInstanceNameFromRequest(
+      normalizedPath,
+      input.params,
+      input.data,
+    );
+    const maxAttempts = 3;
+    let lastError: unknown = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      await this.throttleInstance(instanceName);
+
+      try {
+        const response = await this.api.request<TResponse>({
           method: input.method,
-          path: normalizedPath,
-          statusCode,
-          message,
-          response: this.sanitizeForLogs(responseData),
-        }),
-      );
-      throw new EvolutionProviderException(message, statusCode, responseData);
+          url: normalizedPath,
+          data: input.data,
+          params: input.params,
+        });
+        return response.data;
+      } catch (error) {
+        lastError = error;
+        const message = this.extractErrorMessage(error);
+        const statusCode = this.extractStatusCode(error);
+        const responseData = axios.isAxiosError(error) ? error.response?.data : null;
+        const retryAfterMs = this.extractRetryAfterMs(error);
+        const shouldRetry = attempt < maxAttempts && this.isTransientProviderError(error);
+
+        this.logger.error(
+          JSON.stringify({
+            event: 'evolution.provider.failure',
+            method: input.method,
+            path: normalizedPath,
+            statusCode,
+            attempt,
+            retrying: shouldRetry,
+            message,
+            response: this.sanitizeForLogs(responseData),
+          }),
+        );
+
+        if (!shouldRetry) {
+          throw new EvolutionProviderException(message, statusCode, responseData);
+        }
+
+        await this.sleep(retryAfterMs || this.getBackoffMs(attempt));
+      }
     }
+
+    const message = this.extractErrorMessage(lastError);
+    const statusCode = this.extractStatusCode(lastError);
+    const responseData = axios.isAxiosError(lastError) ? lastError.response?.data : null;
+    throw new EvolutionProviderException(message, statusCode, responseData);
   }
 
   private extractQrCode(payload: Record<string, unknown> | null | undefined) {
@@ -457,6 +498,85 @@ export class WhatsappProviderEvolutionService {
         this.readString(data?.code) ||
         this.readString(data?.base64),
     );
+  }
+
+  private buildWebhookPayload(
+    webhookUrl: string,
+    events: string[] = DEFAULT_WEBHOOK_EVENTS,
+    headers?: Record<string, string>,
+  ) {
+    return {
+      url: webhookUrl,
+      webhook_by_events: false,
+      webhook_base64: true,
+      events,
+      headers: headers || {},
+    };
+  }
+
+  private async throttleInstance(instanceName: string) {
+    const key = instanceName || 'global';
+    const now = Date.now();
+    const lastCallAt = this.lastCallByInstance.get(key) || 0;
+    const waitMs = Math.max(0, 1500 - (now - lastCallAt));
+
+    if (waitMs > 0) {
+      await this.sleep(waitMs);
+    }
+
+    this.lastCallByInstance.set(key, Date.now());
+  }
+
+  private isTransientProviderError(error: unknown) {
+    const statusCode = this.extractStatusCode(error);
+    if (!statusCode && axios.isAxiosError(error)) {
+      return true;
+    }
+
+    return statusCode === 429 || statusCode === 502 || statusCode === 503;
+  }
+
+  private extractRetryAfterMs(error: unknown) {
+    if (!axios.isAxiosError(error)) {
+      return null;
+    }
+
+    const retryAfter = error.response?.headers?.['retry-after'];
+    const value = Array.isArray(retryAfter) ? retryAfter[0] : retryAfter;
+    const seconds = Number(value);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
+  }
+
+  private getBackoffMs(attempt: number) {
+    return attempt === 1 ? 2000 : 5000;
+  }
+
+  private sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private extractInstanceNameFromRequest(
+    path: string,
+    params?: Record<string, string>,
+    data?: Record<string, unknown>,
+  ) {
+    const fromParams = this.readString(params?.instanceName);
+    const fromData = this.readString(data?.instanceName);
+    if (fromParams || fromData) {
+      return fromParams || fromData || 'global';
+    }
+
+    const parts = path.split('/').filter(Boolean);
+    const candidate = parts.length > 1 ? parts[parts.length - 1] : null;
+    if (
+      candidate &&
+      !['create', 'fetchInstances'].includes(candidate) &&
+      !candidate.includes('{')
+    ) {
+      return decodeURIComponent(candidate);
+    }
+
+    return 'global';
   }
 
   private extractFetchedInstance(payload: unknown, instanceName: string) {
@@ -488,7 +608,7 @@ export class WhatsappProviderEvolutionService {
     }
 
     if (qrCode || state === 'connecting') {
-      return 'waiting_qr';
+      return 'qr_pending';
     }
 
     if (state === 'close') {

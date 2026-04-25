@@ -474,19 +474,28 @@ model AgentConfig {
 }
 
 model WhatsappConnection {
-  id               String    @id @default(cuid())
-  companyId        String    @unique
-  provider         String    @default("evolution")
-  instanceName     String    @unique
-  instanceToken    String?   @db.Text
-  status           String    @default("disconnected")
-  qrCode           String?   @db.Text
-  pairingCode      String?
-  phoneNumber      String?
-  webhookUrl       String?   @db.Text
-  lastConnectionAt DateTime?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  id                       String    @id @default(cuid())
+  companyId                String    @unique
+  provider                 String    @default("evolution")
+  instanceName             String    @unique
+  instanceToken            String?   @db.Text
+  status                   String    @default("idle")
+  qrCode                   String?   @db.Text
+  pairingCode              String?
+  phoneNumber              String?
+  webhookUrl               String?   @db.Text
+  webhookEnabled           Boolean   @default(false)
+  webhookLastConfiguredAt  DateTime?
+  webhookLastError         String?   @db.Text
+  webhookConfigHash        String?
+  userRequestedDisconnect  Boolean   @default(false)
+  lastEvolutionState       String?
+  lastConnectionEventAt    DateTime?
+  lastQrAt                 DateTime?
+  lastError                String?   @db.Text
+  lastConnectionAt         DateTime?
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
 
   company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
   conversations Conversation[]
