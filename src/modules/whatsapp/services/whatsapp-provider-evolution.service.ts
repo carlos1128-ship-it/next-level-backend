@@ -11,6 +11,7 @@ const DEFAULT_WEBHOOK_EVENTS = [
 ];
 const MIN_PROVIDER_CALL_INTERVAL_MS = 2500;
 const RATE_LIMIT_COOLDOWN_MS = 60000;
+const COLD_START_BACKOFF_MS = [2000, 5000, 10000];
 
 type EvolutionRequestMethod = 'GET' | 'POST' | 'DELETE';
 
@@ -97,6 +98,23 @@ export class WhatsappProviderEvolutionService {
 
   getBaseUrl() {
     return this.baseUrl;
+  }
+
+  async warmUp() {
+    this.ensureConfigured();
+
+    await this.request({
+      method: 'GET',
+      path: 'instance/fetchInstances',
+      params: { instanceName: '__nextlevel_healthcheck__' },
+    }).catch((error) => {
+      const statusCode = this.extractStatusCode(error);
+      if (statusCode && statusCode < 500 && statusCode !== 429) {
+        return;
+      }
+
+      throw error;
+    });
   }
 
   async createInstance(
@@ -590,6 +608,7 @@ export class WhatsappProviderEvolutionService {
       url: webhookUrl,
       webhook_by_events: false,
       webhook_base64: true,
+      base64: true,
       events,
       headers: headers || {},
     };
@@ -623,7 +642,7 @@ export class WhatsappProviderEvolutionService {
       return true;
     }
 
-    return statusCode === 429 || statusCode === 502 || statusCode === 503;
+    return statusCode === 429 || statusCode === 502 || statusCode === 503 || statusCode === 504;
   }
 
   private extractRetryAfterMs(error: unknown) {
@@ -638,7 +657,7 @@ export class WhatsappProviderEvolutionService {
   }
 
   private getBackoffMs(attempt: number) {
-    return attempt === 1 ? 2000 : 5000;
+    return COLD_START_BACKOFF_MS[Math.max(0, attempt - 1)] || 10000;
   }
 
   private resolveMaxAttempts(method: EvolutionRequestMethod, path: string) {
@@ -647,23 +666,23 @@ export class WhatsappProviderEvolutionService {
     }
 
     if (path.startsWith('instance/connectionState/')) {
-      return 1;
+      return 3;
     }
 
     if (path === 'instance/create') {
-      return 1;
+      return 4;
     }
 
     if (path.startsWith('instance/connect/')) {
-      return 1;
+      return 4;
     }
 
     if (path.startsWith('webhook/')) {
-      return 1;
+      return 4;
     }
 
     if (path === 'instance/fetchInstances') {
-      return 1;
+      return 4;
     }
 
     return 3;

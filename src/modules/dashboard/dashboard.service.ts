@@ -2,8 +2,17 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { FinancialTransactionType, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { toZonedTime, fromZonedTime } from 'date-fns-tz';
+import {
+  DASHBOARD_METRIC_KEYS,
+  DASHBOARD_METRICS,
+  DashboardMetricDefinition,
+  getMetricDefinition,
+} from './dashboard-metrics.registry';
 
 type DashboardPeriod = 'today' | 'yesterday' | 'week' | 'month' | 'year';
+type DashboardMetricsPeriod = 'today' | 'yesterday' | '7d' | '30d' | 'month' | 'custom' | 'week' | 'year';
+type DashboardMetricStatus = 'ok' | 'no_data' | 'not_enough_data';
+type DashboardMetricDirection = 'up' | 'down' | 'flat';
 
 type TimelinePoint = {
   name: string;
@@ -25,6 +34,7 @@ export interface DashboardSummaryDto {
   lineData: TimelinePoint[];
   pieData: PiePoint[];
   period: DashboardPeriod;
+  enabledMetrics?: string[];
 }
 
 export interface DashboardFinancialDto {
@@ -33,6 +43,66 @@ export interface DashboardFinancialDto {
   balance: number;
   transactionsCount: number;
 }
+
+export type DashboardPreferenceInput = {
+  metricKey?: string;
+  enabled?: boolean;
+  order?: number;
+  size?: string | null;
+};
+
+export type DashboardResolvedPreference = {
+  metricKey: string;
+  enabled: boolean;
+  order: number;
+  size: string | null;
+};
+
+export type DashboardResolvedLayoutItem = DashboardMetricDefinition & {
+  metricKey: string;
+  enabled: boolean;
+  order: number;
+  size: string | null;
+};
+
+export type DashboardPreferencesResponse = {
+  availableMetrics: DashboardMetricDefinition[];
+  preferences: DashboardResolvedPreference[];
+  resolvedLayout: DashboardResolvedLayoutItem[];
+};
+
+export type DashboardMetricResult = {
+  key: string;
+  label: string;
+  value: number | null;
+  formatted: string;
+  status: DashboardMetricStatus;
+  reason?: string;
+  comparison?: {
+    previousValue: number;
+    changePercent: number;
+    direction: DashboardMetricDirection;
+  };
+};
+
+export type DashboardChartPoint = Record<string, string | number | null>;
+
+export type DashboardMetricsResponse = {
+  period: {
+    key: DashboardMetricsPeriod;
+    startDate: string;
+    endDate: string;
+    label: string;
+  };
+  metrics: Record<string, DashboardMetricResult>;
+  charts: {
+    revenueByDay: DashboardChartPoint[];
+    salesByProduct: DashboardChartPoint[];
+    costsByCategory: DashboardChartPoint[];
+    peakSalesHours: DashboardChartPoint[];
+  };
+  warnings: string[];
+};
 
 @Injectable()
 export class DashboardService {
@@ -83,6 +153,7 @@ export class DashboardService {
     userId: string,
     requestedCompanyId?: string,
     rawPeriod?: string,
+    rawMetrics?: string,
   ): Promise<DashboardSummaryDto> {
     const period = this.normalizePeriod(rawPeriod);
     const [user, companyCount] = await Promise.all([
@@ -105,6 +176,8 @@ export class DashboardService {
     if (!companyId) {
       return this.zeroSummary(companyCount, period);
     }
+
+    const enabledMetrics = await this.resolveEnabledMetricKeys(companyId, rawMetrics);
 
     const companyData = await this.prisma.company.findUnique({
       where: { id: companyId },
@@ -180,19 +253,362 @@ export class DashboardService {
       lineData,
       pieData,
       period,
+      enabledMetrics,
     };
+  }
+
+  async getMetrics(
+    userId: string,
+    requestedCompanyId?: string,
+    rawPeriod?: string,
+    rawMetrics?: string,
+    comparePrevious = true,
+    startDate?: string,
+    endDate?: string,
+    fallbackCompanyId?: string | null,
+    isAdmin = false,
+  ): Promise<DashboardMetricsResponse> {
+    const [user, companyCount] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { companyId: true },
+      }),
+      this.prisma.company.count({
+        where: {
+          OR: [{ userId }, { users: { some: { id: userId } } }],
+        },
+      }),
+    ]);
+
+    const companyId = await this.resolveCompanyId(
+      userId,
+      requestedCompanyId,
+      fallbackCompanyId ?? user?.companyId,
+      isAdmin,
+    );
+    if (!companyId) {
+      throw new BadRequestException('companyId nao informado');
+    }
+
+    const companyData = await this.prisma.company.findUnique({
+      where: { id: companyId },
+      select: { timezone: true },
+    });
+    const timeZone = companyData?.timezone || 'America/Sao_Paulo';
+    const period = this.resolveMetricsPeriod(rawPeriod, timeZone, startDate, endDate);
+    const enabledMetrics = await this.resolveEnabledMetricKeys(companyId, rawMetrics);
+    const enabledMetricSet = new Set(enabledMetrics);
+    const warnings: string[] = [];
+
+    const [currentData, previousData, productCatalog] = await Promise.all([
+      this.loadMetricSourceData(companyId, period.start, period.end),
+      comparePrevious
+        ? this.loadMetricSourceData(companyId, period.previousStart, period.previousEnd)
+        : Promise.resolve(null),
+      this.prisma.product.findMany({
+        where: { companyId },
+        select: { name: true, cost: true, tax: true, shipping: true },
+      }),
+    ]);
+
+    const currentTotals = this.calculateMetricTotals(currentData, productCatalog);
+    const previousTotals = previousData
+      ? this.calculateMetricTotals(previousData, productCatalog)
+      : null;
+
+    const metrics: Record<string, DashboardMetricResult> = {};
+    const addMetric = (metricKey: string, result: DashboardMetricResult) => {
+      if (enabledMetricSet.has(metricKey)) {
+        metrics[metricKey] = result;
+      }
+    };
+
+    addMetric(
+      'revenue',
+      this.numberMetric('revenue', currentTotals.revenue, previousTotals?.revenue, {
+        noData: currentTotals.revenueSources === 0,
+        kind: 'currency',
+      }),
+    );
+    addMetric(
+      'sales_count',
+      this.numberMetric('sales_count', currentTotals.salesCount, previousTotals?.salesCount, {
+        noData: currentTotals.salesCount === 0,
+        kind: 'integer',
+      }),
+    );
+    addMetric(
+      'average_ticket',
+      currentTotals.salesCount > 0
+        ? this.numberMetric('average_ticket', currentTotals.revenue / currentTotals.salesCount, previousTotals && previousTotals.salesCount > 0 ? previousTotals.revenue / previousTotals.salesCount : undefined, { kind: 'currency' })
+        : this.noDataMetric('average_ticket', 'Nenhuma venda registrada no periodo.'),
+    );
+    addMetric(
+      'losses',
+      this.numberMetric('losses', currentTotals.totalOutflows, previousTotals?.totalOutflows, {
+        noData: currentTotals.totalOutflows === 0,
+        kind: 'currency',
+      }),
+    );
+    addMetric(
+      'operational_costs',
+      this.numberMetric('operational_costs', currentTotals.operationalCosts, previousTotals?.operationalCosts, {
+        noData: currentTotals.operationalCostCount === 0,
+        kind: 'currency',
+      }),
+    );
+    addMetric(
+      'cash_flow',
+      this.numberMetric('cash_flow', currentTotals.cashFlow, previousTotals?.cashFlow, {
+        noData: currentTotals.cashFlowSources === 0,
+        kind: 'currency',
+      }),
+    );
+    addMetric(
+      'profit',
+      this.numberMetric('profit', currentTotals.netProfit, previousTotals?.netProfit, {
+        noData: currentTotals.revenueSources === 0 && currentTotals.totalOutflows === 0,
+        kind: 'currency',
+      }),
+    );
+    addMetric(
+      'net_profit',
+      this.numberMetric('net_profit', currentTotals.netProfit, previousTotals?.netProfit, {
+        noData: currentTotals.revenueSources === 0 && currentTotals.totalOutflows === 0,
+        kind: 'currency',
+      }),
+    );
+    addMetric(
+      'margin',
+      currentTotals.revenue > 0
+        ? this.numberMetric('margin', (currentTotals.netProfit / currentTotals.revenue) * 100, previousTotals && previousTotals.revenue > 0 ? (previousTotals.netProfit / previousTotals.revenue) * 100 : undefined, { kind: 'percent' })
+        : this.noDataMetric('margin', 'Receita igual a zero no periodo.'),
+    );
+    addMetric(
+      'waste_inefficiency',
+      currentTotals.revenue > 0
+        ? this.numberMetric('waste_inefficiency', (currentTotals.operationalCosts / currentTotals.revenue) * 100, previousTotals && previousTotals.revenue > 0 ? (previousTotals.operationalCosts / previousTotals.revenue) * 100 : undefined, { kind: 'percent' })
+        : this.noDataMetric('waste_inefficiency', 'Receita igual a zero no periodo.'),
+    );
+    addMetric(
+      'customers_acquired',
+      this.numberMetric('customers_acquired', currentData.newCustomersCount, previousData?.newCustomersCount, {
+        noData: currentData.newCustomersCount === 0,
+        kind: 'integer',
+      }),
+    );
+    addMetric(
+      'company_count',
+      this.numberMetric('company_count', companyCount, undefined, { kind: 'integer' }),
+    );
+    addMetric(
+      'best_selling_products',
+      currentData.sales.length > 0
+        ? this.numberMetric('best_selling_products', currentData.sales.length, previousData?.sales.length, { kind: 'integer' })
+        : this.noDataMetric('best_selling_products', 'Nenhuma venda com produto registrada no periodo.'),
+    );
+    addMetric(
+      'peak_sales_hours',
+      currentData.sales.length > 0
+        ? this.numberMetric('peak_sales_hours', currentData.sales.length, previousData?.sales.length, { kind: 'integer' })
+        : this.noDataMetric('peak_sales_hours', 'Nenhuma venda registrada no periodo.'),
+    );
+
+    const unsupportedMetrics: Record<string, string> = {
+      conversion_rate: 'Missing visitors/leads-to-sales conversion tracking.',
+      cac: 'Missing reliable paid media acquisition attribution by customer.',
+      roi: 'Missing explicit investment cost model. ROI is not ROAS.',
+      roas: 'Missing ad-attributed revenue. Total revenue is not used as ROAS.',
+      ltv: 'Missing customer-to-sale purchase history relation.',
+      repeat_customers: 'Missing customer-to-sale purchase history relation.',
+      profit_by_product: 'Missing sale item quantity/product relation for accurate product profit.',
+      market_opportunities: 'Market opportunities are produced by market intelligence endpoints, not enough dashboard data in this response.',
+      ai_roi: 'AI attribution is available from /api/attendant/roi and is kept separate from financial dashboard calculations.',
+      revenue_forecast: 'Forecast is available from /api/analytics/forecast/REVENUE and is kept separate from historical metrics.',
+      alerts_insights: 'Insights are generated by the AI insight flow and are kept separate from historical metric calculations.',
+      refund_rate: 'Missing refund/order status data.',
+      funnel_conversion: 'Missing funnel event tracking.',
+      mrr: 'Missing subscription/billing model for recurring revenue.',
+      churn: 'Missing subscription cancellation history.',
+      activation_rate: 'Missing product activation event tracking.',
+      retention: 'Missing cohort/customer activity tracking.',
+      active_customers: 'Missing active usage or subscription state tracking.',
+      plan_conversion: 'Missing trial-to-plan conversion tracking.',
+      client_revenue: 'Missing customer-to-sale attribution for revenue by client.',
+      profit_margin: 'Use margin when enough sales and cost data exists; segment-specific profit margin requires customer/project attribution.',
+      customer_retention: 'Missing customer purchase/renewal history.',
+      lead_conversion: 'Missing reliable lead-to-sale conversion relation.',
+      appointments: 'Missing appointment scheduling model.',
+      no_show_rate: 'Missing appointment status/no-show model.',
+      service_revenue: 'Missing service-specific sale classification.',
+      new_patients: 'Missing patient-specific profile model; generic customers_acquired is available.',
+      returning_patients: 'Missing appointment/customer recurrence model.',
+      leads: 'Missing lead-source aggregation in dashboard metrics.',
+      consultations: 'Missing consultation/appointment model.',
+      case_pipeline: 'Missing legal pipeline/case model.',
+      client_followup: 'Missing task/follow-up model.',
+      bookings: 'Missing booking/scheduling model.',
+      stock_movement: 'Missing inventory movement model.',
+      peak_hours: 'Use peak_sales_hours when sales timestamps exist; restaurant-specific peak hours need order source classification.',
+      best_selling_items: 'Use best_selling_products when sale product names exist; menu item model is not available.',
+      delivery_costs: 'Missing delivery cost classification.',
+      marketplace_fees: 'Missing marketplace order fee model.',
+      shipping_costs: 'Missing shipping cost model.',
+    };
+
+    Object.entries(unsupportedMetrics).forEach(([metricKey, reason]) => {
+      if (enabledMetricSet.has(metricKey)) {
+        metrics[metricKey] = this.notEnoughDataMetric(metricKey, reason);
+        warnings.push(`${metricKey}: ${reason}`);
+      }
+    });
+
+    const charts = {
+      revenueByDay: enabledMetricSet.has('cash_flow_summary')
+        ? this.buildRevenueByDay(period.start, period.end, currentData, timeZone)
+        : [],
+      salesByProduct: enabledMetricSet.has('best_selling_products') || enabledMetricSet.has('category_mix')
+        ? this.buildSalesByProduct(currentData.sales)
+        : [],
+      costsByCategory: enabledMetricSet.has('category_mix') || enabledMetricSet.has('operational_costs')
+        ? this.buildCostsByCategory(currentData.operationalCosts, currentData.transactions, currentData.adSpends)
+        : [],
+      peakSalesHours: enabledMetricSet.has('peak_sales_hours')
+        ? this.buildPeakSalesHours(currentData.sales, timeZone)
+        : [],
+    };
+
+    return {
+      period: {
+        key: period.key,
+        startDate: period.start.toISOString(),
+        endDate: period.end.toISOString(),
+        label: period.label,
+      },
+      metrics,
+      charts,
+      warnings,
+    };
+  }
+
+  async getPreferences(
+    userId: string,
+    requestedCompanyId?: string,
+    fallbackCompanyId?: string | null,
+    isAdmin = false,
+  ): Promise<DashboardPreferencesResponse> {
+    const companyId = await this.resolveCompanyId(
+      userId,
+      requestedCompanyId,
+      fallbackCompanyId,
+      isAdmin,
+    );
+    if (!companyId) {
+      throw new BadRequestException('companyId nao informado');
+    }
+
+    return this.buildPreferencesResponse(companyId);
+  }
+
+  async savePreferences(
+    userId: string,
+    payload: DashboardPreferenceInput[],
+    requestedCompanyId?: string,
+    fallbackCompanyId?: string | null,
+    isAdmin = false,
+  ): Promise<DashboardPreferencesResponse> {
+    const companyId = await this.resolveCompanyId(
+      userId,
+      requestedCompanyId,
+      fallbackCompanyId,
+      isAdmin,
+    );
+    if (!companyId) {
+      throw new BadRequestException('companyId nao informado');
+    }
+    if (!Array.isArray(payload)) {
+      throw new BadRequestException('preferences deve ser uma lista');
+    }
+
+    const overrides = new Map<string, DashboardResolvedPreference>();
+    payload.forEach((item, index) => {
+      const metricKey = String(item?.metricKey || '').trim();
+      if (!DASHBOARD_METRIC_KEYS.has(metricKey)) {
+        throw new BadRequestException(`Metrica desconhecida: ${metricKey || '(vazia)'}`);
+      }
+      overrides.set(metricKey, {
+        metricKey,
+        enabled: Boolean(item.enabled),
+        order: Number.isFinite(Number(item.order)) ? Number(item.order) : index,
+        size: this.normalizeSize(item.size),
+      });
+    });
+
+    const preferences = DASHBOARD_METRICS.map((metric, index) => {
+      const override = overrides.get(metric.key);
+      return {
+        metricKey: metric.key,
+        enabled: override?.enabled ?? metric.defaultEnabled,
+        order: override?.order ?? index,
+        size: override?.size ?? null,
+      };
+    });
+
+    await this.prisma.$transaction([
+      this.prisma.dashboardPreference.deleteMany({
+        where: { companyId, userId: null },
+      }),
+      this.prisma.dashboardPreference.createMany({
+        data: preferences.map((preference) => ({
+          companyId,
+          userId: null,
+          metricKey: preference.metricKey,
+          enabled: preference.enabled,
+          order: preference.order,
+          size: preference.size,
+        })),
+      }),
+    ]);
+
+    return this.buildPreferencesResponse(companyId);
+  }
+
+  async resetPreferences(
+    userId: string,
+    requestedCompanyId?: string,
+    fallbackCompanyId?: string | null,
+    isAdmin = false,
+  ): Promise<DashboardPreferencesResponse> {
+    const companyId = await this.resolveCompanyId(
+      userId,
+      requestedCompanyId,
+      fallbackCompanyId,
+      isAdmin,
+    );
+    if (!companyId) {
+      throw new BadRequestException('companyId nao informado');
+    }
+
+    await this.prisma.dashboardPreference.deleteMany({
+      where: { companyId, userId: null },
+    });
+
+    return this.buildPreferencesResponse(companyId);
   }
 
   private async resolveCompanyId(
     userId: string,
     requestedCompanyId?: string,
     fallbackCompanyId?: string | null,
+    isAdmin = false,
   ): Promise<string | null> {
     if (requestedCompanyId?.trim()) {
       const company = await this.prisma.company.findFirst({
         where: {
           id: requestedCompanyId.trim(),
-          OR: [{ userId }, { users: { some: { id: userId } } }],
+          ...(isAdmin
+            ? {}
+            : { OR: [{ userId }, { users: { some: { id: userId } } }] }),
         },
         select: { id: true },
       });
@@ -205,6 +621,469 @@ export class DashboardService {
     }
 
     return fallbackCompanyId || null;
+  }
+
+  private async buildPreferencesResponse(companyId: string): Promise<DashboardPreferencesResponse> {
+    const persisted = await this.prisma.dashboardPreference.findMany({
+      where: { companyId, userId: null },
+      select: {
+        metricKey: true,
+        enabled: true,
+        order: true,
+        size: true,
+      },
+    });
+    const byMetric = new Map(persisted.map((item) => [item.metricKey, item]));
+    const preferences = DASHBOARD_METRICS.map((metric, index) => {
+      const saved = byMetric.get(metric.key);
+      return {
+        metricKey: metric.key,
+        enabled: saved?.enabled ?? metric.defaultEnabled,
+        order: saved?.order ?? index,
+        size: saved?.size ?? null,
+      };
+    }).sort((a, b) => a.order - b.order);
+
+    const definitionsByKey = new Map(DASHBOARD_METRICS.map((metric) => [metric.key, metric]));
+    const resolvedLayout = preferences
+      .filter((preference) => preference.enabled)
+      .map((preference) => {
+        const metric = definitionsByKey.get(preference.metricKey);
+        if (!metric) return null;
+        return {
+          ...metric,
+          metricKey: preference.metricKey,
+          enabled: preference.enabled,
+          order: preference.order,
+          size: preference.size,
+        };
+      })
+      .filter((item): item is DashboardResolvedLayoutItem => Boolean(item));
+
+    return {
+      availableMetrics: DASHBOARD_METRICS,
+      preferences,
+      resolvedLayout,
+    };
+  }
+
+  private async resolveEnabledMetricKeys(companyId: string, rawMetrics?: string): Promise<string[]> {
+    const preferences = await this.buildPreferencesResponse(companyId);
+    const allowed = new Set(preferences.resolvedLayout.map((item) => item.metricKey));
+    const requested = String(rawMetrics || '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    if (requested.length === 0) {
+      return Array.from(allowed);
+    }
+
+    for (const metricKey of requested) {
+      if (!DASHBOARD_METRIC_KEYS.has(metricKey)) {
+        throw new BadRequestException(`Metrica desconhecida: ${metricKey}`);
+      }
+      if (!allowed.has(metricKey)) {
+        throw new BadRequestException(`Metrica desabilitada para esta empresa: ${metricKey}`);
+      }
+    }
+
+    return requested;
+  }
+
+  private normalizeSize(size?: string | null): string | null {
+    const normalized = String(size || '').trim().toLowerCase();
+    if (['small', 'medium', 'large'].includes(normalized)) {
+      return normalized;
+    }
+    return null;
+  }
+
+  private resolveMetricsPeriod(
+    rawPeriod: string | undefined,
+    timeZone: string,
+    rawStartDate?: string,
+    rawEndDate?: string,
+  ) {
+    const key = this.normalizeMetricsPeriod(rawPeriod);
+    const nowUtc = new Date();
+    const zonedNow = toZonedTime(nowUtc, timeZone);
+    const endZoned = new Date(zonedNow);
+    let startZoned = new Date(zonedNow);
+    let label = 'Hoje';
+
+    if (key === 'custom') {
+      const parsedStart = rawStartDate ? new Date(`${rawStartDate}T00:00:00`) : null;
+      const parsedEnd = rawEndDate ? new Date(`${rawEndDate}T23:59:59.999`) : null;
+      if (!parsedStart || !parsedEnd || Number.isNaN(parsedStart.getTime()) || Number.isNaN(parsedEnd.getTime())) {
+        throw new BadRequestException('startDate e endDate sao obrigatorios para periodo custom');
+      }
+      if (parsedStart > parsedEnd) {
+        throw new BadRequestException('startDate deve ser anterior a endDate');
+      }
+      startZoned = parsedStart;
+      endZoned.setTime(parsedEnd.getTime());
+      label = 'Periodo personalizado';
+    } else if (key === 'today') {
+      startZoned.setHours(0, 0, 0, 0);
+      endZoned.setHours(23, 59, 59, 999);
+      label = 'Hoje';
+    } else if (key === 'yesterday') {
+      startZoned.setDate(startZoned.getDate() - 1);
+      startZoned.setHours(0, 0, 0, 0);
+      endZoned.setDate(endZoned.getDate() - 1);
+      endZoned.setHours(23, 59, 59, 999);
+      label = 'Ontem';
+    } else if (key === 'month') {
+      startZoned = new Date(zonedNow.getFullYear(), zonedNow.getMonth(), 1, 0, 0, 0, 0);
+      endZoned.setHours(23, 59, 59, 999);
+      label = 'Mes atual';
+    } else if (key === 'year') {
+      startZoned = new Date(zonedNow.getFullYear(), 0, 1, 0, 0, 0, 0);
+      endZoned.setHours(23, 59, 59, 999);
+      label = 'Ano atual';
+    } else {
+      const days = key === '30d' ? 30 : 7;
+      startZoned.setDate(startZoned.getDate() - (days - 1));
+      startZoned.setHours(0, 0, 0, 0);
+      endZoned.setHours(23, 59, 59, 999);
+      label = `Ultimos ${days} dias`;
+    }
+
+    const start = fromZonedTime(startZoned, timeZone);
+    const end = fromZonedTime(endZoned, timeZone);
+    const durationMs = Math.max(1, end.getTime() - start.getTime());
+    const previousEnd = new Date(start.getTime() - 1);
+    const previousStart = new Date(previousEnd.getTime() - durationMs);
+
+    return { key, start, end, previousStart, previousEnd, label };
+  }
+
+  private normalizeMetricsPeriod(period?: string): DashboardMetricsPeriod {
+    switch ((period || '').trim().toLowerCase()) {
+      case 'yesterday':
+        return 'yesterday';
+      case '7d':
+      case 'week':
+        return '7d';
+      case '30d':
+        return '30d';
+      case 'month':
+        return 'month';
+      case 'year':
+        return 'year';
+      case 'custom':
+        return 'custom';
+      default:
+        return 'today';
+    }
+  }
+
+  private async loadMetricSourceData(companyId: string, start: Date, end: Date) {
+    const [sales, transactions, operationalCosts, adSpends, newCustomersCount] = await Promise.all([
+      this.prisma.sale.findMany({
+        where: { companyId, occurredAt: { gte: start, lte: end } },
+        select: { amount: true, productName: true, category: true, occurredAt: true },
+        orderBy: { occurredAt: 'asc' },
+      }),
+      this.prisma.financialTransaction.findMany({
+        where: { companyId, occurredAt: { gte: start, lte: end } },
+        select: { amount: true, type: true, category: true, description: true, occurredAt: true },
+        orderBy: { occurredAt: 'asc' },
+      }),
+      this.prisma.operationalCost.findMany({
+        where: { companyId, date: { gte: start, lte: end } },
+        select: { amount: true, category: true, name: true, date: true },
+        orderBy: { date: 'asc' },
+      }),
+      this.prisma.adSpend.findMany({
+        where: { companyId, spentAt: { gte: start, lte: end } },
+        select: { amount: true, source: true, spentAt: true },
+        orderBy: { spentAt: 'asc' },
+      }),
+      this.prisma.customer.count({
+        where: { companyId, createdAt: { gte: start, lte: end } },
+      }),
+    ]);
+
+    return { sales, transactions, operationalCosts, adSpends, newCustomersCount };
+  }
+
+  private calculateMetricTotals(
+    data: Awaited<ReturnType<DashboardService['loadMetricSourceData']>>,
+    products: Array<{ name: string; cost: Prisma.Decimal | null; tax: Prisma.Decimal | null; shipping: Prisma.Decimal | null }>,
+  ) {
+    const productCostByName = new Map<string, number>();
+    products.forEach((product) => {
+      const totalUnitCost =
+        this.toNumber(product.cost) + this.toNumber(product.tax) + this.toNumber(product.shipping);
+      productCostByName.set(product.name.trim().toLowerCase(), totalUnitCost);
+    });
+
+    const salesRevenue = data.sales.reduce((total, sale) => total + this.toNumber(sale.amount), 0);
+    const transactionIncome = data.transactions
+      .filter((item) => item.type === FinancialTransactionType.INCOME)
+      .reduce((total, item) => total + this.toNumber(item.amount), 0);
+    const transactionExpenses = data.transactions
+      .filter((item) => item.type === FinancialTransactionType.EXPENSE)
+      .reduce((total, item) => total + this.toNumber(item.amount), 0);
+    const operationalCosts = data.operationalCosts.reduce((total, item) => total + this.toNumber(item.amount), 0);
+    const adSpend = data.adSpends.reduce((total, item) => total + this.toNumber(item.amount), 0);
+    const estimatedProductCosts = data.sales.reduce((total, sale) => {
+      const productKey = (sale.productName || '').trim().toLowerCase();
+      if (!productKey) return total;
+      return total + (productCostByName.get(productKey) || 0);
+    }, 0);
+    const revenue = salesRevenue + transactionIncome;
+    const totalOutflows = transactionExpenses + operationalCosts + adSpend + estimatedProductCosts;
+    const salesCount =
+      data.sales.length +
+      data.transactions.filter((item) => item.type === FinancialTransactionType.INCOME).length;
+
+    return {
+      revenue: this.round(revenue),
+      salesCount,
+      revenueSources: data.sales.length + data.transactions.filter((item) => item.type === FinancialTransactionType.INCOME).length,
+      operationalCosts: this.round(operationalCosts),
+      operationalCostCount: data.operationalCosts.length,
+      adSpend: this.round(adSpend),
+      transactionExpenses: this.round(transactionExpenses),
+      estimatedProductCosts: this.round(estimatedProductCosts),
+      totalOutflows: this.round(totalOutflows),
+      netProfit: this.round(revenue - totalOutflows),
+      cashFlow: this.round(revenue - transactionExpenses - operationalCosts - adSpend),
+      cashFlowSources: data.sales.length + data.transactions.length + data.operationalCosts.length + data.adSpends.length,
+    };
+  }
+
+  private numberMetric(
+    metricKey: string,
+    value: number,
+    previousValue?: number,
+    options?: { noData?: boolean; kind?: 'currency' | 'percent' | 'integer' | 'number' },
+  ): DashboardMetricResult {
+    if (options?.noData) {
+      return this.noDataMetric(metricKey, 'Nenhum dado encontrado no periodo.');
+    }
+
+    const roundedValue = options?.kind === 'integer' ? Math.round(value) : this.round(value);
+    return {
+      key: metricKey,
+      label: this.metricLabel(metricKey),
+      value: roundedValue,
+      formatted: this.formatMetricValue(roundedValue, options?.kind || 'number'),
+      status: 'ok',
+      comparison:
+        previousValue === undefined
+          ? undefined
+          : this.buildComparison(roundedValue, previousValue),
+    };
+  }
+
+  private noDataMetric(metricKey: string, reason: string): DashboardMetricResult {
+    return {
+      key: metricKey,
+      label: this.metricLabel(metricKey),
+      value: null,
+      formatted: 'Sem dados',
+      status: 'no_data',
+      reason,
+    };
+  }
+
+  private notEnoughDataMetric(metricKey: string, reason: string): DashboardMetricResult {
+    return {
+      key: metricKey,
+      label: this.metricLabel(metricKey),
+      value: null,
+      formatted: 'Dado insuficiente',
+      status: 'not_enough_data',
+      reason,
+    };
+  }
+
+  private metricLabel(metricKey: string): string {
+    return getMetricDefinition(metricKey)?.label || metricKey;
+  }
+
+  private formatMetricValue(value: number, kind: 'currency' | 'percent' | 'integer' | 'number'): string {
+    if (kind === 'currency') {
+      return new Intl.NumberFormat('pt-BR', {
+        style: 'currency',
+        currency: 'BRL',
+      }).format(value);
+    }
+    if (kind === 'percent') {
+      return `${this.round(value).toLocaleString('pt-BR', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })}%`;
+    }
+    if (kind === 'integer') {
+      return Math.round(value).toLocaleString('pt-BR');
+    }
+    return this.round(value).toLocaleString('pt-BR', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  }
+
+  private buildComparison(currentValue: number, previousValue: number) {
+    const roundedPrevious = this.round(previousValue);
+    if (roundedPrevious === 0) {
+      return {
+        previousValue: roundedPrevious,
+        changePercent: currentValue === 0 ? 0 : 100,
+        direction: currentValue === 0 ? ('flat' as const) : ('up' as const),
+      };
+    }
+
+    const changePercent = this.round(((currentValue - roundedPrevious) / Math.abs(roundedPrevious)) * 100);
+    return {
+      previousValue: roundedPrevious,
+      changePercent,
+      direction: changePercent > 0 ? ('up' as const) : changePercent < 0 ? ('down' as const) : ('flat' as const),
+    };
+  }
+
+  private buildRevenueByDay(
+    start: Date,
+    end: Date,
+    data: Awaited<ReturnType<DashboardService['loadMetricSourceData']>>,
+    timeZone: string,
+  ): DashboardChartPoint[] {
+    const labels = this.getDailyLabels(start, end, timeZone);
+    const buckets = new Map(labels.map((label) => [label, { name: label, Receitas: 0, Saidas: 0 }]));
+
+    data.sales.forEach((sale) => {
+      const label = this.getDayLabel(toZonedTime(sale.occurredAt, timeZone));
+      const bucket = buckets.get(label);
+      if (bucket) bucket.Receitas += this.toNumber(sale.amount);
+    });
+    data.transactions.forEach((transaction) => {
+      const label = this.getDayLabel(toZonedTime(transaction.occurredAt, timeZone));
+      const bucket = buckets.get(label);
+      if (!bucket) return;
+      if (transaction.type === FinancialTransactionType.INCOME) {
+        bucket.Receitas += this.toNumber(transaction.amount);
+      } else {
+        bucket.Saidas += this.toNumber(transaction.amount);
+      }
+    });
+    data.operationalCosts.forEach((cost) => {
+      const label = this.getDayLabel(toZonedTime(cost.date, timeZone));
+      const bucket = buckets.get(label);
+      if (bucket) bucket.Saidas += this.toNumber(cost.amount);
+    });
+    data.adSpends.forEach((spend) => {
+      const label = this.getDayLabel(toZonedTime(spend.spentAt, timeZone));
+      const bucket = buckets.get(label);
+      if (bucket) bucket.Saidas += this.toNumber(spend.amount);
+    });
+
+    return Array.from(buckets.values()).map((item) => ({
+      name: item.name,
+      Receitas: this.round(item.Receitas),
+      Saidas: this.round(item.Saidas),
+    }));
+  }
+
+  private buildSalesByProduct(
+    sales: Array<{ amount: Prisma.Decimal; productName: string | null; category: string | null }>,
+  ): DashboardChartPoint[] {
+    const totals = new Map<string, { revenue: number; count: number }>();
+    sales.forEach((sale) => {
+      const name = sale.productName?.trim() || sale.category?.trim() || 'Sem produto';
+      const current = totals.get(name) || { revenue: 0, count: 0 };
+      current.revenue += this.toNumber(sale.amount);
+      current.count += 1;
+      totals.set(name, current);
+    });
+
+    return Array.from(totals.entries())
+      .sort((a, b) => b[1].revenue - a[1].revenue)
+      .slice(0, 8)
+      .map(([name, item]) => ({
+        name,
+        revenue: this.round(item.revenue),
+        count: item.count,
+      }));
+  }
+
+  private buildCostsByCategory(
+    operationalCosts: Array<{ amount: Prisma.Decimal; category: string | null; name: string }>,
+    transactions: Array<{ amount: Prisma.Decimal; type: FinancialTransactionType; category: string | null; description: string }>,
+    adSpends: Array<{ amount: Prisma.Decimal; source: string }>,
+  ): DashboardChartPoint[] {
+    const totals = new Map<string, number>();
+    operationalCosts.forEach((cost) => {
+      const key = cost.category?.trim() || cost.name?.trim() || 'Operacional';
+      totals.set(key, (totals.get(key) || 0) + this.toNumber(cost.amount));
+    });
+    transactions
+      .filter((transaction) => transaction.type === FinancialTransactionType.EXPENSE)
+      .forEach((transaction) => {
+        const key = transaction.category?.trim() || transaction.description?.trim() || 'Despesa';
+        totals.set(key, (totals.get(key) || 0) + this.toNumber(transaction.amount));
+      });
+    adSpends.forEach((spend) => {
+      const key = spend.source?.trim() || 'Marketing';
+      totals.set(key, (totals.get(key) || 0) + this.toNumber(spend.amount));
+    });
+
+    return Array.from(totals.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([name, value]) => ({
+        name,
+        value: this.round(value),
+      }));
+  }
+
+  private buildPeakSalesHours(
+    sales: Array<{ amount: Prisma.Decimal; occurredAt: Date }>,
+    timeZone: string,
+  ): DashboardChartPoint[] {
+    const buckets = new Map<string, { count: number; revenue: number }>();
+    for (let hour = 0; hour < 24; hour += 1) {
+      buckets.set(`${String(hour).padStart(2, '0')}:00`, { count: 0, revenue: 0 });
+    }
+
+    sales.forEach((sale) => {
+      const zonedDate = toZonedTime(sale.occurredAt, timeZone);
+      const key = `${String(zonedDate.getHours()).padStart(2, '0')}:00`;
+      const bucket = buckets.get(key);
+      if (!bucket) return;
+      bucket.count += 1;
+      bucket.revenue += this.toNumber(sale.amount);
+    });
+
+    return Array.from(buckets.entries())
+      .map(([name, item]) => ({ name, count: item.count, revenue: this.round(item.revenue) }))
+      .filter((item) => item.count > 0)
+      .sort((a, b) => Number(b.count) - Number(a.count));
+  }
+
+  private getDailyLabels(start: Date, end: Date, timeZone: string): string[] {
+    const labels: string[] = [];
+    const cursor = toZonedTime(start, timeZone);
+    const zonedEnd = toZonedTime(end, timeZone);
+    cursor.setHours(0, 0, 0, 0);
+    zonedEnd.setHours(0, 0, 0, 0);
+
+    while (cursor <= zonedEnd) {
+      labels.push(this.getDayLabel(cursor));
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    return labels;
+  }
+
+  private getDayLabel(date: Date): string {
+    return new Intl.DateTimeFormat('pt-BR', {
+      day: '2-digit',
+      month: '2-digit',
+    }).format(date);
   }
 
   private normalizePeriod(period?: string): DashboardPeriod {

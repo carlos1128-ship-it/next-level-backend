@@ -355,6 +355,12 @@ export class WhatsappConnectionsService {
       event,
       internalStatus: connection.status,
     });
+    this.logWhatsappEvent('whatsapp.webhook.received', {
+      companyId: connection.companyId,
+      instanceName,
+      event,
+      internalStatus: connection.status,
+    });
 
     const data = this.asRecord((payload as EvolutionWebhookPayload).data) || {};
 
@@ -618,10 +624,15 @@ export class WhatsappConnectionsService {
 
     try {
       let webhookAlreadyProvisionedByCreate = false;
-      const shouldProvisionRemoteInstance =
-        !existing ||
-        existing.instanceName !== connection.instanceName ||
-        this.shouldProvisionRemoteInstance(existing, connection.instanceName);
+      if (this.providerService.isConfigured()) {
+        await this.providerService.warmUp();
+      }
+
+      const remote = this.providerService.isConfigured()
+        ? await this.providerService.findRemoteInstance(connection.instanceName)
+        : { exists: false, state: 'close', phoneNumber: null };
+      const shouldProvisionRemoteInstance = !remote.exists;
+
       if (shouldProvisionRemoteInstance) {
         this.assertProviderActionAllowed(connection.instanceName, 'create', INSTANCE_CYCLE_COOLDOWN_MS);
         const createResult = await this.providerService.createInstance(companyId, connection.instanceName, {
@@ -638,7 +649,8 @@ export class WhatsappConnectionsService {
         this.logWhatsappEvent('whatsapp.connect.instance.reused', {
           companyId,
           instanceName: connection.instanceName,
-          source: 'local_db',
+          source: 'evolution_remote',
+          evolutionState: remote.state,
         });
       }
 
@@ -653,6 +665,39 @@ export class WhatsappConnectionsService {
             webhookConfigHash: this.hashWebhookConfig(webhookUrl, this.getWebhookEvents()),
           },
         });
+      }
+
+      if (!webhookAlreadyProvisionedByCreate) {
+        await this.ensureWebhookIfMissing(connection.instanceName, webhookUrl);
+      }
+
+      if (remote.exists && remote.state === 'open') {
+        const connected = await this.prisma.whatsappConnection.update({
+          where: { id: connection.id },
+          data: {
+            status: 'connected',
+            connectionState: 'open',
+            qrCode: null,
+            qrCodeText: null,
+            pairingCode: null,
+            phoneNumber: remote.phoneNumber || connection.phoneNumber,
+            userRequestedDisconnect: false,
+            lastEvolutionState: 'open',
+            lastConnectionEventAt: new Date(),
+            lastEvolutionSyncAt: new Date(),
+            lastConnectionAt: connection.lastConnectionAt || new Date(),
+            lastConnectedAt: connection.lastConnectedAt || new Date(),
+            lastConnectStartAt: new Date(),
+            lastError: null,
+            providerRetryAfterUntil: null,
+          },
+        });
+        this.logWhatsappEvent('whatsapp.connect.connected', {
+          companyId,
+          instanceName: connection.instanceName,
+          source: 'evolution_remote',
+        });
+        return this.buildSnapshot(connected);
       }
 
       const prepared = await this.prisma.whatsappConnection.update({
@@ -1059,26 +1104,7 @@ export class WhatsappConnectionsService {
       return false;
     }
 
-    return (
-      Boolean(existing.userRequestedDisconnect) ||
-      ['disconnected', 'disconnected_requires_new_qr', 'disconnected_pending_provider_cleanup'].includes(existing.status || '') ||
-      this.isLegacySharedInstanceName(instanceName)
-    );
-  }
-
-  private shouldProvisionRemoteInstance(
-    existing: { status?: string; userRequestedDisconnect?: boolean; instanceName?: string; lastQrAt?: Date | null; lastConnectedAt?: Date | null },
-    instanceName: string,
-  ) {
-    if (existing.userRequestedDisconnect || this.isLegacySharedInstanceName(instanceName)) {
-      return false;
-    }
-
-    if (existing.lastQrAt || existing.lastConnectedAt) {
-      return false;
-    }
-
-    return ['error', 'not_configured', 'creating_instance', 'provider_warming_up'].includes(existing.status || '');
+    return this.isLegacySharedInstanceName(instanceName);
   }
 
   private isLegacySharedInstanceName(instanceName: string | null | undefined) {

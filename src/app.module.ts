@@ -19,6 +19,7 @@ import { AnalysisModule } from './modules/analysis/analysis.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CompaniesModule } from './modules/companies/companies.module';
+import { CompanyPersonalizationModule } from './modules/company-personalization/company-personalization.module';
 import { CostsModule } from './modules/costs/costs.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
@@ -44,6 +45,7 @@ import { WhatsappModule } from './modules/whatsapp/whatsapp.module';
     PrismaModule,
     AuthModule,
     CompaniesModule,
+    CompanyPersonalizationModule,
     SalesModule,
     InsightsModule,
     AiModule,

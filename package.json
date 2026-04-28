@@ -18,6 +18,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:seed": "ts-node --compiler-options {\"module\":\"CommonJS\"} prisma/seed.ts",
+    "seed:dashboard-test": "node -e \"process.env.DASHBOARD_TEST_SEED='1'; require('ts-node/register'); require('./prisma/seed-dashboard-test.ts')\"",
     "prisma:studio": "prisma studio"
   },
   "prisma": {

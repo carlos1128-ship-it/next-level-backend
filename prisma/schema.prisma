@@ -151,6 +151,9 @@ model Company {
   whatsappInstance      WhatsappInstance?
   whatsappConnection    WhatsappConnection?
   whatsappMessageEvents WhatsappMessageEvent[]
+  dashboardPreferences  DashboardPreference[]
+  companyProfile        CompanyProfile?
+  modulePreferences     CompanyModulePreference[]
 }
 
 model AdSpend {
@@ -751,4 +754,66 @@ model WhatsappMessageEvent {
   @@index([companyId, status, createdAt])
   @@index([companyId, remoteNumber, createdAt])
   @@index([instanceId, createdAt])
+}
+
+model DashboardPreference {
+  id        String   @id @default(cuid())
+  companyId String
+  userId    String?
+  metricKey String
+  enabled   Boolean  @default(true)
+  order     Int      @default(0)
+  size      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, userId, metricKey])
+  @@index([companyId])
+}
+
+model CompanyProfile {
+  id                    String    @id @default(cuid())
+  companyId             String    @unique
+  businessType          String
+  businessModel         String?
+  mainGoal              String?
+  salesChannel          String?
+  companySize           String?
+  monthlyRevenueRange   String?
+  dataMaturity          String?
+  usesPaidTraffic       Boolean   @default(false)
+  hasPhysicalProducts   Boolean   @default(false)
+  hasDigitalProducts    Boolean   @default(false)
+  hasServices           Boolean   @default(false)
+  usesWhatsAppForSales  Boolean   @default(false)
+  usesMarketplace       Boolean   @default(false)
+  hasSupportTeam        Boolean   @default(false)
+  hasOperationalCosts   Boolean   @default(false)
+  wantsAutomation       Boolean   @default(false)
+  wantsMarketAnalysis   Boolean   @default(false)
+  onboardingCompleted   Boolean   @default(false)
+  onboardingSkipped     Boolean   @default(false)
+  completedAt           DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+}
+
+model CompanyModulePreference {
+  id        String   @id @default(cuid())
+  companyId String
+  moduleKey String
+  enabled   Boolean  @default(true)
+  source    String?
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, moduleKey])
+  @@index([companyId])
 }
