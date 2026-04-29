@@ -21,6 +21,18 @@ export type DashboardMetricDefinition = {
   displayType: DashboardDisplayType;
 };
 
+export const CORE_DASHBOARD_METRIC_KEYS = [
+  'revenue',
+  'losses',
+  'profit',
+  'cash_flow',
+  'company_count',
+  'ai_roi',
+  'alerts_insights',
+];
+
+export const CORE_DASHBOARD_METRIC_SET = new Set(CORE_DASHBOARD_METRIC_KEYS);
+
 export const DASHBOARD_METRICS: DashboardMetricDefinition[] = [
   {
     key: 'revenue',
@@ -84,7 +96,7 @@ export const DASHBOARD_METRICS: DashboardMetricDefinition[] = [
     category: 'finance',
     requiredData: ['sales', 'financial_transactions'],
     supportedBusinessTypes: ['ecommerce', 'saas', 'services', 'medical', 'law', 'retail', 'infoproduct'],
-    defaultEnabled: true,
+    defaultEnabled: false,
     planAvailability: ['COMUM', 'PRO', 'ENTERPRISE'],
     displayType: 'chart',
   },
@@ -95,7 +107,7 @@ export const DASHBOARD_METRICS: DashboardMetricDefinition[] = [
     category: 'sales',
     requiredData: ['sales', 'financial_transactions'],
     supportedBusinessTypes: ['ecommerce', 'saas', 'services', 'medical', 'law', 'retail', 'infoproduct'],
-    defaultEnabled: true,
+    defaultEnabled: false,
     planAvailability: ['COMUM', 'PRO', 'ENTERPRISE'],
     displayType: 'chart',
   },
@@ -299,12 +311,12 @@ export const DASHBOARD_METRICS: DashboardMetricDefinition[] = [
   },
   {
     key: 'revenue_forecast',
-    label: 'Previsao de receita',
-    description: 'Forecast de receita para os proximos dias.',
+    label: 'Projecao simples de receita',
+    description: 'Projecao por media movel baseada em historico real de vendas.',
     category: 'ai_insights',
     requiredData: ['sales'],
     supportedBusinessTypes: ['ecommerce', 'saas', 'services', 'retail', 'infoproduct'],
-    defaultEnabled: true,
+    defaultEnabled: false,
     planAvailability: ['PRO', 'ENTERPRISE'],
     displayType: 'chart',
   },

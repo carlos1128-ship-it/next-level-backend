@@ -783,6 +783,9 @@ model CompanyProfile {
   companySize           String?
   monthlyRevenueRange   String?
   dataMaturity          String?
+  originalBusinessDescription String?
+  detectedBusinessType  String?
+  classificationConfidence Float?
   usesPaidTraffic       Boolean   @default(false)
   hasPhysicalProducts   Boolean   @default(false)
   hasDigitalProducts    Boolean   @default(false)

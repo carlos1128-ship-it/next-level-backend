@@ -19,6 +19,9 @@ export type PersonalizationProfileInput = {
   companySize?: string | null;
   monthlyRevenueRange?: string | null;
   dataMaturity?: string | null;
+  originalBusinessDescription?: string | null;
+  detectedBusinessType?: string | null;
+  classificationConfidence?: number | null;
   usesPaidTraffic?: boolean | null;
   hasPhysicalProducts?: boolean | null;
   hasDigitalProducts?: boolean | null;

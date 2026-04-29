@@ -11,12 +11,13 @@ export interface ForecastSeriesPoint {
 }
 
 export interface ForecastResponse {
-  status: 'ok' | 'insufficient_data';
+  status: 'ok' | 'not_enough_data';
   type: ForecastType;
   historicalData?: ForecastSeriesPoint[];
   predictedData?: ForecastSeriesPoint[];
   confidenceInterval?: { lower: number; upper: number; margin: number };
   accuracyScore?: number;
+  qualityLabel?: 'low' | 'medium' | 'high';
   generatedAt?: Date;
   message?: string;
 }
@@ -79,7 +80,7 @@ export class ForecastService {
   ): Promise<ForecastResponse> {
     const forecast = await this.buildForecast(companyId, type, 30);
 
-    if (forecast.status === 'insufficient_data') {
+    if (forecast.status === 'not_enough_data') {
       return forecast;
     }
 
@@ -148,9 +149,9 @@ export class ForecastService {
     const daysWithData = historicalData.filter((d) => d.value > 0).length;
     if (daysWithData < 14) {
       return {
-        status: 'insufficient_data',
+        status: 'not_enough_data',
         type,
-        message: 'Dados insuficientes para gerar previsao (minimo 14 dias).',
+        message: 'Historico insuficiente para prever receita',
       };
     }
 
@@ -195,6 +196,7 @@ export class ForecastService {
         margin,
       },
       accuracyScore: Number(accuracyScore.toFixed(3)),
+      qualityLabel: this.resolveQualityLabel(daysWithData, accuracyScore),
       generatedAt: new Date(),
     };
   }
@@ -223,6 +225,12 @@ export class ForecastService {
       predictedData: predicted,
       confidenceInterval: payload.confidenceInterval,
       accuracyScore: snapshot.accuracyScore || 0,
+      qualityLabel: this.resolveQualityLabel(
+        Array.isArray(payload.historicalData)
+          ? payload.historicalData.filter((point) => Number(point.value || 0) > 0).length
+          : 0,
+        snapshot.accuracyScore || 0,
+      ),
       generatedAt: snapshot.createdAt,
     };
   }
@@ -324,5 +332,11 @@ export class ForecastService {
       values.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) /
       values.length;
     return Math.sqrt(variance);
+  }
+
+  private resolveQualityLabel(daysWithData: number, accuracyScore: number): 'low' | 'medium' | 'high' {
+    if (daysWithData >= 45 && accuracyScore >= 0.7) return 'high';
+    if (daysWithData >= 25 && accuracyScore >= 0.45) return 'medium';
+    return 'low';
   }
 }

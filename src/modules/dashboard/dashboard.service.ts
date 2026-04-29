@@ -13,6 +13,33 @@ type DashboardPeriod = 'today' | 'yesterday' | 'week' | 'month' | 'year';
 type DashboardMetricsPeriod = 'today' | 'yesterday' | '7d' | '30d' | 'month' | 'custom' | 'week' | 'year';
 type DashboardMetricStatus = 'ok' | 'no_data' | 'not_enough_data';
 type DashboardMetricDirection = 'up' | 'down' | 'flat';
+type DashboardMetricClassification =
+  | 'direct_money_total'
+  | 'derived_ratio'
+  | 'predictive'
+  | 'attribution_required'
+  | 'operational_count';
+
+const METRIC_CLASSIFICATION: Record<string, DashboardMetricClassification> = {
+  revenue: 'direct_money_total',
+  losses: 'direct_money_total',
+  profit: 'direct_money_total',
+  net_profit: 'direct_money_total',
+  cash_flow: 'direct_money_total',
+  operational_costs: 'direct_money_total',
+  average_ticket: 'derived_ratio',
+  margin: 'derived_ratio',
+  waste_inefficiency: 'derived_ratio',
+  conversion_rate: 'derived_ratio',
+  cac: 'attribution_required',
+  roi: 'attribution_required',
+  roas: 'attribution_required',
+  ltv: 'attribution_required',
+  revenue_forecast: 'predictive',
+  sales_count: 'operational_count',
+  customers_acquired: 'operational_count',
+  company_count: 'operational_count',
+};
 
 type TimelinePoint = {
   name: string;
@@ -326,7 +353,6 @@ export class DashboardService {
     addMetric(
       'revenue',
       this.numberMetric('revenue', currentTotals.revenue, previousTotals?.revenue, {
-        noData: currentTotals.revenueSources === 0,
         kind: 'currency',
       }),
     );
@@ -346,35 +372,30 @@ export class DashboardService {
     addMetric(
       'losses',
       this.numberMetric('losses', currentTotals.totalOutflows, previousTotals?.totalOutflows, {
-        noData: currentTotals.totalOutflows === 0,
         kind: 'currency',
       }),
     );
     addMetric(
       'operational_costs',
       this.numberMetric('operational_costs', currentTotals.operationalCosts, previousTotals?.operationalCosts, {
-        noData: currentTotals.operationalCostCount === 0,
         kind: 'currency',
       }),
     );
     addMetric(
       'cash_flow',
       this.numberMetric('cash_flow', currentTotals.cashFlow, previousTotals?.cashFlow, {
-        noData: currentTotals.cashFlowSources === 0,
         kind: 'currency',
       }),
     );
     addMetric(
       'profit',
       this.numberMetric('profit', currentTotals.netProfit, previousTotals?.netProfit, {
-        noData: currentTotals.revenueSources === 0 && currentTotals.totalOutflows === 0,
         kind: 'currency',
       }),
     );
     addMetric(
       'net_profit',
       this.numberMetric('net_profit', currentTotals.netProfit, previousTotals?.netProfit, {
-        noData: currentTotals.revenueSources === 0 && currentTotals.totalOutflows === 0,
         kind: 'currency',
       }),
     );
@@ -863,6 +884,9 @@ export class DashboardService {
     options?: { noData?: boolean; kind?: 'currency' | 'percent' | 'integer' | 'number' },
   ): DashboardMetricResult {
     if (options?.noData) {
+      if (METRIC_CLASSIFICATION[metricKey] === 'direct_money_total') {
+        return this.zeroMoneyMetric(metricKey, previousValue);
+      }
       return this.noDataMetric(metricKey, 'Nenhum dado encontrado no periodo.');
     }
 
@@ -888,6 +912,20 @@ export class DashboardService {
       formatted: 'Sem dados',
       status: 'no_data',
       reason,
+    };
+  }
+
+  private zeroMoneyMetric(metricKey: string, previousValue?: number): DashboardMetricResult {
+    return {
+      key: metricKey,
+      label: this.metricLabel(metricKey),
+      value: 0,
+      formatted: this.formatMetricValue(0, 'currency'),
+      status: 'ok',
+      comparison:
+        previousValue === undefined
+          ? undefined
+          : this.buildComparison(0, previousValue),
     };
   }
 

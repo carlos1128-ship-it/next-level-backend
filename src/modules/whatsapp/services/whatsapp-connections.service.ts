@@ -983,6 +983,7 @@ export class WhatsappConnectionsService {
         provider: 'evolution',
         instanceName: null,
         status: 'not_configured',
+        statusCode: 'ERROR',
         qrCode: null,
         code: null,
         pairingCode: null,
@@ -1005,6 +1006,7 @@ export class WhatsappConnectionsService {
       provider: connection.provider,
       instanceName: connection.instanceName,
       status: connection.status,
+      statusCode: this.resolvePublicStatusCode(connection.status),
       connectionState: connection.connectionState,
       qrCode: connection.qrCode,
       code: connection.qrCodeText || connection.qrCode,
@@ -1033,6 +1035,25 @@ export class WhatsappConnectionsService {
       createdAt: connection.createdAt.toISOString(),
       updatedAt: connection.updatedAt.toISOString(),
     };
+  }
+
+  private resolvePublicStatusCode(status: string) {
+    if (status === 'provider_warming_up' || status === 'qr_not_ready') {
+      return 'EVOLUTION_WARMING_UP';
+    }
+    if (status === 'rate_limited') {
+      return 'RATE_LIMITED';
+    }
+    if (status === 'qr_pending' || status === 'qr_required' || status === 'waiting_qr') {
+      return 'QR_PENDING';
+    }
+    if (status === 'connected') {
+      return 'CONNECTED';
+    }
+    if (status === 'error') {
+      return 'ERROR';
+    }
+    return status === 'not_configured' || status === 'disconnected' ? 'ERROR' : status.toUpperCase();
   }
 
   private async ensureCompany(companyId: string) {

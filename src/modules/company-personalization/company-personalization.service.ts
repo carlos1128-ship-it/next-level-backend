@@ -10,6 +10,7 @@ import {
   PersonalizationRecommendations,
 } from './business-personalization.registry';
 import {
+  CORE_DASHBOARD_METRIC_KEYS,
   DASHBOARD_METRIC_KEYS,
   DASHBOARD_METRICS,
 } from '../dashboard/dashboard-metrics.registry';
@@ -299,7 +300,7 @@ export class CompanyPersonalizationService {
   ) {
     const enabledModules = new Set(recommendations.modules);
     const enabledMetrics = new Set(
-      recommendations.dashboardMetrics.filter((metric) => DASHBOARD_METRIC_KEYS.has(metric)),
+      CORE_DASHBOARD_METRIC_KEYS.filter((metric) => DASHBOARD_METRIC_KEYS.has(metric)),
     );
 
     await this.prisma.$transaction([
@@ -340,6 +341,9 @@ export class CompanyPersonalizationService {
       dashboardMetricsApplied: DASHBOARD_METRICS.length,
       enabledModules: Array.from(enabledModules),
       enabledDashboardMetrics: Array.from(enabledMetrics),
+      recommendedDashboardMetrics: recommendations.dashboardMetrics.filter((metric) =>
+        DASHBOARD_METRIC_KEYS.has(metric),
+      ),
       agentConfig,
     };
   }
@@ -447,14 +451,30 @@ export class CompanyPersonalizationService {
   }
 
   private normalizeProfileInput(payload: PersonalizationProfileInput) {
+    const originalBusinessDescription = this.optionalString(payload.originalBusinessDescription);
+    const initialBusinessType = normalizeBusinessType(payload.businessType);
+    const classification =
+      initialBusinessType === 'other' && originalBusinessDescription
+        ? this.classifyBusinessDescription(originalBusinessDescription)
+        : {
+            businessType: initialBusinessType,
+            confidence: 1,
+            reasoning: 'Tipo selecionado manualmente.',
+          };
+    const confidence = Math.max(0, Math.min(1, classification.confidence));
+    const businessType = confidence >= 0.45 ? classification.businessType : 'other';
+
     return {
-      businessType: normalizeBusinessType(payload.businessType),
+      businessType,
       businessModel: this.optionalString(payload.businessModel),
       mainGoal: this.optionalString(payload.mainGoal),
       salesChannel: this.optionalString(payload.salesChannel),
       companySize: this.optionalString(payload.companySize),
       monthlyRevenueRange: this.optionalString(payload.monthlyRevenueRange),
       dataMaturity: this.optionalString(payload.dataMaturity),
+      originalBusinessDescription,
+      detectedBusinessType: classification.businessType,
+      classificationConfidence: confidence,
       usesPaidTraffic: Boolean(payload.usesPaidTraffic),
       hasPhysicalProducts: Boolean(payload.hasPhysicalProducts),
       hasDigitalProducts: Boolean(payload.hasDigitalProducts),
@@ -466,6 +486,86 @@ export class CompanyPersonalizationService {
       wantsAutomation: Boolean(payload.wantsAutomation),
       wantsMarketAnalysis: Boolean(payload.wantsMarketAnalysis),
     };
+  }
+
+  private classifyBusinessDescription(description: string) {
+    const text = description
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+    const rules: Array<{ businessType: string; keywords: string[]; reasoning: string }> = [
+      {
+        businessType: 'medical_clinic',
+        keywords: ['clinica', 'paciente', 'consulta', 'medico', 'odontologia', 'dentista', 'saude'],
+        reasoning: 'Descricao parece ligada a atendimento clinico ou saude.',
+      },
+      {
+        businessType: 'law_office',
+        keywords: ['advogado', 'juridico', 'processo', 'contrato', 'direito', 'escritorio juridico'],
+        reasoning: 'Descricao parece ligada a servicos juridicos.',
+      },
+      {
+        businessType: 'ecommerce_digital',
+        keywords: ['curso', 'mentoria', 'infoproduto', 'comunidade', 'aula', 'ebook', 'produto digital'],
+        reasoning: 'Descricao parece ligada a produto digital ou educacao comercial.',
+      },
+      {
+        businessType: 'saas',
+        keywords: ['saas', 'software', 'assinatura', 'plataforma', 'app', 'sistema online'],
+        reasoning: 'Descricao parece ligada a software recorrente.',
+      },
+      {
+        businessType: 'agency',
+        keywords: ['agencia', 'marketing', 'trafego', 'social media', 'design', 'campanha'],
+        reasoning: 'Descricao parece ligada a agencia ou marketing.',
+      },
+      {
+        businessType: 'restaurant',
+        keywords: ['restaurante', 'delivery', 'cardapio', 'lanchonete', 'pizzaria', 'comida'],
+        reasoning: 'Descricao parece ligada a restaurante ou delivery.',
+      },
+      {
+        businessType: 'marketplace_seller',
+        keywords: ['mercado livre', 'shopee', 'amazon', 'marketplace', 'seller'],
+        reasoning: 'Descricao parece ligada a venda em marketplace.',
+      },
+      {
+        businessType: 'retail_store',
+        keywords: ['loja fisica', 'varejo', 'balcao', 'estoque', 'produto fisico'],
+        reasoning: 'Descricao parece ligada a varejo fisico.',
+      },
+      {
+        businessType: 'ecommerce_physical',
+        keywords: ['loja online', 'ecommerce', 'e-commerce', 'produto', 'envio', 'frete'],
+        reasoning: 'Descricao parece ligada a e-commerce de produtos fisicos.',
+      },
+      {
+        businessType: 'local_services',
+        keywords: ['consultoria', 'servico', 'cliente', 'manutencao', 'agendamento', 'orcamento'],
+        reasoning: 'Descricao parece ligada a servicos locais ou consultivos.',
+      },
+    ];
+
+    const ranked = rules
+      .map((rule) => {
+        const hits = rule.keywords.filter((keyword) => text.includes(keyword)).length;
+        return {
+          businessType: normalizeBusinessType(rule.businessType),
+          confidence: Math.min(0.95, hits / Math.max(2, rule.keywords.length / 2)),
+          reasoning: rule.reasoning,
+          hits,
+        };
+      })
+      .filter((item) => item.hits > 0)
+      .sort((a, b) => b.confidence - a.confidence || b.hits - a.hits);
+
+    return (
+      ranked[0] || {
+        businessType: 'other' as const,
+        confidence: 0.25,
+        reasoning: 'Descricao ampla; usando perfil balanceado.',
+      }
+    );
   }
 
   private optionalString(value?: string | null) {
