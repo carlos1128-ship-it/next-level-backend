@@ -25,7 +25,7 @@ export class RagService {
     const start = new Date();
     start.setMonth(start.getMonth() - 3);
 
-    const [company, aggregates, insights, products] = await Promise.all([
+    const [company, aggregates, insights, products, confirmedImports] = await Promise.all([
       this.prisma.company.findUnique({
         where: { id: normalizedCompanyId },
         select: {
@@ -40,7 +40,32 @@ export class RagService {
       this.prisma.product.findMany({
         where: { companyId: normalizedCompanyId },
         select: { name: true, price: true, cost: true, tax: true, shipping: true, sku: true },
-        take: 50, // Limite para nao estourar o contexto
+        take: 50,
+      }),
+      this.prisma.intelligentImport.findMany({
+        where: {
+          companyId: normalizedCompanyId,
+          status: 'CONFIRMED',
+        },
+        select: {
+          aiSummary: true,
+          detectedCategory: true,
+          detectedPlatform: true,
+          confirmedAt: true,
+          importedMetrics: {
+            where: { status: 'CONFIRMED' },
+            select: {
+              metricKey: true,
+              label: true,
+              value: true,
+              unit: true,
+              source: true,
+            },
+            take: 10,
+          },
+        },
+        orderBy: { confirmedAt: 'desc' },
+        take: 5,
       }),
     ]);
 
@@ -51,33 +76,53 @@ export class RagService {
     parts.push(`Moeda: ${company?.currency ?? 'BRL'}`);
     parts.push(`Timezone: ${company?.timezone ?? 'America/Sao_Paulo'}`);
 
-    parts.push('\n## Produtos e Preços Atuais (Catálogo)');
+    parts.push('\n## Produtos e precos atuais');
     if (products.length > 0) {
       for (const p of products) {
-        parts.push(`- Produto: ${p.name} (SKU: ${p.sku || 'N/A'}) | Venda: ${p.price} | Custo Absoluto: ${p.cost || 0} | Impostos: ${p.tax || 0} | Frete: ${p.shipping || 0}`);
+        parts.push(
+          `- Produto: ${p.name} (SKU: ${p.sku || 'N/A'}) | Venda: ${p.price} | Custo: ${p.cost || 0} | Impostos: ${p.tax || 0} | Frete: ${p.shipping || 0}`,
+        );
       }
     } else {
       parts.push('Nenhum produto cadastrado atualmente.');
     }
 
-    parts.push('\n## Resumo de vendas (últimos 3 meses)');
+    parts.push('\n## Resumo de vendas (ultimos 3 meses)');
     parts.push(`Total de vendas: ${aggregates.sales.length}`);
     parts.push(`Faturamento total: ${aggregates.total.toFixed(2)}`);
     if (Object.keys(aggregates.byProduct).length > 0) {
       parts.push('Por produto:');
-      for (const [name, data] of Object.entries(aggregates.byProduct as Record<string, { count: number; total: number }>)) {
+      for (const [name, data] of Object.entries(
+        aggregates.byProduct as Record<string, { count: number; total: number }>,
+      )) {
         parts.push(`  - ${name}: ${data.count} un., R$ ${data.total.toFixed(2)}`);
       }
     }
 
-    parts.push('\n## Insights estratégicos');
+    parts.push('\n## Insights estrategicos');
     for (const i of insights) {
       parts.push(`- ${i.title}: ${i.description}`);
       if (i.value != null) parts.push(`  Valor: ${i.value}`);
     }
 
+    parts.push('\n## Importacoes inteligentes confirmadas');
+    if (confirmedImports.length > 0) {
+      confirmedImports.forEach((item, index) => {
+        parts.push(
+          `- Importacao ${index + 1}: categoria ${item.detectedCategory || 'UNKNOWN'} | plataforma ${item.detectedPlatform || 'unknown'} | resumo: ${item.aiSummary || 'Sem resumo'}`,
+        );
+        item.importedMetrics.forEach((metric) => {
+          parts.push(
+            `  - ${metric.label} (${metric.metricKey}) = ${JSON.stringify(metric.value)} | unidade ${metric.unit} | origem ${metric.source}`,
+          );
+        });
+      });
+    } else {
+      parts.push('Nenhuma importacao inteligente confirmada no momento.');
+    }
+
     parts.push('\n---');
-    parts.push(`Pergunta do usuário: ${query}`);
+    parts.push(`Pergunta do usuario: ${query}`);
 
     return parts.join('\n');
   }

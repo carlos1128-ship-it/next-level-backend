@@ -27,6 +27,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { ExportModule } from './modules/export/export.module';
 import { FinanceModule } from './modules/finance/finance.module';
 import { InsightsModule } from './modules/insights/insights.module';
+import { IntelligentImportsModule } from './modules/intelligent-imports/intelligent-imports.module';
 import { IntegrationsModule } from './modules/integrations/integrations.module';
 import { MarketIntelligenceModule } from './modules/market-intel/market-intelligence.module';
 import { ProductsModule } from './modules/products/products.module';
@@ -49,6 +50,7 @@ import { WhatsappModule } from './modules/whatsapp/whatsapp.module';
     CompanyPersonalizationModule,
     SalesModule,
     InsightsModule,
+    IntelligentImportsModule,
     AiModule,
     WebhooksModule,
     DashboardModule,

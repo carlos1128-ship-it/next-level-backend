@@ -77,6 +77,7 @@ function createFakePrisma() {
     adSpends: [] as any[],
     customers: [] as any[],
     products: [] as any[],
+    importedMetrics: [] as any[],
   };
 
   const inRange = (value: Date, range?: { gte?: Date; lte?: Date }) =>
@@ -182,6 +183,10 @@ function createFakePrisma() {
       product: {
         findMany: async ({ where }: any) => state.products.filter((item) => item.companyId === where.companyId),
         count: async ({ where }: any) => state.products.filter((item) => item.companyId === where.companyId).length,
+      },
+      importedMetric: {
+        findMany: async ({ where }: any) =>
+          state.importedMetrics.filter((item) => item.companyId === where.companyId),
       },
       whatsappConnection: { count: async () => 0 },
     },

@@ -272,6 +272,12 @@ async function assertRagCompanyScope() {
             : [{ name: 'Produto B', price: 99, cost: 5, tax: 1, shipping: 0, sku: 'B' }];
         },
       },
+      intelligentImport: {
+        findMany: async ({ where }: { where: Record<string, unknown> }) => {
+          assert.equal(where.companyId, 'companyA');
+          return [];
+        },
+      },
     } as never,
     {
       getAggregatesByCompanyAndPeriod: async (companyId: string) => {

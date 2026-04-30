@@ -111,6 +111,7 @@ export type DashboardMetricResult = {
   formatted: string;
   status: DashboardMetricStatus;
   reason?: string;
+  sourceLabel?: string;
   comparison?: {
     previousValue: number;
     changePercent: number;
@@ -360,12 +361,14 @@ export class DashboardService {
       'revenue',
       this.numberMetric('revenue', currentTotals.revenue, previousTotals?.revenue, {
         kind: 'currency',
+        sourceLabel: currentTotals.sourceLabels?.revenue,
       }),
     );
     addMetric(
       'income_revenue',
       this.numberMetric('income_revenue', currentTotals.revenue, previousTotals?.revenue, {
         kind: 'currency',
+        sourceLabel: currentTotals.sourceLabels?.revenue,
       }),
     );
     addMetric(
@@ -403,30 +406,35 @@ export class DashboardService {
       'losses',
       this.numberMetric('losses', currentTotals.totalOutflows, previousTotals?.totalOutflows, {
         kind: 'currency',
+        sourceLabel: currentTotals.sourceLabels?.losses,
       }),
     );
     addMetric(
       'operational_costs',
       this.numberMetric('operational_costs', currentTotals.operationalCosts, previousTotals?.operationalCosts, {
         kind: 'currency',
+        sourceLabel: currentTotals.sourceLabels?.operationalCosts,
       }),
     );
     addMetric(
       'cash_flow',
       this.numberMetric('cash_flow', currentTotals.cashFlow, previousTotals?.cashFlow, {
         kind: 'currency',
+        sourceLabel: currentTotals.sourceLabels?.cashFlow,
       }),
     );
     addMetric(
       'profit',
       this.numberMetric('profit', currentTotals.netProfit, previousTotals?.netProfit, {
         kind: 'currency',
+        sourceLabel: currentTotals.sourceLabels?.netProfit,
       }),
     );
     addMetric(
       'net_profit',
       this.numberMetric('net_profit', currentTotals.netProfit, previousTotals?.netProfit, {
         kind: 'currency',
+        sourceLabel: currentTotals.sourceLabels?.netProfit,
       }),
     );
     addMetric(
@@ -851,7 +859,7 @@ export class DashboardService {
   }
 
   private async loadMetricSourceData(companyId: string, start: Date, end: Date) {
-    const [sales, transactions, operationalCosts, adSpends, newCustomersCount] = await Promise.all([
+    const [sales, transactions, operationalCosts, adSpends, newCustomersCount, importedMetrics] = await Promise.all([
       this.prisma.sale.findMany({
         where: { companyId, occurredAt: { gte: start, lte: end } },
         select: { amount: true, productName: true, category: true, occurredAt: true },
@@ -875,9 +883,33 @@ export class DashboardService {
       this.prisma.customer.count({
         where: { companyId, createdAt: { gte: start, lte: end } },
       }),
+      this.prisma.importedMetric.findMany({
+        where: {
+          companyId,
+          status: 'CONFIRMED',
+          OR: [
+            {
+              periodStart: { lte: end },
+              periodEnd: { gte: start },
+            },
+            {
+              periodStart: null,
+              periodEnd: null,
+              createdAt: { gte: start, lte: end },
+            },
+          ],
+        },
+        select: {
+          metricKey: true,
+          value: true,
+          source: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
     ]);
 
-    return { sales, transactions, operationalCosts, adSpends, newCustomersCount };
+    return { sales, transactions, operationalCosts, adSpends, newCustomersCount, importedMetrics };
   }
 
   private calculateMetricTotals(
@@ -890,6 +922,11 @@ export class DashboardService {
         this.toNumber(product.cost) + this.toNumber(product.tax) + this.toNumber(product.shipping);
       productCostByName.set(product.name.trim().toLowerCase(), totalUnitCost);
     });
+
+    const importedMetricNumber = (metricKeys: string[]) =>
+      data.importedMetrics
+        .filter((item) => metricKeys.includes(item.metricKey))
+        .reduce((total, item) => total + this.jsonNumber(item.value), 0);
 
     const salesRevenue = data.sales.reduce((total, sale) => total + this.toNumber(sale.amount), 0);
     const transactionIncome = data.transactions
@@ -905,26 +942,76 @@ export class DashboardService {
       if (!productKey) return total;
       return total + (productCostByName.get(productKey) || 0);
     }, 0);
-    const revenue = salesRevenue + transactionIncome;
-    const totalOutflows = transactionExpenses + operationalCosts + adSpend + estimatedProductCosts;
+    const nativeRevenue = salesRevenue + transactionIncome;
+    const importedRevenue = importedMetricNumber(['revenue', 'income_revenue', 'grossRevenue', 'netRevenue', 'revenueAttributed']);
+    const revenue = nativeRevenue > 0 ? nativeRevenue : importedRevenue;
+    const nativeOperationalCosts = operationalCosts;
+    const fallbackOperationalCosts = importedMetricNumber(['operationalCosts']);
+    const resolvedOperationalCosts =
+      nativeOperationalCosts > 0 ? nativeOperationalCosts : fallbackOperationalCosts;
+    const nativeTransactionExpenses = transactionExpenses;
+    const fallbackTransactionExpenses = importedMetricNumber(['expenses']);
+    const resolvedTransactionExpenses =
+      nativeTransactionExpenses > 0 ? nativeTransactionExpenses : fallbackTransactionExpenses;
+    const fallbackLosses = importedMetricNumber(['losses']);
+    const nativeOutflows = resolvedTransactionExpenses + resolvedOperationalCosts + adSpend + estimatedProductCosts;
+    const totalOutflows = nativeOutflows > 0 ? nativeOutflows : fallbackLosses;
+    const fallbackNetProfit = importedMetricNumber(['netProfit', 'profit']);
+    const fallbackCashFlow = importedMetricNumber(['cashFlow']);
     const salesCount =
       data.sales.length +
       data.transactions.filter((item) => item.type === FinancialTransactionType.INCOME).length;
+    const fallbackSalesCount = importedMetricNumber(['orderCount']);
+    const resolvedSalesCount = salesCount > 0 ? salesCount : Math.round(fallbackSalesCount);
+    const netProfit = revenue - totalOutflows;
+    const resolvedNetProfit =
+      revenue > 0 || totalOutflows > 0 ? netProfit : fallbackNetProfit;
+    const resolvedCashFlow =
+      revenue > 0 || resolvedTransactionExpenses > 0 || resolvedOperationalCosts > 0 || adSpend > 0
+        ? revenue - resolvedTransactionExpenses - resolvedOperationalCosts - adSpend
+        : fallbackCashFlow;
 
     return {
       revenue: this.round(revenue),
       transactionIncome: this.round(transactionIncome),
-      salesCount,
+      salesCount: resolvedSalesCount,
       revenueSources: data.sales.length + data.transactions.filter((item) => item.type === FinancialTransactionType.INCOME).length,
-      operationalCosts: this.round(operationalCosts),
+      operationalCosts: this.round(resolvedOperationalCosts),
       operationalCostCount: data.operationalCosts.length,
       adSpend: this.round(adSpend),
-      transactionExpenses: this.round(transactionExpenses),
+      transactionExpenses: this.round(resolvedTransactionExpenses),
       estimatedProductCosts: this.round(estimatedProductCosts),
       totalOutflows: this.round(totalOutflows),
-      netProfit: this.round(revenue - totalOutflows),
-      cashFlow: this.round(revenue - transactionExpenses - operationalCosts - adSpend),
+      netProfit: this.round(resolvedNetProfit),
+      cashFlow: this.round(resolvedCashFlow),
       cashFlowSources: data.sales.length + data.transactions.length + data.operationalCosts.length + data.adSpends.length,
+      sourceLabels: {
+        revenue: nativeRevenue > 0 ? undefined : importedRevenue > 0 ? 'Fonte: Importacao Inteligente' : undefined,
+        losses:
+          nativeOutflows > 0
+            ? undefined
+            : fallbackLosses > 0
+              ? 'Fonte: Importacao Inteligente'
+              : undefined,
+        netProfit:
+          revenue > 0 || totalOutflows > 0
+            ? undefined
+            : fallbackNetProfit > 0
+              ? 'Fonte: Importacao Inteligente'
+              : undefined,
+        cashFlow:
+          revenue > 0 || resolvedTransactionExpenses > 0 || resolvedOperationalCosts > 0 || adSpend > 0
+            ? undefined
+            : fallbackCashFlow > 0
+              ? 'Fonte: Importacao Inteligente'
+              : undefined,
+        operationalCosts:
+          nativeOperationalCosts > 0
+            ? undefined
+            : fallbackOperationalCosts > 0
+              ? 'Fonte: Importacao Inteligente'
+              : undefined,
+      },
     };
   }
 
@@ -932,7 +1019,7 @@ export class DashboardService {
     metricKey: string,
     value: number,
     previousValue?: number,
-    options?: { noData?: boolean; kind?: 'currency' | 'percent' | 'integer' | 'number' },
+    options?: { noData?: boolean; kind?: 'currency' | 'percent' | 'integer' | 'number'; sourceLabel?: string },
   ): DashboardMetricResult {
     if (options?.noData) {
       if (METRIC_CLASSIFICATION[metricKey] === 'direct_money_total') {
@@ -948,6 +1035,7 @@ export class DashboardService {
       value: roundedValue,
       formatted: this.formatMetricValue(roundedValue, options?.kind || 'number'),
       status: 'ok',
+      sourceLabel: options?.sourceLabel,
       comparison:
         previousValue === undefined
           ? undefined
@@ -1392,6 +1480,28 @@ export class DashboardService {
 
   private toNumber(value: Prisma.Decimal | number | null | undefined): number {
     return Number(value ?? 0);
+  }
+
+  private jsonNumber(value: Prisma.JsonValue | null | undefined): number {
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string') {
+      const compact = value.replace(/\s+/g, '');
+      const commaIndex = compact.lastIndexOf(',');
+      const dotIndex = compact.lastIndexOf('.');
+      let normalized = compact;
+      if (commaIndex >= 0 && dotIndex >= 0) {
+        normalized =
+          commaIndex > dotIndex
+            ? compact.replace(/\./g, '').replace(',', '.')
+            : compact.replace(/,/g, '');
+      } else if (commaIndex >= 0) {
+        normalized = compact.replace(',', '.');
+      }
+      normalized = normalized.replace(/[^\d.-]/g, '');
+      const numeric = Number(normalized);
+      return Number.isFinite(numeric) ? numeric : 0;
+    }
+    return 0;
   }
 
   private round(value: number): number {

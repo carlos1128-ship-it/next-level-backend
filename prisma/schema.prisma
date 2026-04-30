@@ -108,6 +108,73 @@ enum CsvImportStatus {
   FAILED
 }
 
+enum IntelligentImportInputType {
+  IMAGE
+  PDF
+  CSV
+  TEXT
+  DOCUMENT
+}
+
+enum IntelligentImportStatus {
+  UPLOADED
+  ANALYZING
+  NEEDS_REVIEW
+  CONFIRMED
+  REJECTED
+  FAILED
+}
+
+enum IntelligentImportCategory {
+  MARKETING
+  DELIVERY
+  MARKETPLACE
+  FINANCIAL
+  PRODUCTS
+  CUSTOMERS
+  MIXED
+  UNKNOWN
+}
+
+enum ImportedMetricUnit {
+  CURRENCY
+  PERCENTAGE
+  COUNT
+  RATIO
+  TEXT
+}
+
+enum ImportedMetricSource {
+  AI_IMPORT
+  CSV_IMPORT
+  MANUAL_TEXT
+  SCREENSHOT
+  PDF
+}
+
+enum ImportedMetricStatus {
+  PENDING_REVIEW
+  CONFIRMED
+  REJECTED
+}
+
+enum ImportedEntityType {
+  PRODUCT
+  CUSTOMER
+  ORDER
+  ORDER_ITEM
+  CAMPAIGN
+  AD
+  COST
+  UNKNOWN
+}
+
+enum ImportedEntityStatus {
+  PENDING_REVIEW
+  CONFIRMED
+  REJECTED
+}
+
 model Company {
   id                   String    @id @default(cuid())
   userId               String?
@@ -172,6 +239,9 @@ model Company {
   companyProfile        CompanyProfile?
   modulePreferences     CompanyModulePreference[]
   csvImportJobs         CsvImportJob[]
+  intelligentImports    IntelligentImport[]
+  importedMetrics       ImportedMetric[]
+  importedEntities      ImportedEntity[]
 }
 
 model AdSpend {
@@ -209,6 +279,7 @@ model User {
   financialTransactions FinancialTransaction[]
   aiChatMessages        AiChatMessage[]
   refreshTokens         RefreshToken[]
+  intelligentImports    IntelligentImport[]
 }
 
 model RefreshToken {
@@ -874,4 +945,88 @@ model CsvImportRowError {
 
   @@index([importJobId])
   @@index([importJobId, rowNumber])
+}
+
+model IntelligentImport {
+  id                  String                  @id @default(cuid())
+  companyId           String
+  userId              String
+  inputType           IntelligentImportInputType
+  fileName            String?
+  fileMimeType        String?
+  fileSize            Int?
+  fileUrl             String?
+  storageKey          String?
+  pastedText          String?                 @db.Text
+  rawContentText      String?                 @db.Text
+  previewJson         Json?
+  expectedCategory    String?
+  detectedCategory    IntelligentImportCategory?
+  detectedPlatform    String?
+  detectedPeriodStart DateTime?
+  detectedPeriodEnd   DateTime?
+  confidence          Float                   @default(0)
+  status              IntelligentImportStatus @default(UPLOADED)
+  aiSummary           String?                 @db.Text
+  extractedJson       Json?
+  warningsJson        Json?
+  errorMessage        String?                 @db.Text
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
+  confirmedAt         DateTime?
+
+  company         Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  importedMetrics ImportedMetric[]
+  importedEntities ImportedEntity[]
+
+  @@index([companyId, createdAt])
+  @@index([companyId, status, createdAt])
+  @@index([companyId, detectedCategory])
+}
+
+model ImportedMetric {
+  id          String               @id @default(cuid())
+  companyId   String
+  importId    String
+  metricKey   String
+  label       String
+  value       Json
+  unit        ImportedMetricUnit
+  currency    String?              @default("BRL")
+  periodStart DateTime?
+  periodEnd   DateTime?
+  source      ImportedMetricSource
+  platform    String?
+  confidence  Float                @default(0)
+  status      ImportedMetricStatus @default(PENDING_REVIEW)
+  metadataJson Json?
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  company Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  import  IntelligentImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, status, createdAt])
+  @@index([companyId, metricKey, status])
+  @@index([importId])
+}
+
+model ImportedEntity {
+  id             String               @id @default(cuid())
+  companyId      String
+  importId       String
+  entityType     ImportedEntityType
+  normalizedJson Json
+  confidence     Float                @default(0)
+  status         ImportedEntityStatus @default(PENDING_REVIEW)
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  company Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  import  IntelligentImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, status, createdAt])
+  @@index([companyId, entityType, status])
+  @@index([importId])
 }
