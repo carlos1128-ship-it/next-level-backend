@@ -11,6 +11,14 @@ import axios from 'axios';
 import { createHash, randomUUID } from 'crypto';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { ConnectWhatsappDto } from '../dto/connect-whatsapp.dto';
+import {
+  buildAgentKey,
+  buildBufferKey,
+  buildBufferLastKey,
+  buildHumanPauseKey,
+  buildWhatsappMemoryKey,
+} from '../../../common/utils/ai-memory-keys.util';
+import { WhatsappAgentConfigService } from './whatsapp-agent-config.service';
 import { WhatsappConversationsService } from './whatsapp-conversations.service';
 import { WhatsappProviderEvolutionService } from './whatsapp-provider-evolution.service';
 
@@ -107,6 +115,7 @@ export class WhatsappConnectionsService {
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
     private readonly providerService: WhatsappProviderEvolutionService,
+    private readonly agentConfigService: WhatsappAgentConfigService,
     private readonly conversationsService: WhatsappConversationsService,
   ) {}
 
@@ -1385,18 +1394,7 @@ export class WhatsappConnectionsService {
       instanceName: connection.instanceName,
     });
 
-    const agentConfig = await this.prisma.agentConfig.findUnique({
-      where: { companyId: connection.companyId },
-    });
-
-    if (!agentConfig) {
-      this.logWhatsappEvent('whatsapp.webhook.agent_inactive', {
-        companyId: connection.companyId,
-        instanceName: connection.instanceName,
-        reason: 'missing_agent_config',
-      });
-      return;
-    }
+    const agentConfig = await this.agentConfigService.get(connection.companyId);
 
     this.logWhatsappEvent('whatsapp.webhook.agent_config.loaded', {
       companyId: connection.companyId,
@@ -1536,6 +1534,13 @@ export class WhatsappConnectionsService {
       modelName: string;
     },
   ) {
+    const remoteJid = message.remoteJid || '';
+    const memoryKey = buildWhatsappMemoryKey(connection.companyId, remoteJid);
+    const bufferKey = buildBufferKey(connection.companyId, remoteJid);
+    const bufferLastKey = buildBufferLastKey(connection.companyId, remoteJid);
+    const humanPauseKey = buildHumanPauseKey(connection.companyId, remoteJid);
+    const agentKey = buildAgentKey(connection.companyId);
+
     return {
       source: 'evolution',
       event: 'MESSAGES_UPSERT',
@@ -1549,6 +1554,11 @@ export class WhatsappConnectionsService {
       messageType: message.messageType,
       message: message.text || '',
       text: message.text || '',
+      memoryKey,
+      bufferKey,
+      bufferLastKey,
+      humanPauseKey,
+      agentKey,
       raw: payload,
       rawEvolutionPayload: payload,
       agentConfig: {
@@ -1588,9 +1598,12 @@ export class WhatsappConnectionsService {
         to: message.remoteJid,
       },
       memory: {
-        sessionKey: `${connection.companyId}:${message.remoteJid}`,
-        bufferKey: `buffer:${connection.companyId}:${message.remoteJid}`,
-        humanPauseKey: `paused:${connection.companyId}:${message.remoteJid}`,
+        sessionKey: memoryKey,
+        memoryKey,
+        agentKey,
+        bufferKey,
+        bufferLastKey,
+        humanPauseKey,
       },
     };
   }

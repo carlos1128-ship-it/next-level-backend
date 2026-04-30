@@ -13,6 +13,7 @@
     "start:prod": "prisma migrate deploy && node dist/main.js",
     "smoke": "powershell -ExecutionPolicy Bypass -File scripts/smoke-test.ps1",
     "test:integration": "powershell -ExecutionPolicy Bypass -File scripts/integration-test.ps1",
+    "test:ai-isolation": "tsx scripts/ai-isolation-check.ts",
     "postinstall": "prisma generate",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
