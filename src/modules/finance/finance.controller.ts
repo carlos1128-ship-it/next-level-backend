@@ -28,13 +28,13 @@ export class FinanceController {
   }
 
   @Get('transactions')
-  findAll(@Query('companyId') companyId: string, @Req() req: { user: { id: string } }) {
-    return this.financeService.findAll(companyId, req.user.id);
+  findAll(@Req() req: { user: { id: string; companyId?: string | null } }) {
+    return this.financeService.findAll(req.user.companyId || '', req.user.id);
   }
 
   @Get('report')
-  getReport(@Query('companyId') companyId: string, @Req() req: { user: { id: string } }) {
-    return this.financeService.getReport(companyId, req.user.id);
+  getReport(@Req() req: { user: { id: string; companyId?: string | null } }) {
+    return this.financeService.getReport(req.user.companyId || '', req.user.id);
   }
 
   @Post('transactions')

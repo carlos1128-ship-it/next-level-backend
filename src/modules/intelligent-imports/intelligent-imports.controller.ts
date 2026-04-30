@@ -5,7 +5,6 @@ import {
   Param,
   Post,
   Put,
-  Query,
   Req,
   UploadedFile,
   UseGuards,
@@ -32,23 +31,21 @@ export class IntelligentImportsController {
   @Get()
   list(
     @Req() req: { user: RequestUser },
-    @Query('companyId') companyId?: string,
   ) {
     return this.intelligentImportsService.listImports(
       this.resolveUserId(req.user),
-      companyId || req.user.companyId || '',
+      req.user.companyId || '',
     );
   }
 
   @Post('text')
   createText(
     @Req() req: { user: RequestUser },
-    @Query('companyId') companyId: string | undefined,
     @Body() body: CreateIntelligentTextImportDto,
   ) {
     return this.intelligentImportsService.createTextImport(
       this.resolveUserId(req.user),
-      companyId || req.user.companyId || '',
+      req.user.companyId || '',
       body,
     );
   }
@@ -57,7 +54,6 @@ export class IntelligentImportsController {
   @UseInterceptors(FileInterceptor('file'))
   uploadFile(
     @Req() req: { user: RequestUser },
-    @Query('companyId') companyId: string | undefined,
     @Body() body: UploadIntelligentImportFileDto,
     @UploadedFile() file?: {
       buffer: Buffer;
@@ -68,7 +64,7 @@ export class IntelligentImportsController {
   ) {
     return this.intelligentImportsService.uploadFile(
       this.resolveUserId(req.user),
-      companyId || req.user.companyId || '',
+      req.user.companyId || '',
       body,
       file,
     );
@@ -78,11 +74,10 @@ export class IntelligentImportsController {
   analyze(
     @Req() req: { user: RequestUser },
     @Param('id') importId: string,
-    @Query('companyId') companyId?: string,
   ) {
     return this.intelligentImportsService.analyzeImport(
       this.resolveUserId(req.user),
-      companyId || req.user.companyId || '',
+      req.user.companyId || '',
       importId,
     );
   }
@@ -91,11 +86,10 @@ export class IntelligentImportsController {
   getOne(
     @Req() req: { user: RequestUser },
     @Param('id') importId: string,
-    @Query('companyId') companyId?: string,
   ) {
     return this.intelligentImportsService.getImport(
       this.resolveUserId(req.user),
-      companyId || req.user.companyId || '',
+      req.user.companyId || '',
       importId,
     );
   }
@@ -104,12 +98,11 @@ export class IntelligentImportsController {
   review(
     @Req() req: { user: RequestUser },
     @Param('id') importId: string,
-    @Query('companyId') companyId: string | undefined,
     @Body() body: ReviewIntelligentImportDto,
   ) {
     return this.intelligentImportsService.reviewImport(
       this.resolveUserId(req.user),
-      companyId || req.user.companyId || '',
+      req.user.companyId || '',
       importId,
       body,
     );
@@ -119,11 +112,10 @@ export class IntelligentImportsController {
   confirm(
     @Req() req: { user: RequestUser },
     @Param('id') importId: string,
-    @Query('companyId') companyId?: string,
   ) {
     return this.intelligentImportsService.confirmImport(
       this.resolveUserId(req.user),
-      companyId || req.user.companyId || '',
+      req.user.companyId || '',
       importId,
     );
   }
@@ -132,11 +124,10 @@ export class IntelligentImportsController {
   reject(
     @Req() req: { user: RequestUser },
     @Param('id') importId: string,
-    @Query('companyId') companyId?: string,
   ) {
     return this.intelligentImportsService.rejectImport(
       this.resolveUserId(req.user),
-      companyId || req.user.companyId || '',
+      req.user.companyId || '',
       importId,
     );
   }

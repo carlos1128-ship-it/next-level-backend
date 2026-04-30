@@ -26,6 +26,7 @@ node_modules/
 dist/
 
 tokens/
+private-imports/
 BrowserMetrics-spare.pma
 DevToolsActivePort
 

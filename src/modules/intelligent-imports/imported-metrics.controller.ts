@@ -1,4 +1,4 @@
-import { Controller, Get, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Req, UseGuards } from '@nestjs/common';
 import { ActiveCompanyGuard } from '../../common/guards/active-company.guard';
 import { IntelligentImportsService } from './intelligent-imports.service';
 
@@ -14,13 +14,10 @@ export class ImportedMetricsController {
   constructor(private readonly intelligentImportsService: IntelligentImportsService) {}
 
   @Get()
-  list(
-    @Req() req: { user: RequestUser },
-    @Query('companyId') companyId?: string,
-  ) {
+  list(@Req() req: { user: RequestUser }) {
     return this.intelligentImportsService.listImportedMetrics(
       req.user.id || req.user.userId || '',
-      companyId || req.user.companyId || '',
+      req.user.companyId || '',
     );
   }
 }

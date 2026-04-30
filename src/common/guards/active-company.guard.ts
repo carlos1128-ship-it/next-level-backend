@@ -4,6 +4,7 @@ import {
   ExecutionContext,
   ForbiddenException,
   Injectable,
+  Logger,
 } from '@nestjs/common';
 import { Request } from 'express';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -19,6 +20,8 @@ type AuthenticatedRequest = Request & {
 
 @Injectable()
 export class ActiveCompanyGuard implements CanActivate {
+  private readonly logger = new Logger(ActiveCompanyGuard.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -29,20 +32,24 @@ export class ActiveCompanyGuard implements CanActivate {
       throw new ForbiddenException('Usuario nao autenticado');
     }
 
-    const companyId = this.resolveCompanyId(request, Boolean(user.admin));
+    const userId = user.id || user.userId || '';
+    const resolution = this.resolveCompanyId(request, Boolean(user.admin));
+    const companyId = resolution.resolvedCompanyId;
     if (!companyId) {
+      await this.logCompanyResolutionIssue(
+        'missing_company_id',
+        request,
+        userId,
+        resolution,
+      );
       throw new BadRequestException('companyId nao informado');
     }
 
     if (user.admin) {
-      request.query.companyId = companyId;
-      if (request.body && typeof request.body === 'object') {
-        (request.body as Record<string, unknown>).companyId = companyId;
-      }
+      this.applyResolvedCompany(request, companyId);
       return true;
     }
 
-    const userId = user.id || user.userId || '';
     const company = await this.prisma.company.findFirst({
       where: {
         id: companyId,
@@ -55,18 +62,21 @@ export class ActiveCompanyGuard implements CanActivate {
     });
 
     if (!company) {
+      await this.logCompanyResolutionIssue(
+        'membership_not_found',
+        request,
+        userId,
+        resolution,
+      );
       throw new ForbiddenException('Sem acesso a empresa informada');
     }
 
-    request.query.companyId = companyId;
-    if (request.body && typeof request.body === 'object') {
-      (request.body as Record<string, unknown>).companyId = companyId;
-    }
+    this.applyResolvedCompany(request, companyId);
 
     return true;
   }
 
-  private resolveCompanyId(request: AuthenticatedRequest, isAdmin: boolean): string {
+  private resolveCompanyId(request: AuthenticatedRequest, _isAdmin: boolean) {
     const queryCompanyId = this.asString(request.query?.companyId);
     const bodyCompanyId = this.asString(
       (request.body as { companyId?: unknown } | undefined)?.companyId,
@@ -74,16 +84,54 @@ export class ActiveCompanyGuard implements CanActivate {
     const paramCompanyId = this.asString(request.params?.companyId);
     const userCompanyId = this.asString(request.user?.companyId);
     const requestedCompanyId = queryCompanyId || bodyCompanyId || paramCompanyId;
+    const resolvedCompanyId = requestedCompanyId || userCompanyId;
 
-    if (isAdmin) {
-      return requestedCompanyId || userCompanyId;
+    return {
+      requestedCompanyId,
+      resolvedCompanyId,
+      userCompanyId,
+    };
+  }
+
+  private applyResolvedCompany(request: AuthenticatedRequest, companyId: string) {
+    request.query.companyId = companyId;
+    if (request.body && typeof request.body === 'object') {
+      (request.body as Record<string, unknown>).companyId = companyId;
     }
-
-    if (userCompanyId && requestedCompanyId && requestedCompanyId !== userCompanyId) {
-      throw new ForbiddenException('Sem acesso a empresa informada');
+    if (request.user) {
+      request.user.companyId = companyId;
     }
+  }
 
-    return userCompanyId || requestedCompanyId;
+  private async logCompanyResolutionIssue(
+    reason: string,
+    request: AuthenticatedRequest,
+    userId: string,
+    resolution: {
+      requestedCompanyId: string;
+      resolvedCompanyId: string;
+      userCompanyId: string;
+    },
+  ) {
+    const availableCompanyIdsCount = userId
+      ? await this.prisma.company.count({
+          where: {
+            OR: [{ userId }, { users: { some: { id: userId } } }],
+          },
+        })
+      : 0;
+
+    this.logger.warn(
+      JSON.stringify({
+        reason,
+        userId,
+        requestedCompanyId: resolution.requestedCompanyId || null,
+        resolvedCompanyId: resolution.resolvedCompanyId || null,
+        userCompanyId: resolution.userCompanyId || null,
+        availableCompanyIdsCount,
+        routePath: request.path || request.originalUrl || request.url,
+      }),
+    );
   }
 
   private asString(value: unknown): string {
