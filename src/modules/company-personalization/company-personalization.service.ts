@@ -13,6 +13,7 @@ import {
   CORE_DASHBOARD_METRIC_KEYS,
   DASHBOARD_METRIC_KEYS,
   DASHBOARD_METRICS,
+  getDashboardDefaultOrder,
 } from '../dashboard/dashboard-metrics.registry';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator';
 
@@ -323,7 +324,7 @@ export class CompanyPersonalizationService {
           userId: null,
           metricKey: metric.key,
           enabled: enabledMetrics.has(metric.key),
-          order: index,
+          order: getDashboardDefaultOrder(metric.key, index),
           size: metric.displayType === 'chart' ? 'large' : 'small',
         })),
       }),
@@ -444,7 +445,7 @@ export class CompanyPersonalizationService {
       return {
         metricKey: metric.key,
         enabled: saved?.enabled ?? metric.defaultEnabled,
-        order: saved?.order ?? index,
+        order: saved?.order ?? getDashboardDefaultOrder(metric.key, index),
         size: saved?.size ?? null,
       };
     }).sort((a, b) => a.order - b.order);
