@@ -6,8 +6,10 @@ import {
   DASHBOARD_METRIC_KEYS,
   DASHBOARD_METRICS,
   DashboardMetricDefinition,
+  getDashboardDefaultOrder,
   getMetricDefinition,
 } from './dashboard-metrics.registry';
+import { buildPersonalizationRecommendations } from '../company-personalization/business-personalization.registry';
 
 type DashboardPeriod = 'today' | 'yesterday' | 'week' | 'month' | 'year';
 type DashboardMetricsPeriod = 'today' | 'yesterday' | '7d' | '30d' | 'month' | 'custom' | 'week' | 'year';
@@ -22,6 +24,10 @@ type DashboardMetricClassification =
 
 const METRIC_CLASSIFICATION: Record<string, DashboardMetricClassification> = {
   revenue: 'direct_money_total',
+  income_revenue: 'direct_money_total',
+  entries: 'direct_money_total',
+  expenses: 'direct_money_total',
+  outflows: 'direct_money_total',
   losses: 'direct_money_total',
   profit: 'direct_money_total',
   net_profit: 'direct_money_total',
@@ -357,6 +363,30 @@ export class DashboardService {
       }),
     );
     addMetric(
+      'income_revenue',
+      this.numberMetric('income_revenue', currentTotals.revenue, previousTotals?.revenue, {
+        kind: 'currency',
+      }),
+    );
+    addMetric(
+      'entries',
+      this.numberMetric('entries', currentTotals.transactionIncome, previousTotals?.transactionIncome, {
+        kind: 'currency',
+      }),
+    );
+    addMetric(
+      'expenses',
+      this.numberMetric('expenses', currentTotals.transactionExpenses, previousTotals?.transactionExpenses, {
+        kind: 'currency',
+      }),
+    );
+    addMetric(
+      'outflows',
+      this.numberMetric('outflows', currentTotals.totalOutflows, previousTotals?.totalOutflows, {
+        kind: 'currency',
+      }),
+    );
+    addMetric(
       'sales_count',
       this.numberMetric('sales_count', currentTotals.salesCount, previousTotals?.salesCount, {
         noData: currentTotals.salesCount === 0,
@@ -570,7 +600,7 @@ export class DashboardService {
       return {
         metricKey: metric.key,
         enabled: override?.enabled ?? metric.defaultEnabled,
-        order: override?.order ?? index,
+        order: override?.order ?? getDashboardDefaultOrder(metric.key, index),
         size: override?.size ?? null,
       };
     });
@@ -645,44 +675,64 @@ export class DashboardService {
   }
 
   private async buildPreferencesResponse(companyId: string): Promise<DashboardPreferencesResponse> {
-    const persisted = await this.prisma.dashboardPreference.findMany({
-      where: { companyId, userId: null },
-      select: {
-        metricKey: true,
-        enabled: true,
-        order: true,
-        size: true,
-      },
-    });
+    const [persisted, profile, company] = await Promise.all([
+      this.prisma.dashboardPreference.findMany({
+        where: { companyId, userId: null },
+        select: {
+          metricKey: true,
+          enabled: true,
+          order: true,
+          size: true,
+        },
+      }),
+      this.prisma.companyProfile.findUnique({
+        where: { companyId },
+      }),
+      this.prisma.company.findUnique({
+        where: { id: companyId },
+        select: { name: true },
+      }),
+    ]);
     const byMetric = new Map(persisted.map((item) => [item.metricKey, item]));
+    const recommendedMetricKeys = new Set(
+      profile
+        ? buildPersonalizationRecommendations(profile, company?.name).dashboardMetrics.filter((metricKey) =>
+            DASHBOARD_METRIC_KEYS.has(metricKey),
+          )
+        : [],
+    );
+    const availableMetrics = DASHBOARD_METRICS.map((metric) => ({
+      ...metric,
+      recommended: recommendedMetricKeys.has(metric.key),
+    }));
     const preferences = DASHBOARD_METRICS.map((metric, index) => {
       const saved = byMetric.get(metric.key);
       return {
         metricKey: metric.key,
         enabled: saved?.enabled ?? metric.defaultEnabled,
-        order: saved?.order ?? index,
+        order: saved?.order ?? getDashboardDefaultOrder(metric.key, index),
         size: saved?.size ?? null,
       };
     }).sort((a, b) => a.order - b.order);
 
-    const definitionsByKey = new Map(DASHBOARD_METRICS.map((metric) => [metric.key, metric]));
-    const resolvedLayout = preferences
+    const definitionsByKey = new Map(availableMetrics.map((metric) => [metric.key, metric]));
+    const resolvedLayout: DashboardResolvedLayoutItem[] = preferences
       .filter((preference) => preference.enabled)
-      .map((preference) => {
+      .reduce<DashboardResolvedLayoutItem[]>((items, preference) => {
         const metric = definitionsByKey.get(preference.metricKey);
-        if (!metric) return null;
-        return {
+        if (!metric) return items;
+        items.push({
           ...metric,
           metricKey: preference.metricKey,
           enabled: preference.enabled,
           order: preference.order,
           size: preference.size,
-        };
-      })
-      .filter((item): item is DashboardResolvedLayoutItem => Boolean(item));
+        });
+        return items;
+      }, []);
 
     return {
-      availableMetrics: DASHBOARD_METRICS,
+      availableMetrics,
       preferences,
       resolvedLayout,
     };
@@ -863,6 +913,7 @@ export class DashboardService {
 
     return {
       revenue: this.round(revenue),
+      transactionIncome: this.round(transactionIncome),
       salesCount,
       revenueSources: data.sales.length + data.transactions.filter((item) => item.type === FinancialTransactionType.INCOME).length,
       operationalCosts: this.round(operationalCosts),

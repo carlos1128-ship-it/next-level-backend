@@ -17,6 +17,7 @@ export type DashboardMetricDefinition = {
   requiredData: string[];
   supportedBusinessTypes: string[];
   defaultEnabled: boolean;
+  recommended?: boolean;
   planAvailability: string[];
   displayType: DashboardDisplayType;
 };
@@ -24,20 +25,42 @@ export type DashboardMetricDefinition = {
 export const CORE_DASHBOARD_METRIC_KEYS = [
   'revenue',
   'losses',
-  'profit',
-  'cash_flow',
+  'net_profit',
   'company_count',
+  'cash_flow',
   'ai_roi',
-  'alerts_insights',
+  'income_revenue',
+  'average_ticket',
+  'operational_costs',
+  'margin',
+  'waste_inefficiency',
+  'cash_flow_summary',
+  'category_mix',
 ];
 
 export const CORE_DASHBOARD_METRIC_SET = new Set(CORE_DASHBOARD_METRIC_KEYS);
 
+export function getDashboardDefaultOrder(metricKey: string, fallbackOrder = 0) {
+  const coreIndex = CORE_DASHBOARD_METRIC_KEYS.indexOf(metricKey);
+  return coreIndex >= 0 ? coreIndex : CORE_DASHBOARD_METRIC_KEYS.length + fallbackOrder;
+}
+
 export const DASHBOARD_METRICS: DashboardMetricDefinition[] = [
   {
     key: 'revenue',
-    label: 'Receita',
+    label: 'Faturamento',
     description: 'Total vendido no periodo selecionado.',
+    category: 'finance',
+    requiredData: ['sales', 'financial_transactions'],
+    supportedBusinessTypes: ['ecommerce', 'saas', 'services', 'medical', 'law', 'retail', 'infoproduct'],
+    defaultEnabled: true,
+    planAvailability: ['COMUM', 'PRO', 'ENTERPRISE'],
+    displayType: 'card',
+  },
+  {
+    key: 'income_revenue',
+    label: 'Rendas/Receitas',
+    description: 'Entradas reais de vendas e transacoes de receita no periodo.',
     category: 'finance',
     requiredData: ['sales', 'financial_transactions'],
     supportedBusinessTypes: ['ecommerce', 'saas', 'services', 'medical', 'law', 'retail', 'infoproduct'],
@@ -52,7 +75,7 @@ export const DASHBOARD_METRICS: DashboardMetricDefinition[] = [
     category: 'finance',
     requiredData: ['sales', 'financial_transactions', 'ad_spend'],
     supportedBusinessTypes: ['ecommerce', 'saas', 'services', 'medical', 'law', 'retail', 'infoproduct'],
-    defaultEnabled: true,
+    defaultEnabled: false,
     planAvailability: ['COMUM', 'PRO', 'ENTERPRISE'],
     displayType: 'card',
   },
@@ -74,8 +97,8 @@ export const DASHBOARD_METRICS: DashboardMetricDefinition[] = [
     category: 'finance',
     requiredData: ['sales', 'operational_costs', 'products'],
     supportedBusinessTypes: ['ecommerce', 'saas', 'services', 'retail', 'infoproduct'],
-    defaultEnabled: false,
-    planAvailability: ['PRO', 'ENTERPRISE'],
+    defaultEnabled: true,
+    planAvailability: ['COMUM', 'PRO', 'ENTERPRISE'],
     displayType: 'card',
   },
   {
@@ -96,7 +119,7 @@ export const DASHBOARD_METRICS: DashboardMetricDefinition[] = [
     category: 'finance',
     requiredData: ['sales', 'financial_transactions'],
     supportedBusinessTypes: ['ecommerce', 'saas', 'services', 'medical', 'law', 'retail', 'infoproduct'],
-    defaultEnabled: false,
+    defaultEnabled: true,
     planAvailability: ['COMUM', 'PRO', 'ENTERPRISE'],
     displayType: 'chart',
   },
@@ -107,7 +130,7 @@ export const DASHBOARD_METRICS: DashboardMetricDefinition[] = [
     category: 'sales',
     requiredData: ['sales', 'financial_transactions'],
     supportedBusinessTypes: ['ecommerce', 'saas', 'services', 'medical', 'law', 'retail', 'infoproduct'],
-    defaultEnabled: false,
+    defaultEnabled: true,
     planAvailability: ['COMUM', 'PRO', 'ENTERPRISE'],
     displayType: 'chart',
   },
@@ -140,7 +163,7 @@ export const DASHBOARD_METRICS: DashboardMetricDefinition[] = [
     category: 'sales',
     requiredData: ['sales'],
     supportedBusinessTypes: ['ecommerce', 'saas', 'services', 'medical', 'law', 'retail', 'infoproduct'],
-    defaultEnabled: false,
+    defaultEnabled: true,
     planAvailability: ['COMUM', 'PRO', 'ENTERPRISE'],
     displayType: 'card',
   },
@@ -206,7 +229,7 @@ export const DASHBOARD_METRICS: DashboardMetricDefinition[] = [
     category: 'products',
     requiredData: ['sales', 'products', 'operational_costs'],
     supportedBusinessTypes: ['ecommerce', 'retail', 'services', 'infoproduct'],
-    defaultEnabled: false,
+    defaultEnabled: true,
     planAvailability: ['PRO', 'ENTERPRISE'],
     displayType: 'card',
   },
@@ -272,18 +295,18 @@ export const DASHBOARD_METRICS: DashboardMetricDefinition[] = [
     category: 'operations',
     requiredData: ['operational_costs'],
     supportedBusinessTypes: ['ecommerce', 'saas', 'services', 'medical', 'law', 'retail', 'infoproduct'],
-    defaultEnabled: false,
+    defaultEnabled: true,
     planAvailability: ['COMUM', 'PRO', 'ENTERPRISE'],
     displayType: 'card',
   },
   {
     key: 'waste_inefficiency',
-    label: 'Desperdicio operacional',
+    label: 'Desperdicio',
     description: 'Percentual de custo operacional sobre receita.',
     category: 'operations',
     requiredData: ['sales', 'operational_costs'],
     supportedBusinessTypes: ['ecommerce', 'services', 'retail'],
-    defaultEnabled: false,
+    defaultEnabled: true,
     planAvailability: ['PRO', 'ENTERPRISE'],
     displayType: 'card',
   },
@@ -294,9 +317,42 @@ export const DASHBOARD_METRICS: DashboardMetricDefinition[] = [
     category: 'ai_insights',
     requiredData: ['sales', 'financial_transactions', 'operational_costs'],
     supportedBusinessTypes: ['ecommerce', 'saas', 'services', 'medical', 'law', 'retail', 'infoproduct'],
-    defaultEnabled: true,
+    defaultEnabled: false,
     planAvailability: ['COMUM', 'PRO', 'ENTERPRISE'],
     displayType: 'list',
+  },
+  {
+    key: 'entries',
+    label: 'Entradas',
+    description: 'Entradas financeiras registradas no periodo.',
+    category: 'finance',
+    requiredData: ['financial_transactions'],
+    supportedBusinessTypes: ['ecommerce', 'saas', 'services', 'medical', 'law', 'retail', 'infoproduct'],
+    defaultEnabled: false,
+    planAvailability: ['COMUM', 'PRO', 'ENTERPRISE'],
+    displayType: 'card',
+  },
+  {
+    key: 'expenses',
+    label: 'Despesas',
+    description: 'Despesas financeiras registradas no periodo.',
+    category: 'finance',
+    requiredData: ['financial_transactions'],
+    supportedBusinessTypes: ['ecommerce', 'saas', 'services', 'medical', 'law', 'retail', 'infoproduct'],
+    defaultEnabled: false,
+    planAvailability: ['COMUM', 'PRO', 'ENTERPRISE'],
+    displayType: 'card',
+  },
+  {
+    key: 'outflows',
+    label: 'Saidas',
+    description: 'Saidas totais do periodo, incluindo despesas, custos e midia.',
+    category: 'finance',
+    requiredData: ['financial_transactions', 'operational_costs', 'ad_spend'],
+    supportedBusinessTypes: ['ecommerce', 'saas', 'services', 'medical', 'law', 'retail', 'infoproduct'],
+    defaultEnabled: false,
+    planAvailability: ['COMUM', 'PRO', 'ENTERPRISE'],
+    displayType: 'card',
   },
   {
     key: 'ai_roi',
