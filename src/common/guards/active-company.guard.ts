@@ -29,7 +29,7 @@ export class ActiveCompanyGuard implements CanActivate {
       throw new ForbiddenException('Usuario nao autenticado');
     }
 
-    const companyId = this.resolveCompanyId(request);
+    const companyId = this.resolveCompanyId(request, Boolean(user.admin));
     if (!companyId) {
       throw new BadRequestException('companyId nao informado');
     }
@@ -66,15 +66,24 @@ export class ActiveCompanyGuard implements CanActivate {
     return true;
   }
 
-  private resolveCompanyId(request: AuthenticatedRequest): string {
+  private resolveCompanyId(request: AuthenticatedRequest, isAdmin: boolean): string {
     const queryCompanyId = this.asString(request.query?.companyId);
     const bodyCompanyId = this.asString(
       (request.body as { companyId?: unknown } | undefined)?.companyId,
     );
     const paramCompanyId = this.asString(request.params?.companyId);
     const userCompanyId = this.asString(request.user?.companyId);
+    const requestedCompanyId = queryCompanyId || bodyCompanyId || paramCompanyId;
 
-    return queryCompanyId || bodyCompanyId || paramCompanyId || userCompanyId;
+    if (isAdmin) {
+      return requestedCompanyId || userCompanyId;
+    }
+
+    if (userCompanyId && requestedCompanyId && requestedCompanyId !== userCompanyId) {
+      throw new ForbiddenException('Sem acesso a empresa informada');
+    }
+
+    return userCompanyId || requestedCompanyId;
   }
 
   private asString(value: unknown): string {

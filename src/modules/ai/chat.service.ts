@@ -11,6 +11,7 @@ import { DashboardService } from '../dashboard/dashboard.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ChatRequestDto } from './dto/chat-request.dto';
 import { RagService } from './rag.service';
+import { buildStrategicChatMemoryKey } from '../../common/utils/ai-memory-keys.util';
 
 export interface ChatReply {
   response: string;
@@ -138,6 +139,8 @@ export class ChatService {
     const startDate = new Date();
     startDate.setMonth(startDate.getMonth() - 5);
 
+    const memoryKey = buildStrategicChatMemoryKey(company.id, user.id);
+
     const [dashboard, recentTransactions, history, financialTransactions] = await Promise.all([
       this.dashboardService.getDashboard(company.id),
       this.prisma.financialTransaction.findMany({
@@ -147,7 +150,7 @@ export class ChatService {
         select: { type: true, amount: true, description: true, category: true, date: true },
       }),
       this.prisma.aiChatMessage.findMany({
-        where: { companyId: company.id },
+        where: { companyId: company.id, userId: user.id },
         orderBy: { createdAt: 'desc' },
         take: 15,
         select: { role: true, content: true, createdAt: true },
@@ -178,6 +181,7 @@ export class ChatService {
       financialSnapshot,
       historyContext,
       dto.message,
+      memoryKey,
       focus,
       detailLevel,
       company.currency ?? 'BRL',
@@ -366,6 +370,7 @@ export class ChatService {
     snapshot: FinancialSnapshot,
     chatHistory: string,
     userMessage: string,
+    memoryKey: string,
     segmentFocus: string,
     detailLevel: DetailLevel,
     currency: string,
@@ -397,6 +402,8 @@ export class ChatService {
       '',
       `FOCO ESTRATEGICO POR SEGMENTO: ${segmentFocus}`,
       `ULTIMAS TRANSACOES REAIS: ${JSON.stringify(recentTransactions)}`,
+      '',
+      `MEMORIA ISOLADA: ${memoryKey}`,
       '',
       'HISTORICO DO CHAT:',
       chatHistory || 'Sem historico anterior.',

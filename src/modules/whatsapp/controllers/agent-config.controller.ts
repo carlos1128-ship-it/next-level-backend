@@ -2,10 +2,8 @@ import {
   Body,
   Controller,
   Get,
-  Param,
   Patch,
   Post,
-  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -23,47 +21,23 @@ export class AgentConfigController {
   @Get()
   getCurrentConfig(
     @Req() req: { user?: { companyId?: string | null } },
-    @Query('companyId') companyId?: string,
   ) {
-    return this.whatsappAgentConfigService.get(companyId || req.user?.companyId || '');
-  }
-
-  @Get(':companyId')
-  getConfig(@Param('companyId') companyId: string) {
-    return this.whatsappAgentConfigService.get(companyId);
+    return this.whatsappAgentConfigService.get(req.user?.companyId || '');
   }
 
   @Post()
   createOrReplaceCurrentConfig(
     @Req() req: { user?: { companyId?: string | null } },
     @Body() dto: UpdateAgentConfigDto,
-    @Query('companyId') companyId?: string,
   ) {
-    return this.whatsappAgentConfigService.update(companyId || req.user?.companyId || '', dto);
-  }
-
-  @Post(':companyId')
-  createOrReplaceConfig(
-    @Param('companyId') companyId: string,
-    @Body() dto: UpdateAgentConfigDto,
-  ) {
-    return this.whatsappAgentConfigService.update(companyId, dto);
+    return this.whatsappAgentConfigService.update(req.user?.companyId || '', dto);
   }
 
   @Patch()
   updateCurrentConfig(
     @Req() req: { user?: { companyId?: string | null } },
     @Body() dto: UpdateAgentConfigDto,
-    @Query('companyId') companyId?: string,
   ) {
-    return this.whatsappAgentConfigService.update(companyId || req.user?.companyId || '', dto);
-  }
-
-  @Patch(':companyId')
-  updateConfig(
-    @Param('companyId') companyId: string,
-    @Body() dto: UpdateAgentConfigDto,
-  ) {
-    return this.whatsappAgentConfigService.update(companyId, dto);
+    return this.whatsappAgentConfigService.update(req.user?.companyId || '', dto);
   }
 }

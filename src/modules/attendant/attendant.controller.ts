@@ -9,19 +9,16 @@ export class AttendantController {
   constructor(private readonly attendantService: AttendantService) {}
 
   @Get('config')
-  getConfig(@Req() req: { user: { companyId?: string | null } }, @Query('companyId') companyId?: string) {
-    const resolved = companyId || req.user.companyId;
-    return this.attendantService.getBotConfig(resolved!);
+  getConfig(@Req() req: { user: { companyId?: string | null } }) {
+    return this.attendantService.getBotConfig(req.user.companyId!);
   }
 
   @Put('config')
   updateConfig(
     @Req() req: { user: { companyId?: string | null } },
     @Body() body: UpdateBotConfigDto,
-    @Query('companyId') companyId?: string,
   ) {
-    const resolved = companyId || req.user.companyId;
-    return this.attendantService.updateBotConfig(resolved!, body);
+    return this.attendantService.updateBotConfig(req.user.companyId!, body);
   }
 
   @Get('leads')
