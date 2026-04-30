@@ -91,6 +91,23 @@ enum WhatsappMessageProcessStatus {
   IGNORED
 }
 
+enum CsvImportDataType {
+  SALES
+  PRODUCTS
+  CUSTOMERS
+  COSTS
+  AD_SPEND
+  ORDERS
+}
+
+enum CsvImportStatus {
+  UPLOADED
+  MAPPED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
 model Company {
   id                   String    @id @default(cuid())
   userId               String?
@@ -154,6 +171,7 @@ model Company {
   dashboardPreferences  DashboardPreference[]
   companyProfile        CompanyProfile?
   modulePreferences     CompanyModulePreference[]
+  csvImportJobs         CsvImportJob[]
 }
 
 model AdSpend {
@@ -819,4 +837,41 @@ model CompanyModulePreference {
 
   @@unique([companyId, moduleKey])
   @@index([companyId])
+}
+
+model CsvImportJob {
+  id              String          @id @default(cuid())
+  companyId       String
+  dataType        CsvImportDataType
+  fileName        String
+  status          CsvImportStatus @default(UPLOADED)
+  totalRows       Int             @default(0)
+  importedRows    Int             @default(0)
+  failedRows      Int             @default(0)
+  mappingJson     Json?
+  previewRowsJson Json?
+  rawCsvText      String?         @db.Text
+  errorJson       Json?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  company   Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  rowErrors CsvImportRowError[]
+
+  @@index([companyId, createdAt])
+  @@index([companyId, status])
+}
+
+model CsvImportRowError {
+  id           String   @id @default(cuid())
+  importJobId  String
+  rowNumber    Int
+  errorMessage String   @db.Text
+  rawRowJson   Json
+  createdAt    DateTime @default(now())
+
+  importJob CsvImportJob @relation(fields: [importJobId], references: [id], onDelete: Cascade)
+
+  @@index([importJobId])
+  @@index([importJobId, rowNumber])
 }

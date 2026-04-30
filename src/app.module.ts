@@ -22,6 +22,7 @@ import { CompaniesModule } from './modules/companies/companies.module';
 import { CompanyPersonalizationModule } from './modules/company-personalization/company-personalization.module';
 import { CostsModule } from './modules/costs/costs.module';
 import { CustomersModule } from './modules/customers/customers.module';
+import { CsvImportsModule } from './modules/csv-imports/csv-imports.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { ExportModule } from './modules/export/export.module';
 import { FinanceModule } from './modules/finance/finance.module';
@@ -57,6 +58,7 @@ import { WhatsappModule } from './modules/whatsapp/whatsapp.module';
     ProductsModule,
     CustomersModule,
     CostsModule,
+    CsvImportsModule,
     AnalyticsModule,
     AlertsModule,
     AnalysisModule,

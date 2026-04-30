@@ -1,0 +1,19 @@
+export const CSV_IMPORT_DATA_TYPES = {
+  SALES: 'SALES',
+  PRODUCTS: 'PRODUCTS',
+  CUSTOMERS: 'CUSTOMERS',
+  COSTS: 'COSTS',
+  AD_SPEND: 'AD_SPEND',
+  ORDERS: 'ORDERS',
+} as const;
+
+export const CSV_IMPORT_STATUSES = {
+  UPLOADED: 'UPLOADED',
+  MAPPED: 'MAPPED',
+  PROCESSING: 'PROCESSING',
+  COMPLETED: 'COMPLETED',
+  FAILED: 'FAILED',
+} as const;
+
+export type CsvImportDataTypeValue =
+  (typeof CSV_IMPORT_DATA_TYPES)[keyof typeof CSV_IMPORT_DATA_TYPES];
