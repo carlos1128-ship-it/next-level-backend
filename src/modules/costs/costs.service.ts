@@ -88,6 +88,22 @@ export class CostsService {
       },
     });
 
+    await this.prisma.businessEvent.create({
+      data: {
+        companyId,
+        source: 'cost',
+        type: 'cost_created',
+        title: 'Custo registrado',
+        description: created.name,
+        metadataJson: {
+          costId: created.id,
+          amount: Number(created.amount),
+          category: created.category,
+        },
+        occurredAt: created.date,
+      },
+    });
+
     return this.map(created);
   }
 

@@ -14,6 +14,7 @@ import { Request } from 'express';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { PeriodQueryDto } from '../../common/dto/period-query.dto';
 import { CreateSaleDto } from './dto/create-sale.dto';
+import { SaleAIAttributionDto } from './dto/sale-ai-attribution.dto';
 import { UpdateSaleDto } from './dto/update-sale.dto';
 import { SalesService } from './sales.service';
 
@@ -48,6 +49,15 @@ export class SalesController {
     @Body() dto: UpdateSaleDto,
   ) {
     return this.salesService.update(id, req.user.id, dto);
+  }
+
+  @Post(':id/ai-attribution')
+  async attributeAI(
+    @Req() req: JwtRequest,
+    @Param('id') id: string,
+    @Body() dto: SaleAIAttributionDto,
+  ) {
+    return this.salesService.attributeSale(req.user.id, id, dto);
   }
 
   @Delete(':id')

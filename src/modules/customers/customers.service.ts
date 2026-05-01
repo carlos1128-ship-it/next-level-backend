@@ -62,6 +62,18 @@ export class CustomersService {
       },
     });
 
+    await this.prisma.businessEvent.create({
+      data: {
+        companyId,
+        source: 'customer',
+        type: 'customer_created',
+        title: 'Cliente registrado',
+        description: created.name,
+        metadataJson: { customerId: created.id, hasEmail: Boolean(created.email), hasPhone: Boolean(created.phone) },
+        occurredAt: created.createdAt,
+      },
+    });
+
     return this.map(created);
   }
 

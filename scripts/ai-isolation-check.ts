@@ -40,10 +40,35 @@ type AgentConfigRecord = {
   updatedAt: Date;
 };
 
+type CompanyRecord = {
+  id: string;
+  name: string;
+  description?: string;
+  sector?: string;
+  segment?: string;
+  userId?: string;
+  users?: Array<{ id: string }>;
+};
+
+function canAccessCompany(company: CompanyRecord, userId: string) {
+  return company.userId === userId || Boolean(company.users?.some((user) => user.id === userId));
+}
+
+function extractMembershipUserId(where: {
+  OR?: Array<{ userId?: string; users?: { some?: { id?: string } } }>;
+}) {
+  return (
+    where.OR?.find((item) => typeof item.userId === 'string')?.userId ||
+    where.OR?.find((item) => item.users?.some?.id)?.users?.some?.id ||
+    ''
+  );
+}
+
 function createAgentConfigPrisma() {
-  const companies = new Map([
-    ['companyA', { name: 'Empresa A', description: 'A', sector: 'varejo', segment: 'moda' }],
-    ['companyB', { name: 'Empresa B', description: 'B', sector: 'servicos', segment: 'consultoria' }],
+  const companies = new Map<string, CompanyRecord>([
+    ['companyA', { id: 'companyA', name: 'Empresa A', description: 'A', sector: 'varejo', segment: 'moda', userId: 'userA' }],
+    ['companyB', { id: 'companyB', name: 'Empresa B', description: 'B', sector: 'servicos', segment: 'consultoria', userId: 'userB' }],
+    ['companyC', { id: 'companyC', name: 'Empresa C', description: 'C', sector: 'varejo', segment: 'geral', userId: 'userC' }],
   ]);
   const configs = new Map<string, AgentConfigRecord>();
 
@@ -51,6 +76,17 @@ function createAgentConfigPrisma() {
     configs,
     company: {
       findUnique: async ({ where }: { where: { id: string } }) => companies.get(where.id) || null,
+      findFirst: async ({ where }: { where: { id?: string; OR?: Array<{ userId?: string; users?: { some?: { id?: string } } }> } }) => {
+        const userId = extractMembershipUserId(where);
+        return [...companies.values()].find((company) => {
+          const idMatches = where.id ? company.id === where.id : true;
+          return idMatches && canAccessCompany(company, userId);
+        }) || null;
+      },
+      count: async ({ where }: { where: { OR?: Array<{ userId?: string; users?: { some?: { id?: string } } }> } }) => {
+        const userId = extractMembershipUserId(where);
+        return [...companies.values()].filter((company) => canAccessCompany(company, userId)).length;
+      },
     },
     agentConfig: {
       upsert: async ({ where, create }: { where: { companyId: string }; create: AgentConfigRecord }) => {
@@ -82,6 +118,19 @@ function createAgentConfigPrisma() {
   };
 }
 
+function createHttpContext(request: Record<string, unknown>) {
+  return {
+    switchToHttp: () => ({
+      getRequest: () => request,
+    }),
+  };
+}
+
+const aiUsageServiceMock = {
+  enforceLimit: async () => ({ allowed: true }),
+  logUsage: async () => ({}),
+};
+
 async function assertAgentConfigIsolation() {
   const prisma = createAgentConfigPrisma();
   const service = new WhatsappAgentConfigService(prisma as never);
@@ -106,6 +155,7 @@ function assertWhatsappPayloadIsolation() {
     {} as never,
     {} as never,
     {} as never,
+    aiUsageServiceMock as never,
   );
   const buildPayload = (service as unknown as {
     buildAutomationPayload: (...args: unknown[]) => Record<string, unknown>;
@@ -157,6 +207,8 @@ function assertWhatsappPayloadIsolation() {
 
   assert.equal((payloadA.agentConfig as Record<string, unknown>).systemPrompt, 'A_PROMPT');
   assert.equal((payloadB.agentConfig as Record<string, unknown>).systemPrompt, 'B_PROMPT');
+  assert.equal(payloadA.companyId, 'companyA');
+  assert.equal(payloadB.companyId, 'companyB');
   assert.equal(payloadA.memoryKey, 'memory:companyA:whatsapp:5511999999999@s.whatsapp.net');
   assert.equal(payloadB.memoryKey, 'memory:companyB:whatsapp:5511999999999@s.whatsapp.net');
   assert.notEqual(payloadA.memoryKey, payloadB.memoryKey);
@@ -178,6 +230,9 @@ async function assertWhatsappWebhookLoadsConfigByInstanceCompany() {
     {
       message: {
         findFirst: async () => null,
+      },
+      businessEvent: {
+        create: async () => ({}),
       },
     } as never,
     { get: () => null } as never,
@@ -207,6 +262,7 @@ async function assertWhatsappWebhookLoadsConfigByInstanceCompany() {
       }),
     } as never,
     {} as never,
+    aiUsageServiceMock as never,
   );
 
   (service as unknown as {
@@ -300,22 +356,44 @@ async function assertRagCompanyScope() {
 }
 
 async function assertStrategicChatScope() {
-  let capturedHistoryWhere: Record<string, unknown> | null = null;
+  const capturedHistoryWhere: Record<string, unknown>[] = [];
+  const users = new Map([
+    ['userA', { id: 'userA', companyId: 'companyA', detailLevel: 'medium' }],
+    ['userB', { id: 'userB', companyId: 'companyB', detailLevel: 'medium' }],
+  ]);
+  const companies = new Map([
+    ['companyA', { id: 'companyA', name: 'Empresa A', currency: 'BRL', createdAt: new Date() }],
+    ['companyB', { id: 'companyB', name: 'Empresa B', currency: 'BRL', createdAt: new Date() }],
+  ]);
   const prisma = {
     user: {
-      findUnique: async () => ({ id: 'userA', companyId: 'companyA', detailLevel: 'medium' }),
+      findUnique: async ({ where }: { where: { id: string } }) => users.get(where.id) || null,
     },
     company: {
-      findFirst: async ({ where }: { where: { id?: string } }) =>
-        where.id === 'companyA' ? { id: 'companyA', name: 'Empresa A', currency: 'BRL', createdAt: new Date() } : null,
+      findFirst: async ({ where }: { where: { id?: string; OR?: Array<{ userId?: string; users?: { some?: { id?: string } } }> } }) => {
+        const userId = extractMembershipUserId(where);
+        const company = where.id ? companies.get(where.id) : [...companies.values()][0];
+        if (!company) return null;
+        return company.id === 'companyA' && userId === 'userA'
+          ? company
+          : company.id === 'companyB' && userId === 'userB'
+            ? company
+            : null;
+      },
     },
     financialTransaction: {
       findMany: async () => [],
     },
     aiChatMessage: {
       findMany: async ({ where }: { where: Record<string, unknown> }) => {
-        capturedHistoryWhere = where;
-        return [{ role: 'USER', content: 'historico A', createdAt: new Date() }];
+        capturedHistoryWhere.push(where);
+        return [
+          {
+            role: 'USER',
+            content: where.companyId === 'companyA' ? 'historico A' : 'historico B',
+            createdAt: new Date(),
+          },
+        ];
       },
       create: async () => ({}),
     },
@@ -327,27 +405,45 @@ async function assertStrategicChatScope() {
     prisma as never,
     { getDashboard: async () => ({ totalIncome: 10, totalExpense: 2, balance: 8, transactionsCount: 1 }) } as never,
     { buildContext: async () => '' } as never,
+    aiUsageServiceMock as never,
   );
 
   await chat.chat('userA', { companyId: 'companyA', message: 'Como estou?' });
-  assert.deepEqual(capturedHistoryWhere, { companyId: 'companyA', userId: 'userA' });
+  await chat.chat('userB', { companyId: 'companyB', message: 'Como estou?' });
+  assert.deepEqual(capturedHistoryWhere, [
+    { companyId: 'companyA', userId: 'userA' },
+    { companyId: 'companyB', userId: 'userB' },
+  ]);
+  assert.notEqual(
+    buildStrategicChatMemoryKey('companyA', 'userA'),
+    buildStrategicChatMemoryKey('companyB', 'userB'),
+  );
 }
 
 async function assertGuardRejectsCrossCompany() {
-  const guard = new ActiveCompanyGuard({} as never);
-  const context = {
-    switchToHttp: () => ({
-      getRequest: () => ({
-        user: { id: 'userA', companyId: 'companyA' },
-        query: { companyId: 'companyB' },
-        body: {},
-        params: {},
-      }),
-    }),
+  const guard = new ActiveCompanyGuard(createAgentConfigPrisma() as never);
+  const allowedRequest = {
+    path: '/agent-config',
+    user: { id: 'userA', companyId: 'companyA' },
+    query: { companyId: 'companyA' },
+    body: {},
+    params: {},
   };
 
+  assert.equal(await guard.canActivate(createHttpContext(allowedRequest) as never), true);
+  assert.equal(allowedRequest.user.companyId, 'companyA');
+
   await assert.rejects(
-    () => guard.canActivate(context as never),
+    () =>
+      guard.canActivate(
+        createHttpContext({
+          path: '/agent-config',
+          user: { id: 'userA', companyId: 'companyA' },
+          query: { companyId: 'companyB' },
+          body: {},
+          params: {},
+        }) as never,
+      ),
     (error: unknown) => error instanceof ForbiddenException,
   );
 }

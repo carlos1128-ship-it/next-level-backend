@@ -82,7 +82,15 @@ export class DashboardController {
   }
 
   @Get('company/:companyId')
-  async getDashboardByCompany(@Param('companyId') companyId: string) {
-    return this.dashboardService.getDashboard(companyId);
+  async getDashboardByCompany(
+    @CurrentUser() user: JwtPayload,
+    @Param('companyId') companyId: string,
+  ) {
+    return this.dashboardService.getDashboardForUser(
+      user.sub,
+      companyId,
+      user.companyId,
+      Boolean(user.admin),
+    );
   }
 }

@@ -64,6 +64,15 @@ enum LeadStatus {
   LOST
 }
 
+enum SaleAIAttributionSource {
+  WHATSAPP_AGENT
+  INSTAGRAM_AGENT
+  CHAT_IA
+  MANUAL_REVIEW
+  IMPORTED
+  UNKNOWN
+}
+
 enum ActorType {
   HUMAN
   AI
@@ -175,6 +184,30 @@ enum ImportedEntityStatus {
   REJECTED
 }
 
+enum AIUsageFeature {
+  CHAT_IA             @map("chat_ia")
+  WHATSAPP_AGENT      @map("whatsapp_agent")
+  IMAGE_ANALYSIS      @map("image_analysis")
+  AUDIO_TRANSCRIPTION @map("audio_transcription")
+  WEB_SEARCH          @map("web_search")
+  REPORT_GENERATION   @map("report_generation")
+  INTELLIGENT_IMPORT  @map("intelligent_import")
+  OTHER               @map("other")
+}
+
+enum AIUsageProvider {
+  GEMINI   @map("gemini")
+  OPENAI   @map("openai")
+  INTERNAL @map("internal")
+  UNKNOWN  @map("unknown")
+}
+
+enum AIUsageStatus {
+  SUCCESS @map("success")
+  FAILED  @map("failed")
+  BLOCKED @map("blocked")
+}
+
 model Company {
   id                   String    @id @default(cuid())
   userId               String?
@@ -209,6 +242,7 @@ model Company {
 
   users                 User[]
   sales                 Sale[]
+  saleAIAttributions    SaleAIAttribution[]
   adSpends              AdSpend[]
   financialTransactions FinancialTransaction[]
   aiChatMessages        AiChatMessage[]
@@ -242,6 +276,15 @@ model Company {
   intelligentImports    IntelligentImport[]
   importedMetrics       ImportedMetric[]
   importedEntities      ImportedEntity[]
+  aiUsageLogs           AIUsageLog[]
+  aiUsageMonthly        CompanyAIUsageMonthly[]
+  businessEvents        BusinessEvent[]
+  aiInsights            AiInsight[]
+  aiAlerts              AiAlert[]
+  businessMemories      BusinessMemory[]
+  customerSignals       CustomerSignal[]
+  conversationAnalyses  ConversationAnalysis[]
+  aiRecommendations     AiRecommendation[]
 }
 
 model AdSpend {
@@ -280,6 +323,7 @@ model User {
   aiChatMessages        AiChatMessage[]
   refreshTokens         RefreshToken[]
   intelligentImports    IntelligentImport[]
+  aiUsageLogs           AIUsageLog[]
 }
 
 model RefreshToken {
@@ -315,13 +359,42 @@ model Sale {
   occurredAt  DateTime // Timestamp real da venda (não o created_at)
   createdAt   DateTime    @default(now())
 
-  user    User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user          User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+  company       Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  aiAttribution SaleAIAttribution?
 
   @@index([userId])
   @@index([userId, occurredAt])
   @@index([companyId])
   @@index([companyId, occurredAt])
+}
+
+model SaleAIAttribution {
+  id                String                  @id @default(cuid())
+  companyId         String
+  saleId            String                  @unique
+  conversationId    String?
+  leadId            String?
+  messageId         String?
+  source            SaleAIAttributionSource @default(WHATSAPP_AGENT)
+  attributedRevenue Decimal                 @db.Decimal(12, 2)
+  confidence        Float                   @default(1)
+  metadataJson      Json?
+  occurredAt        DateTime
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  sale         Sale          @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  lead         Lead?         @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  message      Message?      @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, occurredAt])
+  @@index([companyId, source, occurredAt])
+  @@index([conversationId])
+  @@index([leadId])
+  @@index([messageId])
 }
 
 model Analysis {
@@ -406,7 +479,9 @@ model Customer {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company              Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  signals              CustomerSignal[]
+  conversationAnalyses ConversationAnalysis[]
 
   @@index([companyId])
   @@index([companyId, name])
@@ -566,41 +641,41 @@ model AgentConfig {
 }
 
 model WhatsappConnection {
-  id                       String    @id @default(cuid())
-  companyId                String    @unique
-  provider                 String    @default("evolution")
-  instanceName             String    @unique
-  instanceId               String?
-  instanceToken            String?   @db.Text
-  status                   String    @default("not_configured")
-  connectionState          String    @default("close")
-  qrCode                   String?   @db.Text
-  qrCodeText               String?   @db.Text
-  pairingCode              String?
-  phoneNumber              String?
-  webhookUrl               String?   @db.Text
-  webhookEnabled           Boolean   @default(false)
-  webhookLastConfiguredAt  DateTime?
-  webhookLastError         String?   @db.Text
-  webhookConfigHash        String?
-  userRequestedDisconnect  Boolean   @default(false)
-  sessionGeneration        Int       @default(1)
-  lastEvolutionState       String?
-  lastConnectionEventAt    DateTime?
-  lastQrAt                 DateTime?
-  lastQrGeneratedAt        DateTime?
-  lastError                String?   @db.Text
-  lastConnectionAt         DateTime?
-  lastConnectedAt          DateTime?
-  lastDisconnectedAt       DateTime?
-  lastEvolutionSyncAt      DateTime?
-  lastConnectStartAt       DateTime?
-  lastQrRequestAt          DateTime?
-  lastRepairAt             DateTime?
-  providerRetryAfterUntil  DateTime?
-  operationLockUntil       DateTime?
-  createdAt                DateTime  @default(now())
-  updatedAt                DateTime  @updatedAt
+  id                      String    @id @default(cuid())
+  companyId               String    @unique
+  provider                String    @default("evolution")
+  instanceName            String    @unique
+  instanceId              String?
+  instanceToken           String?   @db.Text
+  status                  String    @default("not_configured")
+  connectionState         String    @default("close")
+  qrCode                  String?   @db.Text
+  qrCodeText              String?   @db.Text
+  pairingCode             String?
+  phoneNumber             String?
+  webhookUrl              String?   @db.Text
+  webhookEnabled          Boolean   @default(false)
+  webhookLastConfiguredAt DateTime?
+  webhookLastError        String?   @db.Text
+  webhookConfigHash       String?
+  userRequestedDisconnect Boolean   @default(false)
+  sessionGeneration       Int       @default(1)
+  lastEvolutionState      String?
+  lastConnectionEventAt   DateTime?
+  lastQrAt                DateTime?
+  lastQrGeneratedAt       DateTime?
+  lastError               String?   @db.Text
+  lastConnectionAt        DateTime?
+  lastConnectedAt         DateTime?
+  lastDisconnectedAt      DateTime?
+  lastEvolutionSyncAt     DateTime?
+  lastConnectStartAt      DateTime?
+  lastQrRequestAt         DateTime?
+  lastRepairAt            DateTime?
+  providerRetryAfterUntil DateTime?
+  operationLockUntil      DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
 
   company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
   conversations Conversation[]
@@ -610,23 +685,25 @@ model WhatsappConnection {
 }
 
 model Conversation {
-  id                   String              @id @default(cuid())
+  id                   String                 @id @default(cuid())
   companyId            String
   whatsappConnectionId String?
   contactNumber        String
   remoteJid            String?
   contactName          String?
-  status               String              @default("Aguardando")
-  isPaused             Boolean             @default(false)
-  botPaused            Boolean             @default(false)
+  status               String                 @default("Aguardando")
+  isPaused             Boolean                @default(false)
+  botPaused            Boolean                @default(false)
   pausedUntil          DateTime?
-  lastMessagePreview   String?             @db.Text
-  lastMessageAt        DateTime            @default(now())
-  createdAt            DateTime            @default(now())
-  updatedAt            DateTime            @updatedAt
+  lastMessagePreview   String?                @db.Text
+  lastMessageAt        DateTime               @default(now())
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
   messages             Message[]
-  company              Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  whatsappConnection   WhatsappConnection? @relation(fields: [whatsappConnectionId], references: [id], onDelete: SetNull)
+  saleAIAttributions   SaleAIAttribution[]
+  analyses             ConversationAnalysis[]
+  company              Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  whatsappConnection   WhatsappConnection?    @relation(fields: [whatsappConnectionId], references: [id], onDelete: SetNull)
 
   @@unique([companyId, contactNumber])
   @@index([whatsappConnectionId])
@@ -636,28 +713,29 @@ model Conversation {
 }
 
 model Message {
-  id                String       @id @default(cuid())
-  companyId         String
-  conversationId    String
-  externalMessageId String?
-  content           String       @default("") @db.Text
-  role              String       @default("user")
-  direction         String       @default("inbound")
-  contentType       String       @default("text")
-  text              String?      @db.Text
-  transcription     String?      @db.Text
-  mediaUrl          String?      @db.Text
-  aiResponse        String?      @db.Text
-  senderName        String?
-  senderPhone       String?
-  status            String       @default("received")
-  metadata          Json?
-  rawPayload        Json?
-  timestamp         DateTime     @default(now())
-  createdAt         DateTime     @default(now())
-  updatedAt         DateTime     @updatedAt
-  company           Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  conversation      Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  id                 String              @id @default(cuid())
+  companyId          String
+  conversationId     String
+  externalMessageId  String?
+  content            String              @default("") @db.Text
+  role               String              @default("user")
+  direction          String              @default("inbound")
+  contentType        String              @default("text")
+  text               String?             @db.Text
+  transcription      String?             @db.Text
+  mediaUrl           String?             @db.Text
+  aiResponse         String?             @db.Text
+  senderName         String?
+  senderPhone        String?
+  status             String              @default("received")
+  metadata           Json?
+  rawPayload         Json?
+  timestamp          DateTime            @default(now())
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  company            Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversation       Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  saleAIAttributions SaleAIAttribution[]
 
   @@unique([conversationId, externalMessageId])
   @@index([companyId, createdAt])
@@ -678,8 +756,9 @@ model Lead {
   createdAt       DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
 
-  company       Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  conversations ChatConversation[]
+  company            Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversations      ChatConversation[]
+  saleAIAttributions SaleAIAttribution[]
 
   @@unique([companyId, externalId])
   @@index([companyId, status])
@@ -711,6 +790,63 @@ model UsageQuota {
 
   @@index([createdAt])
   @@index([updatedAt])
+}
+
+model AIUsageLog {
+  id            String          @id @default(cuid())
+  companyId     String
+  userId        String?
+  feature       AIUsageFeature
+  provider      AIUsageProvider @default(UNKNOWN)
+  model         String?
+  inputTokens   Int?
+  outputTokens  Int?
+  totalTokens   Int?
+  requestCount  Int             @default(1)
+  estimatedCost Decimal?        @db.Decimal(12, 6)
+  status        AIUsageStatus
+  errorMessage  String?         @db.Text
+  metadataJson  Json?
+  createdAt     DateTime        @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt])
+  @@index([companyId, feature, createdAt])
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model AIUsageLimit {
+  id                  String         @id @default(cuid())
+  planKey             String
+  feature             AIUsageFeature
+  monthlyRequestLimit Int?
+  monthlyTokenLimit   Int?
+  enabled             Boolean        @default(true)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  @@unique([planKey, feature])
+  @@index([planKey])
+}
+
+model CompanyAIUsageMonthly {
+  id            String         @id @default(cuid())
+  companyId     String
+  yearMonth     String
+  feature       AIUsageFeature
+  requestCount  Int            @default(0)
+  tokenCount    Int            @default(0)
+  estimatedCost Decimal        @default(0) @db.Decimal(12, 6)
+  updatedAt     DateTime       @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, yearMonth, feature])
+  @@index([companyId, yearMonth])
+  @@index([feature, yearMonth])
 }
 
 model ApiLog {
@@ -863,33 +999,33 @@ model DashboardPreference {
 }
 
 model CompanyProfile {
-  id                    String    @id @default(cuid())
-  companyId             String    @unique
-  businessType          String
-  businessModel         String?
-  mainGoal              String?
-  salesChannel          String?
-  companySize           String?
-  monthlyRevenueRange   String?
-  dataMaturity          String?
+  id                          String    @id @default(cuid())
+  companyId                   String    @unique
+  businessType                String
+  businessModel               String?
+  mainGoal                    String?
+  salesChannel                String?
+  companySize                 String?
+  monthlyRevenueRange         String?
+  dataMaturity                String?
   originalBusinessDescription String?
-  detectedBusinessType  String?
-  classificationConfidence Float?
-  usesPaidTraffic       Boolean   @default(false)
-  hasPhysicalProducts   Boolean   @default(false)
-  hasDigitalProducts    Boolean   @default(false)
-  hasServices           Boolean   @default(false)
-  usesWhatsAppForSales  Boolean   @default(false)
-  usesMarketplace       Boolean   @default(false)
-  hasSupportTeam        Boolean   @default(false)
-  hasOperationalCosts   Boolean   @default(false)
-  wantsAutomation       Boolean   @default(false)
-  wantsMarketAnalysis   Boolean   @default(false)
-  onboardingCompleted   Boolean   @default(false)
-  onboardingSkipped     Boolean   @default(false)
-  completedAt           DateTime?
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
+  detectedBusinessType        String?
+  classificationConfidence    Float?
+  usesPaidTraffic             Boolean   @default(false)
+  hasPhysicalProducts         Boolean   @default(false)
+  hasDigitalProducts          Boolean   @default(false)
+  hasServices                 Boolean   @default(false)
+  usesWhatsAppForSales        Boolean   @default(false)
+  usesMarketplace             Boolean   @default(false)
+  hasSupportTeam              Boolean   @default(false)
+  hasOperationalCosts         Boolean   @default(false)
+  wantsAutomation             Boolean   @default(false)
+  wantsMarketAnalysis         Boolean   @default(false)
+  onboardingCompleted         Boolean   @default(false)
+  onboardingSkipped           Boolean   @default(false)
+  completedAt                 DateTime?
+  createdAt                   DateTime  @default(now())
+  updatedAt                   DateTime  @updatedAt
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 }
@@ -911,22 +1047,22 @@ model CompanyModulePreference {
 }
 
 model CsvImportJob {
-  id              String          @id @default(cuid())
+  id              String            @id @default(cuid())
   companyId       String
   dataType        CsvImportDataType
   fileName        String
-  status          CsvImportStatus @default(UPLOADED)
-  totalRows       Int             @default(0)
-  importedRows    Int             @default(0)
-  failedRows      Int             @default(0)
+  status          CsvImportStatus   @default(UPLOADED)
+  totalRows       Int               @default(0)
+  importedRows    Int               @default(0)
+  failedRows      Int               @default(0)
   mappingJson     Json?
   previewRowsJson Json?
-  rawCsvText      String?         @db.Text
+  rawCsvText      String?           @db.Text
   errorJson       Json?
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
 
-  company   Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company   Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
   rowErrors CsvImportRowError[]
 
   @@index([companyId, createdAt])
@@ -948,7 +1084,7 @@ model CsvImportRowError {
 }
 
 model IntelligentImport {
-  id                  String                  @id @default(cuid())
+  id                  String                     @id @default(cuid())
   companyId           String
   userId              String
   inputType           IntelligentImportInputType
@@ -957,27 +1093,27 @@ model IntelligentImport {
   fileSize            Int?
   fileUrl             String?
   storageKey          String?
-  pastedText          String?                 @db.Text
-  rawContentText      String?                 @db.Text
+  pastedText          String?                    @db.Text
+  rawContentText      String?                    @db.Text
   previewJson         Json?
   expectedCategory    String?
   detectedCategory    IntelligentImportCategory?
   detectedPlatform    String?
   detectedPeriodStart DateTime?
   detectedPeriodEnd   DateTime?
-  confidence          Float                   @default(0)
-  status              IntelligentImportStatus @default(UPLOADED)
-  aiSummary           String?                 @db.Text
+  confidence          Float                      @default(0)
+  status              IntelligentImportStatus    @default(UPLOADED)
+  aiSummary           String?                    @db.Text
   extractedJson       Json?
   warningsJson        Json?
-  errorMessage        String?                 @db.Text
-  createdAt           DateTime                @default(now())
-  updatedAt           DateTime                @updatedAt
+  errorMessage        String?                    @db.Text
+  createdAt           DateTime                   @default(now())
+  updatedAt           DateTime                   @updatedAt
   confirmedAt         DateTime?
 
-  company         Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  importedMetrics ImportedMetric[]
+  company          Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  importedMetrics  ImportedMetric[]
   importedEntities ImportedEntity[]
 
   @@index([companyId, createdAt])
@@ -986,23 +1122,23 @@ model IntelligentImport {
 }
 
 model ImportedMetric {
-  id          String               @id @default(cuid())
-  companyId   String
-  importId    String
-  metricKey   String
-  label       String
-  value       Json
-  unit        ImportedMetricUnit
-  currency    String?              @default("BRL")
-  periodStart DateTime?
-  periodEnd   DateTime?
-  source      ImportedMetricSource
-  platform    String?
-  confidence  Float                @default(0)
-  status      ImportedMetricStatus @default(PENDING_REVIEW)
+  id           String               @id @default(cuid())
+  companyId    String
+  importId     String
+  metricKey    String
+  label        String
+  value        Json
+  unit         ImportedMetricUnit
+  currency     String?              @default("BRL")
+  periodStart  DateTime?
+  periodEnd    DateTime?
+  source       ImportedMetricSource
+  platform     String?
+  confidence   Float                @default(0)
+  status       ImportedMetricStatus @default(PENDING_REVIEW)
   metadataJson Json?
-  createdAt   DateTime             @default(now())
-  updatedAt   DateTime             @updatedAt
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
 
   company Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
   import  IntelligentImport @relation(fields: [importId], references: [id], onDelete: Cascade)
@@ -1029,4 +1165,137 @@ model ImportedEntity {
   @@index([companyId, status, createdAt])
   @@index([companyId, entityType, status])
   @@index([importId])
+}
+
+model BusinessEvent {
+  id           String   @id @default(cuid())
+  companyId    String
+  source       String
+  type         String
+  title        String
+  description  String?  @db.Text
+  metadataJson Json?
+  occurredAt   DateTime
+  createdAt    DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, occurredAt])
+  @@index([companyId, source, type])
+}
+
+model AiInsight {
+  id             String   @id @default(cuid())
+  companyId      String
+  type           String
+  title          String
+  summary        String   @db.Text
+  impact         String?
+  recommendation String?  @db.Text
+  priority       String   @default("medium")
+  source         String
+  metadataJson   Json?
+  createdAt      DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, createdAt])
+  @@index([companyId, type, priority])
+}
+
+model AiAlert {
+  id             String    @id @default(cuid())
+  companyId      String
+  type           String
+  severity       String
+  title          String
+  message        String    @db.Text
+  recommendation String?   @db.Text
+  status         String    @default("open")
+  metadataJson   Json?
+  createdAt      DateTime  @default(now())
+  resolvedAt     DateTime?
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, status, createdAt])
+  @@index([companyId, type, severity])
+}
+
+model BusinessMemory {
+  id           String   @id @default(cuid())
+  companyId    String
+  key          String
+  value        String   @db.Text
+  category     String
+  confidence   Float    @default(1)
+  metadataJson Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, key])
+  @@index([companyId, category])
+}
+
+model CustomerSignal {
+  id           String   @id @default(cuid())
+  companyId    String
+  customerId   String?
+  source       String
+  signalType   String
+  description  String   @db.Text
+  metadataJson Json?
+  createdAt    DateTime @default(now())
+
+  company  Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt])
+  @@index([companyId, signalType])
+  @@index([customerId])
+}
+
+model ConversationAnalysis {
+  id                String   @id @default(cuid())
+  companyId         String
+  conversationId    String
+  customerId        String?
+  intent            String?
+  sentiment         String?
+  productsMentioned Json?
+  objections        Json?
+  buyingIntent      String?
+  summary           String   @db.Text
+  recommendedAction String?  @db.Text
+  metadataJson      Json?
+  createdAt         DateTime @default(now())
+
+  company      Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  customer     Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt])
+  @@index([companyId, conversationId])
+  @@index([companyId, buyingIntent])
+}
+
+model AiRecommendation {
+  id             String   @id @default(cuid())
+  companyId      String
+  category       String
+  title          String
+  description    String   @db.Text
+  expectedImpact String?
+  actionType     String
+  status         String   @default("suggested")
+  metadataJson   Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, status, createdAt])
+  @@index([companyId, category])
 }

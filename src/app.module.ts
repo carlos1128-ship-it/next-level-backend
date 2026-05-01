@@ -34,6 +34,7 @@ import { ProductsModule } from './modules/products/products.module';
 import { SalesModule } from './modules/sales/sales.module';
 import { StrategyModule } from './modules/strategy/strategy.module';
 import { UserModule } from './modules/user/user.module';
+import { UsageModule } from './modules/usage/usage.module';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { WhatsappModule } from './modules/whatsapp/whatsapp.module';
 
@@ -56,6 +57,7 @@ import { WhatsappModule } from './modules/whatsapp/whatsapp.module';
     DashboardModule,
     FinanceModule,
     UserModule,
+    UsageModule,
     ExportModule,
     ProductsModule,
     CustomersModule,

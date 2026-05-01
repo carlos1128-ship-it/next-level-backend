@@ -10,11 +10,19 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { AiChatRole, Plan, Prisma } from '@prisma/client';
+import {
+  AiChatRole,
+  AIUsageFeature,
+  AIUsageProvider,
+  AIUsageStatus,
+  Plan,
+  Prisma,
+} from '@prisma/client';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import OpenAI from 'openai';
 import { PrismaService } from '../../prisma/prisma.service';
 import { QuotaExceededException } from '../../common/exceptions/quota-exceeded.exception';
+import { AIUsageService } from '../usage/ai-usage.service';
 
 type DetailLevel = 'low' | 'medium' | 'high';
 
@@ -23,6 +31,12 @@ export interface ChatResponseDto {
   message: string;
   tokensUsed?: number;
 }
+
+type GenerateTextOptions = {
+  feature?: AIUsageFeature;
+  userId?: string | null;
+  metadata?: Record<string, unknown>;
+};
 
 type AiUserRecord = {
   id: string;
@@ -47,6 +61,7 @@ export class AiService {
   constructor(
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
+    private readonly aiUsageService: AIUsageService,
   ) {
     const geminiApiKey = this.configService.get<string>('GEMINI_API_KEY');
     if (geminiApiKey) {
@@ -112,7 +127,11 @@ export class AiService {
     const prompt = this.buildAnalysisPrompt(data, detailLevel);
     let text: string;
     try {
-      ({ text } = await this.generateText(prompt, user.companyId || undefined, 'complex'));
+      ({ text } = await this.generateText(prompt, user.companyId || undefined, 'complex', {
+        feature: AIUsageFeature.REPORT_GENERATION,
+        userId,
+        metadata: { source: 'analyze_sales' },
+      }));
     } catch (error) {
       this.logAiFailure('analyzeSales', error, {
         userId,
@@ -160,7 +179,11 @@ export class AiService {
 
     const detailLevel = this.normalizeDetailLevel(user.detailLevel);
     const prompt = this.buildChatPrompt(message, detailLevel);
-    const { text, tokensUsed } = await this.generateText(prompt, user.companyId, 'simple');
+    const { text, tokensUsed } = await this.generateText(prompt, user.companyId, 'simple', {
+      feature: AIUsageFeature.CHAT_IA,
+      userId: user.id,
+      metadata: { source: 'legacy_ai_chat' },
+    });
 
     await this.prisma.$transaction([
       this.prisma.aiChatMessage.create({
@@ -221,13 +244,19 @@ export class AiService {
     prompt: string,
     companyId?: string,
     complexity: 'simple' | 'complex' = 'simple',
+    options: GenerateTextOptions = {},
   ): Promise<{ text: string; tokensUsed?: number }> {
     if (!this.genAI && !this.openai) {
       throw new ServiceUnavailableException('Nenhum provedor de IA configurado');
     }
 
     const estimatedTokens = this.estimateTokens(prompt);
+    const feature = options.feature || AIUsageFeature.OTHER;
     if (companyId) {
+      await this.aiUsageService.enforceLimit(companyId, feature, options.userId, {
+        ...options.metadata,
+        complexity,
+      });
       await this.ensureQuota(companyId, estimatedTokens);
     }
 
@@ -242,7 +271,20 @@ export class AiService {
         const result = await this.callProvider(provider, prompt, complexity);
         const tokensUsed = result.tokensUsed ?? estimatedTokens;
         if (companyId) {
-          await this.consumeQuota(companyId, tokensUsed);
+          await this.aiUsageService.logUsage(
+            companyId,
+            feature,
+            provider === 'gemini' ? AIUsageProvider.GEMINI : AIUsageProvider.OPENAI,
+            this.getProviderModelName(provider, complexity),
+            { totalTokens: tokensUsed, requestCount: 1 },
+            AIUsageStatus.SUCCESS,
+            {
+              ...options.metadata,
+              complexity,
+              estimatedTokens,
+            },
+            { userId: options.userId },
+          );
         }
         return { text: result.text, tokensUsed };
       } catch (error) {
@@ -263,6 +305,26 @@ export class AiService {
             : `Provedor ${provider} falhou sem fallback disponivel: ${error instanceof Error ? error.message : error}`,
         );
       }
+    }
+
+    if (companyId) {
+      await this.aiUsageService.logUsage(
+        companyId,
+        feature,
+        AIUsageProvider.UNKNOWN,
+        null,
+        { totalTokens: estimatedTokens, requestCount: 1 },
+        AIUsageStatus.FAILED,
+        {
+          ...options.metadata,
+          complexity,
+          estimatedTokens,
+        },
+        {
+          userId: options.userId,
+          errorMessage: lastError instanceof Error ? lastError.message : String(lastError || 'Erro desconhecido'),
+        },
+      );
     }
 
     throw lastError || new InternalServerErrorException('Falha ao gerar resposta da IA');
@@ -490,17 +552,6 @@ export class AiService {
     }
   }
 
-  private async consumeQuota(companyId: string, tokensUsed: number) {
-    try {
-      await this.prisma.usageQuota.update({
-        where: { companyId },
-        data: { llmTokensUsed: { increment: tokensUsed } },
-      });
-    } catch (error) {
-      this.logger.warn(`Falha ao atualizar quota: ${error instanceof Error ? error.message : error}`);
-    }
-  }
-
   private async callProvider(
     provider: 'gemini' | 'openai',
     prompt: string,
@@ -563,5 +614,13 @@ export class AiService {
     const clone = new Date(date);
     clone.setUTCDate(clone.getUTCDate() + days);
     return clone;
+  }
+
+  private getProviderModelName(provider: 'gemini' | 'openai', complexity: 'simple' | 'complex') {
+    if (provider === 'gemini') {
+      return complexity === 'complex' ? this.geminiComplexModel : this.geminiSimpleModel;
+    }
+
+    return complexity === 'complex' ? this.openAiComplexModel : this.openAiSimpleModel;
   }
 }

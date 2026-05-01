@@ -4,9 +4,12 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { AIUsageFeature, AIUsageProvider, AIUsageStatus } from '@prisma/client';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { AiService } from '../ai/ai.service';
+import { AIUsageLimitExceededException } from '../usage/ai-usage-limit.exception';
+import { AIUsageService } from '../usage/ai-usage.service';
 
 type ImportAnalysisMetric = {
   metricKey: string;
@@ -213,6 +216,7 @@ export class IntelligentImportAiService {
   constructor(
     private readonly configService: ConfigService,
     private readonly aiService: AiService,
+    private readonly aiUsageService: AIUsageService,
   ) {
     const geminiApiKey = this.configService.get<string>('GEMINI_API_KEY');
     this.genAI = geminiApiKey ? new GoogleGenerativeAI(geminiApiKey) : null;
@@ -271,19 +275,23 @@ export class IntelligentImportAiService {
   }
 
   async analyzeImageImport(
+    companyId: string,
+    importId: string,
     storageKey: string,
     mimeType: string,
     expectedCategory?: string | null,
   ): Promise<IntelligentImportAnalysisResult> {
-    return this.analyzeBinaryWithGemini(storageKey, mimeType, expectedCategory, 'image');
+    return this.analyzeBinaryWithGemini(companyId, importId, storageKey, mimeType, expectedCategory, 'image');
   }
 
   async analyzePdfImport(
+    companyId: string,
+    importId: string,
     storageKey: string,
     mimeType: string,
     expectedCategory?: string | null,
   ): Promise<IntelligentImportAnalysisResult> {
-    return this.analyzeBinaryWithGemini(storageKey, mimeType, expectedCategory, 'pdf');
+    return this.analyzeBinaryWithGemini(companyId, importId, storageKey, mimeType, expectedCategory, 'pdf');
   }
 
   normalizeExtractionResult(rawAiResult: unknown): IntelligentImportAnalysisResult {
@@ -335,6 +343,8 @@ export class IntelligentImportAiService {
   }
 
   private async analyzeBinaryWithGemini(
+    companyId: string,
+    importId: string,
     storageKey: string,
     mimeType: string,
     expectedCategory: string | null | undefined,
@@ -349,6 +359,11 @@ export class IntelligentImportAiService {
     }
 
     try {
+      await this.aiUsageService.enforceLimit(companyId, AIUsageFeature.INTELLIGENT_IMPORT, null, {
+        source: 'intelligent_import_binary',
+        importId,
+        mode,
+      });
       const fileBuffer = await fs.readFile(path.resolve(storageKey));
       const model = this.genAI.getGenerativeModel({ model: this.geminiModel });
       const prompt = this.buildStructuredPrompt(
@@ -364,10 +379,42 @@ export class IntelligentImportAiService {
           },
         },
       ]);
+      await this.aiUsageService.logUsage(
+        companyId,
+        AIUsageFeature.INTELLIGENT_IMPORT,
+        AIUsageProvider.GEMINI,
+        this.geminiModel,
+        { totalTokens: response.response.usageMetadata?.totalTokenCount, requestCount: 1 },
+        AIUsageStatus.SUCCESS,
+        {
+          source: 'intelligent_import_binary',
+          importId,
+          mode,
+          mimeType,
+        },
+      );
       return this.normalizeExtractionResult(
         this.tryParseJson(response.response.text?.() || response.response.text() || ''),
       );
     } catch (error) {
+      if (error instanceof AIUsageLimitExceededException) {
+        throw error;
+      }
+      await this.aiUsageService.logUsage(
+        companyId,
+        AIUsageFeature.INTELLIGENT_IMPORT,
+        AIUsageProvider.GEMINI,
+        this.geminiModel,
+        { requestCount: 1 },
+        AIUsageStatus.FAILED,
+        {
+          source: 'intelligent_import_binary',
+          importId,
+          mode,
+          mimeType,
+        },
+        { errorMessage: error instanceof Error ? error.message : String(error) },
+      ).catch(() => undefined);
       this.logger.warn(
         `Falha na analise binaria (${mode}): ${error instanceof Error ? error.message : error}`,
       );
@@ -391,7 +438,14 @@ export class IntelligentImportAiService {
 
     try {
       const prompt = this.buildStructuredPrompt(sourceKind, expectedCategory, normalizedText);
-      const { text: responseText } = await this.aiService.generateText(prompt, companyId, 'simple');
+      const { text: responseText } = await this.aiService.generateText(prompt, companyId, 'simple', {
+        feature: AIUsageFeature.INTELLIGENT_IMPORT,
+        metadata: {
+          source: 'intelligent_import_text',
+          importId,
+          sourceKind,
+        },
+      });
       const parsed = this.tryParseJson(responseText);
       if (!parsed) return null;
       return this.normalizeExtractionResult(parsed);

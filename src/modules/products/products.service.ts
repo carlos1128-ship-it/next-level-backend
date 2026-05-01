@@ -186,6 +186,22 @@ export class ProductsService {
       select: this.buildProductSelect(fieldAvailability),
     });
 
+    await this.prisma.businessEvent.create({
+      data: {
+        companyId,
+        source: 'product',
+        type: 'product_created',
+        title: 'Produto registrado',
+        description: product.name,
+        metadataJson: {
+          productId: product.id,
+          price: Number(product.price),
+          category: product.category,
+        },
+        occurredAt: product.createdAt,
+      },
+    });
+
     return this.map(product as ProductRecord);
   }
 

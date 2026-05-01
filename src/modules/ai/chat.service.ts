@@ -5,17 +5,25 @@ import {
   Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { AiChatRole, FinancialTransactionType } from '@prisma/client';
+import {
+  AiChatRole,
+  AIUsageFeature,
+  AIUsageProvider,
+  AIUsageStatus,
+  FinancialTransactionType,
+} from '@prisma/client';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { DashboardService } from '../dashboard/dashboard.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ChatRequestDto } from './dto/chat-request.dto';
 import { RagService } from './rag.service';
 import { buildStrategicChatMemoryKey } from '../../common/utils/ai-memory-keys.util';
+import { AIUsageService } from '../usage/ai-usage.service';
 
 export interface ChatReply {
   response: string;
   source: 'gemini' | 'local';
+  tokensUsed?: number;
 }
 
 type DetailLevel = 'low' | 'medium' | 'high';
@@ -79,6 +87,7 @@ export class ChatService {
     private readonly prisma: PrismaService,
     private readonly dashboardService: DashboardService,
     private readonly ragService: RagService,
+    private readonly aiUsageService: AIUsageService,
   ) {
     const apiKey = this.configService.get<string>('GEMINI_API_KEY');
     this.genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
@@ -188,12 +197,31 @@ export class ChatService {
       recentTransactions,
     );
 
+    await this.aiUsageService.enforceLimit(company.id, AIUsageFeature.CHAT_IA, user.id, {
+      source: 'strategic_chat',
+      memoryKey,
+    });
+
     const reply = await this.buildReply(
       dto.message,
       context,
       dashboard,
       company.id,
       company.currency ?? 'BRL',
+    );
+
+    await this.aiUsageService.logUsage(
+      company.id,
+      AIUsageFeature.CHAT_IA,
+      reply.source === 'gemini' ? AIUsageProvider.GEMINI : AIUsageProvider.INTERNAL,
+      reply.source === 'gemini' ? this.model : null,
+      { totalTokens: reply.tokensUsed, requestCount: 1 },
+      AIUsageStatus.SUCCESS,
+      {
+        source: 'strategic_chat',
+        memoryKey,
+      },
+      { userId: user.id },
     );
 
     await this.prisma.$transaction([
@@ -254,6 +282,7 @@ export class ChatService {
 
       const response = await model.generateContent(prompt);
       const text = response.response.text()?.trim();
+      const tokensUsed = response.response.usageMetadata?.totalTokenCount;
 
       if (!text) {
         return {
@@ -262,7 +291,7 @@ export class ChatService {
         };
       }
 
-      return { response: text, source: 'gemini' };
+      return { response: text, source: 'gemini', tokensUsed };
     } catch (error) {
       this.logger.warn(`Falha ao consultar Gemini; usando fallback local. Erro: ${
         error instanceof Error ? error.message : 'desconhecido'

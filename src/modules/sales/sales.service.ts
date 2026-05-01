@@ -1,8 +1,9 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, SaleChannel } from '@prisma/client';
+import { Prisma, Sale, SaleAIAttributionSource, SaleChannel } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateSaleDto } from './dto/create-sale.dto';
 import { UpdateSaleDto } from './dto/update-sale.dto';
+import { SaleAIAttributionDto } from './dto/sale-ai-attribution.dto';
 
 export interface PeriodAggregates {
   sales: Array<{
@@ -40,7 +41,7 @@ export class SalesService {
       throw new BadRequestException('User has no company');
     }
 
-    return this.prisma.sale.create({
+    const sale = await this.prisma.sale.create({
       data: {
         userId,
         companyId: user.companyId,
@@ -50,6 +51,71 @@ export class SalesService {
         channel: SaleChannel.manual,
         occurredAt: new Date(dto.occurredAt),
       },
+    });
+
+    if (dto.aiAttribution) {
+      await this.upsertSaleAIAttribution(
+        user.companyId,
+        sale,
+        dto.aiAttribution,
+        { createdByUserId: userId, trigger: 'sale_create' },
+      );
+    }
+
+    await this.prisma.businessEvent.create({
+      data: {
+        companyId: user.companyId,
+        source: 'sale',
+        type: 'sale_created',
+        title: 'Venda registrada',
+        description: sale.productName || sale.category || 'Venda manual registrada',
+        metadataJson: {
+          saleId: sale.id,
+          amount: Number(sale.amount),
+          productName: sale.productName,
+          category: sale.category,
+        },
+        occurredAt: sale.occurredAt,
+      },
+    });
+
+    return this.prisma.sale.findUnique({
+      where: { id: sale.id },
+      include: { aiAttribution: true },
+    });
+  }
+
+  async attributeSale(userId: string, saleId: string, dto: SaleAIAttributionDto) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { companyId: true },
+    });
+
+    if (!user?.companyId) {
+      throw new BadRequestException('User has no company');
+    }
+
+    const sale = await this.prisma.sale.findFirst({
+      where: {
+        id: saleId,
+        companyId: user.companyId,
+      },
+    });
+
+    if (!sale) {
+      throw new NotFoundException('Venda nao encontrada');
+    }
+
+    await this.upsertSaleAIAttribution(
+      user.companyId,
+      sale,
+      dto,
+      { createdByUserId: userId, trigger: 'sale_attribute' },
+    );
+
+    return this.prisma.sale.findUnique({
+      where: { id: sale.id },
+      include: { aiAttribution: true },
     });
   }
 
@@ -206,5 +272,114 @@ export class SalesService {
       _sum: { amount: true },
     });
     return Number(result._sum?.amount ?? 0);
+  }
+
+  private async upsertSaleAIAttribution(
+    companyId: string,
+    sale: Sale,
+    dto: SaleAIAttributionDto,
+    systemMetadata: Record<string, unknown>,
+  ) {
+    const normalized = await this.normalizeAttribution(companyId, dto);
+    const attributedRevenue = dto.attributedRevenue ?? Number(sale.amount);
+    const confidence = dto.confidence ?? 1;
+
+    return this.prisma.saleAIAttribution.upsert({
+      where: { saleId: sale.id },
+      update: {
+        conversationId: normalized.conversationId,
+        leadId: normalized.leadId,
+        messageId: normalized.messageId,
+        source: dto.source || SaleAIAttributionSource.WHATSAPP_AGENT,
+        attributedRevenue: new Prisma.Decimal(attributedRevenue),
+        confidence,
+        metadataJson: this.toJson({
+          ...(dto.metadata || {}),
+          ...systemMetadata,
+        }),
+        occurredAt: sale.occurredAt,
+      },
+      create: {
+        companyId,
+        saleId: sale.id,
+        conversationId: normalized.conversationId,
+        leadId: normalized.leadId,
+        messageId: normalized.messageId,
+        source: dto.source || SaleAIAttributionSource.WHATSAPP_AGENT,
+        attributedRevenue: new Prisma.Decimal(attributedRevenue),
+        confidence,
+        metadataJson: this.toJson({
+          ...(dto.metadata || {}),
+          ...systemMetadata,
+        }),
+        occurredAt: sale.occurredAt,
+      },
+    });
+  }
+
+  private async normalizeAttribution(companyId: string, dto: SaleAIAttributionDto) {
+    if (!dto.conversationId && !dto.leadId && !dto.messageId) {
+      throw new BadRequestException('Informe conversationId, leadId ou messageId para atribuir a venda a IA');
+    }
+
+    let conversationId = dto.conversationId || null;
+    let messageId = dto.messageId || null;
+    const leadId = dto.leadId || null;
+
+    if (conversationId) {
+      const conversation = await this.prisma.conversation.findFirst({
+        where: { id: conversationId, companyId },
+        select: { id: true },
+      });
+      if (!conversation) {
+        throw new BadRequestException('Conversa nao encontrada para esta empresa');
+      }
+    }
+
+    if (leadId) {
+      const lead = await this.prisma.lead.findFirst({
+        where: { id: leadId, companyId },
+        select: { id: true },
+      });
+      if (!lead) {
+        throw new BadRequestException('Lead nao encontrado para esta empresa');
+      }
+    }
+
+    if (messageId) {
+      const message = await this.prisma.message.findFirst({
+        where: {
+          id: messageId,
+          companyId,
+        },
+        select: {
+          id: true,
+          conversationId: true,
+          role: true,
+          direction: true,
+          aiResponse: true,
+        },
+      });
+      if (!message) {
+        throw new BadRequestException('Mensagem nao encontrada para esta empresa');
+      }
+      if (
+        message.role !== 'assistant' &&
+        !(message.direction === 'outbound' && Boolean(message.aiResponse))
+      ) {
+        throw new BadRequestException('Mensagem atribuida deve ser resposta da IA');
+      }
+      if (conversationId && conversationId !== message.conversationId) {
+        throw new BadRequestException('Mensagem nao pertence a conversa informada');
+      }
+      conversationId = conversationId || message.conversationId;
+      messageId = message.id;
+    }
+
+    return { conversationId, leadId, messageId };
+  }
+
+  private toJson(value: unknown): Prisma.InputJsonValue {
+    return JSON.parse(JSON.stringify(value ?? {})) as Prisma.InputJsonValue;
   }
 }

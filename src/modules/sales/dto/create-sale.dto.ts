@@ -5,7 +5,10 @@ import {
   IsString,
   Min,
   MaxLength,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
+import { SaleAIAttributionDto } from './sale-ai-attribution.dto';
 
 /**
  * DTO para criação manual de venda (POST /api/sales).
@@ -32,4 +35,9 @@ export class CreateSaleDto {
   /** Data/hora real em que a venda ocorreu (ISO 8601). */
   @IsDateString({}, { message: 'Data da venda inválida' })
   occurredAt: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => SaleAIAttributionDto)
+  aiAttribution?: SaleAIAttributionDto;
 }

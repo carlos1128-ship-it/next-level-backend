@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import {
+  AIUsageFeature,
   IntegrationProvider,
   WhatsappMessageProcessStatus,
 } from '@prisma/client';
@@ -399,19 +400,42 @@ export class AttendantService {
   }
 
   async getRoi(companyId: string) {
-    const [totalConversations, iaReplies] = await Promise.all([
-      this.prisma.conversation.count({ where: { companyId } }),
+    const [attributionTotal, iaReplies, bySource] = await Promise.all([
+      this.prisma.saleAIAttribution.aggregate({
+        where: {
+          companyId,
+        },
+        _sum: {
+          attributedRevenue: true,
+        },
+        _count: {
+          id: true,
+        },
+      }),
       this.prisma.message.count({
         where: {
           conversation: { companyId },
           role: 'assistant',
         },
       }),
+      this.prisma.saleAIAttribution.groupBy({
+        by: ['source'],
+        where: { companyId },
+        _sum: { attributedRevenue: true },
+        _count: { id: true },
+      }),
     ]);
+    const iaRevenue = Number(attributionTotal._sum.attributedRevenue || 0);
 
     return {
-      iaSalesCount: iaReplies,
-      iaRevenue: totalConversations * 0,
+      iaSalesCount: attributionTotal._count.id,
+      iaRevenue: Math.round((iaRevenue + Number.EPSILON) * 100) / 100,
+      iaReplies,
+      bySource: bySource.map((item) => ({
+        source: item.source,
+        salesCount: item._count.id,
+        revenue: Math.round((Number(item._sum.attributedRevenue || 0) + Number.EPSILON) * 100) / 100,
+      })),
     };
   }
 
@@ -696,6 +720,14 @@ export class AttendantService {
         `${rag}\n\n${prompt}`,
         companyId,
         'simple',
+        {
+          feature: AIUsageFeature.WHATSAPP_AGENT,
+          metadata: {
+            source: 'attendant_service',
+            conversationId: conversation.id,
+            provider,
+          },
+        },
       );
       reply = result.text.trim() || reply;
     } catch (error) {

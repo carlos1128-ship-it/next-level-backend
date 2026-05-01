@@ -419,6 +419,8 @@ export class IntelligentImportsService {
           throw new BadRequestException('Arquivo de imagem nao encontrado para analise');
         }
         return this.aiService.analyzeImageImport(
+          current.companyId,
+          current.id,
           current.storageKey,
           current.fileMimeType,
           current.expectedCategory,
@@ -428,6 +430,8 @@ export class IntelligentImportsService {
           throw new BadRequestException('Arquivo PDF nao encontrado para analise');
         }
         return this.aiService.analyzePdfImport(
+          current.companyId,
+          current.id,
           current.storageKey,
           current.fileMimeType,
           current.expectedCategory,

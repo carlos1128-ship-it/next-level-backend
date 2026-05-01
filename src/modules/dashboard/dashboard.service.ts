@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import { FinancialTransactionType, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { toZonedTime, fromZonedTime } from 'date-fns-tz';
@@ -220,7 +220,7 @@ export class DashboardService {
     const timeZone = companyData?.timezone || 'America/Sao_Paulo';
 
     const { start, end } = this.resolvePeriodRange(period, timeZone);
-    const [sales, transactions, adSpends] = await Promise.all([
+    const [sales, transactions, adSpends, operationalCosts] = await Promise.all([
       this.prisma.sale.findMany({
         where: {
           companyId,
@@ -260,6 +260,19 @@ export class DashboardService {
         },
         orderBy: { spentAt: 'asc' },
       }),
+      this.prisma.operationalCost.findMany({
+        where: {
+          companyId,
+          date: { gte: start, lte: end },
+        },
+        select: {
+          amount: true,
+          category: true,
+          name: true,
+          date: true,
+        },
+        orderBy: { date: 'asc' },
+      }),
     ]);
 
     const revenue =
@@ -272,10 +285,11 @@ export class DashboardService {
       transactions
         .filter((item) => item.type === FinancialTransactionType.EXPENSE)
         .reduce((total, item) => total + this.toNumber(item.amount), 0) +
-      adSpends.reduce((total, item) => total + this.toNumber(item.amount), 0);
+      adSpends.reduce((total, item) => total + this.toNumber(item.amount), 0) +
+      operationalCosts.reduce((total, item) => total + this.toNumber(item.amount), 0);
 
     const profit = revenue - losses;
-    const lineData = this.buildTimeline(period, start, end, sales, transactions, adSpends, timeZone);
+    const lineData = this.buildTimeline(period, start, end, sales, transactions, adSpends, operationalCosts, timeZone);
     const pieData = this.buildPieData(sales, transactions, adSpends);
 
     return {
@@ -400,7 +414,7 @@ export class DashboardService {
       'average_ticket',
       currentTotals.salesCount > 0
         ? this.numberMetric('average_ticket', currentTotals.revenue / currentTotals.salesCount, previousTotals && previousTotals.salesCount > 0 ? previousTotals.revenue / previousTotals.salesCount : undefined, { kind: 'currency' })
-        : this.noDataMetric('average_ticket', 'Nenhuma venda registrada no periodo.'),
+        : this.notEnoughDataMetric('average_ticket', 'Nenhuma venda registrada no periodo.'),
     );
     addMetric(
       'losses',
@@ -441,13 +455,13 @@ export class DashboardService {
       'margin',
       currentTotals.revenue > 0
         ? this.numberMetric('margin', (currentTotals.netProfit / currentTotals.revenue) * 100, previousTotals && previousTotals.revenue > 0 ? (previousTotals.netProfit / previousTotals.revenue) * 100 : undefined, { kind: 'percent' })
-        : this.noDataMetric('margin', 'Receita igual a zero no periodo.'),
+        : this.notEnoughDataMetric('margin', 'Receita igual a zero no periodo.'),
     );
     addMetric(
       'waste_inefficiency',
       currentTotals.revenue > 0
         ? this.numberMetric('waste_inefficiency', (currentTotals.operationalCosts / currentTotals.revenue) * 100, previousTotals && previousTotals.revenue > 0 ? (previousTotals.operationalCosts / previousTotals.revenue) * 100 : undefined, { kind: 'percent' })
-        : this.noDataMetric('waste_inefficiency', 'Receita igual a zero no periodo.'),
+        : this.notEnoughDataMetric('waste_inefficiency', 'Receita igual a zero no periodo.'),
     );
     addMetric(
       'customers_acquired',
@@ -673,7 +687,7 @@ export class DashboardService {
       });
 
       if (!company) {
-        throw new BadRequestException('Empresa invalida');
+        throw new ForbiddenException('Empresa invalida');
       }
 
       return company.id;
@@ -1015,6 +1029,25 @@ export class DashboardService {
     };
   }
 
+  async getDashboardForUser(
+    userId: string,
+    requestedCompanyId: string,
+    fallbackCompanyId?: string | null,
+    isAdmin = false,
+  ): Promise<DashboardFinancialDto> {
+    const companyId = await this.resolveCompanyId(
+      userId,
+      requestedCompanyId,
+      fallbackCompanyId,
+      isAdmin,
+    );
+    if (!companyId) {
+      throw new BadRequestException('companyId nao informado');
+    }
+
+    return this.getDashboard(companyId);
+  }
+
   private numberMetric(
     metricKey: string,
     value: number,
@@ -1073,7 +1106,7 @@ export class DashboardService {
       key: metricKey,
       label: this.metricLabel(metricKey),
       value: null,
-      formatted: 'Dado insuficiente',
+      formatted: 'Dados insuficientes',
       status: 'not_enough_data',
       reason,
     };
@@ -1321,6 +1354,7 @@ export class DashboardService {
       occurredAt: Date;
     }>,
     adSpends: Array<{ amount: Prisma.Decimal; spentAt: Date }>,
+    operationalCosts: Array<{ amount: Prisma.Decimal; date: Date }>,
     timeZone: string,
   ): TimelinePoint[] {
     const bucketMap = new Map<string, TimelinePoint>();
@@ -1358,6 +1392,15 @@ export class DashboardService {
       const bucket = bucketMap.get(label);
       if (bucket) {
         bucket.Saidas += this.toNumber(spend.amount);
+      }
+    }
+
+    for (const cost of operationalCosts) {
+      const zonedDate = toZonedTime(cost.date, timeZone);
+      const label = this.getLabelForDate(zonedDate, period);
+      const bucket = bucketMap.get(label);
+      if (bucket) {
+        bucket.Saidas += this.toNumber(cost.amount);
       }
     }
 

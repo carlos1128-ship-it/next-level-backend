@@ -6,7 +6,12 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { Prisma } from '@prisma/client';
+import {
+  AIUsageFeature,
+  AIUsageProvider,
+  AIUsageStatus,
+  type Prisma,
+} from '@prisma/client';
 import axios from 'axios';
 import { createHash, randomUUID } from 'crypto';
 import { PrismaService } from '../../../prisma/prisma.service';
@@ -18,6 +23,8 @@ import {
   buildHumanPauseKey,
   buildWhatsappMemoryKey,
 } from '../../../common/utils/ai-memory-keys.util';
+import { AIUsageLimitExceededException } from '../../usage/ai-usage-limit.exception';
+import { AIUsageService } from '../../usage/ai-usage.service';
 import { WhatsappAgentConfigService } from './whatsapp-agent-config.service';
 import { WhatsappConversationsService } from './whatsapp-conversations.service';
 import { WhatsappProviderEvolutionService } from './whatsapp-provider-evolution.service';
@@ -117,6 +124,7 @@ export class WhatsappConnectionsService {
     private readonly providerService: WhatsappProviderEvolutionService,
     private readonly agentConfigService: WhatsappAgentConfigService,
     private readonly conversationsService: WhatsappConversationsService,
+    private readonly aiUsageService: AIUsageService,
   ) {}
 
   async getCurrent(companyId: string) {
@@ -1150,6 +1158,19 @@ export class WhatsappConnectionsService {
   ) {
     const requested = this.readString(dto.instanceName);
     if (requested) {
+      const owner = await this.prisma.whatsappConnection.findUnique({
+        where: { instanceName: requested },
+        select: { companyId: true },
+      });
+
+      if (owner && owner.companyId !== companyId) {
+        this.logWhatsappEvent('whatsapp.connect.instance.blocked_cross_company', {
+          companyId,
+          instanceName: requested,
+        });
+        throw new ConflictException('Instancia WhatsApp pertence a outra empresa');
+      }
+
       return requested;
     }
 
@@ -1216,6 +1237,12 @@ export class WhatsappConnectionsService {
       connection.webhookConfigHash === configHash &&
       !connection.webhookLastError
     ) {
+      this.logWhatsappEvent('evolution.webhook.configured', {
+        companyId: connection.companyId,
+        instanceName,
+        webhookConfigured: true,
+        source: 'local_db',
+      });
       return;
     }
 
@@ -1238,6 +1265,12 @@ export class WhatsappConnectionsService {
           webhookConfigHash: configHash,
           webhookUrl,
         },
+      });
+      this.logWhatsappEvent('evolution.webhook.configured', {
+        companyId: connection?.companyId,
+        instanceName,
+        webhookConfigured: true,
+        source: 'evolution_remote',
       });
       return;
     }
@@ -1276,6 +1309,12 @@ export class WhatsappConnectionsService {
           webhookConfigHash: configHash,
         },
       });
+      this.logWhatsappEvent('evolution.webhook.configured', {
+        companyId: connection?.companyId,
+        instanceName,
+        webhookConfigured: true,
+        source: 'evolution_set',
+      });
     } catch (error) {
       const message = this.extractErrorMessage(error);
       await this.prisma.whatsappConnection.update({
@@ -1290,6 +1329,12 @@ export class WhatsappConnectionsService {
         this.logger.warn(
           `Evolution recusou webhook/set para ${instanceName} porque a instancia exige webhook no create; seguindo sem bloquear QR.`,
         );
+        this.logWhatsappEvent('evolution.webhook.configured', {
+          companyId: connection?.companyId,
+          instanceName,
+          webhookConfigured: false,
+          reason: 'instance_requires_webhook_on_create',
+        });
         return;
       }
 
@@ -1402,6 +1447,23 @@ export class WhatsappConnectionsService {
       attendantActive: agentConfig.isEnabled,
     });
 
+    await this.prisma.businessEvent.create({
+      data: {
+        companyId: connection.companyId,
+        source: 'whatsapp',
+        type: 'whatsapp_message_received',
+        title: 'Mensagem WhatsApp recebida',
+        description: normalized.text || normalized.messageType,
+        metadataJson: {
+          instanceName: connection.instanceName,
+          messageId: normalized.messageId,
+          remoteJid: normalized.remoteJid,
+          messageType: normalized.messageType,
+        },
+        occurredAt: new Date(),
+      },
+    });
+
     if (!agentConfig.isEnabled) {
       this.logWhatsappEvent('whatsapp.webhook.agent_inactive', {
         companyId: connection.companyId,
@@ -1412,13 +1474,61 @@ export class WhatsappConnectionsService {
     }
 
     try {
+      await this.aiUsageService.enforceLimit(
+        connection.companyId,
+        AIUsageFeature.WHATSAPP_AGENT,
+        null,
+        {
+          source: 'whatsapp_n8n_forward',
+          instanceName: connection.instanceName,
+          messageId: normalized.messageId,
+          remoteJid: normalized.remoteJid,
+        },
+      );
       await this.forwardIncomingWhatsappMessageToN8n(
         connection,
         payload,
         normalized,
         agentConfig,
       );
+      await this.aiUsageService.logUsage(
+        connection.companyId,
+        AIUsageFeature.WHATSAPP_AGENT,
+        AIUsageProvider.UNKNOWN,
+        agentConfig.modelName,
+        { requestCount: 1 },
+        AIUsageStatus.SUCCESS,
+        {
+          source: 'whatsapp_n8n_forward',
+          instanceName: connection.instanceName,
+          messageId: normalized.messageId,
+          remoteJid: normalized.remoteJid,
+        },
+      );
     } catch (error) {
+      if (error instanceof AIUsageLimitExceededException) {
+        this.logWhatsappEvent('whatsapp.webhook.ai_usage_limit_blocked', {
+          companyId: connection.companyId,
+          instanceName: connection.instanceName,
+          messageId: normalized.messageId,
+        });
+        return;
+      }
+      await this.aiUsageService.logUsage(
+        connection.companyId,
+        AIUsageFeature.WHATSAPP_AGENT,
+        AIUsageProvider.UNKNOWN,
+        agentConfig.modelName,
+        { requestCount: 1 },
+        AIUsageStatus.FAILED,
+        {
+          source: 'whatsapp_n8n_forward',
+          instanceName: connection.instanceName,
+          messageId: normalized.messageId,
+          remoteJid: normalized.remoteJid,
+        },
+        { errorMessage: this.extractErrorMessage(error) },
+      ).catch(() => undefined);
       this.logWhatsappEvent('whatsapp.webhook.forward_to_n8n.failed', {
         companyId: connection.companyId,
         instanceName: connection.instanceName,
@@ -1472,6 +1582,13 @@ export class WhatsappConnectionsService {
       this.logger.warn(
         `Automacao n8n nao configurada; evento de mensagem preservado apenas no backend para ${connection.instanceName}.`,
       );
+      this.logWhatsappEvent('whatsapp.webhook.forward_to_n8n.skipped', {
+        companyId: connection.companyId,
+        instanceName: connection.instanceName,
+        messageId: message.messageId,
+        n8nForwarded: false,
+        reason: 'n8n_not_configured',
+      });
       return;
     }
 
@@ -1481,7 +1598,7 @@ export class WhatsappConnectionsService {
       messageId: message.messageId,
     });
 
-    await axios.post(
+    const response = await axios.post(
       webhookUrl,
       this.buildAutomationPayload(connection, payload, message, agentConfig),
       {
@@ -1494,6 +1611,8 @@ export class WhatsappConnectionsService {
       companyId: connection.companyId,
       instanceName: connection.instanceName,
       messageId: message.messageId,
+      n8nForwarded: true,
+      n8nResponseStatus: response.status,
     });
   }
 

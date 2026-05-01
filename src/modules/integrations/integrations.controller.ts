@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -56,10 +57,14 @@ export class IntegrationsController {
 
   @Post('shopee/initialize-login')
   async shopeeInitLogin(
-    @Query('companyId') companyId: string,
-    @Body() credentials: { user?: string; pass?: string }
+    @Query('companyId') _companyId: string,
+    @Body() _credentials: { user?: string; pass?: string }
   ) {
-    return this.shopeeScraper.initializeLogin(companyId, credentials);
+    throw new BadRequestException({
+      code: 'provider_setup_required',
+      provider: 'SHOPEE',
+      message: 'Conexao Shopee por login e senha esta desativada. Use OAuth/API oficial quando configurado.',
+    });
   }
 
   @Post('shopee/verify-otp')

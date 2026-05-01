@@ -249,12 +249,12 @@ async function main() {
     'company-a',
   );
   const derived = await dashboard.getMetrics('user-a', undefined, 'today', 'cac,roas,roi,ltv,churn,conversion_rate', false, undefined, undefined, 'company-a');
-  assert(derived.metrics.cac.formatted === 'Dado insuficiente', 'I. CAC deve mostrar Dado insuficiente');
-  assert(derived.metrics.roas.formatted === 'Dado insuficiente', 'J. ROAS deve mostrar Dado insuficiente');
-  assert(derived.metrics.roi.formatted === 'Dado insuficiente', 'ROI deve mostrar Dado insuficiente');
-  assert(derived.metrics.ltv.formatted === 'Dado insuficiente', 'LTV deve mostrar Dado insuficiente');
-  assert(derived.metrics.churn.formatted === 'Dado insuficiente', 'Churn deve mostrar Dado insuficiente');
-  assert(derived.metrics.conversion_rate.formatted === 'Dado insuficiente', 'Conversao deve mostrar Dado insuficiente');
+  assert(derived.metrics.cac.formatted === 'Dados insuficientes', 'I. CAC deve mostrar Dados insuficientes');
+  assert(derived.metrics.roas.formatted === 'Dados insuficientes', 'J. ROAS deve mostrar Dados insuficientes');
+  assert(derived.metrics.roi.formatted === 'Dados insuficientes', 'ROI deve mostrar Dados insuficientes');
+  assert(derived.metrics.ltv.formatted === 'Dados insuficientes', 'LTV deve mostrar Dados insuficientes');
+  assert(derived.metrics.churn.formatted === 'Dados insuficientes', 'Churn deve mostrar Dados insuficientes');
+  assert(derived.metrics.conversion_rate.formatted === 'Dados insuficientes', 'Conversao deve mostrar Dados insuficientes');
 
   await dashboard.resetPreferences('user-a', undefined, 'company-a');
   fake.state.sales.push({ companyId: 'company-a', amount: 100, productName: 'Plano', category: 'SaaS', occurredAt: daysAgo(1, 10) });
