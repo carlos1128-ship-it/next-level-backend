@@ -41,6 +41,15 @@ type InstagramWebhookPayload = {
   }>;
 };
 
+type InstagramOAuthConfig = {
+  clientId: string;
+  clientSecret: string;
+  redirectUri: string;
+  authorizeUrl: string;
+  authorizeUrlHost: string;
+  scope: string;
+};
+
 @Injectable()
 export class InstagramService {
   private readonly logger = new Logger(InstagramService.name);
@@ -69,45 +78,35 @@ export class InstagramService {
     userId?: string | null;
     returnTo?: string | null;
   }) {
-    const clientId = this.readMetaAppIdForOAuth();
-    const callbackUrl = this.getCallbackUrl();
-    this.logger.log(
-      JSON.stringify({
-        event: 'instagram.oauth.config_check',
-        metaAppIdExists: true,
-        metaAppIdIsNumeric: true,
-        oauthRedirectUriExists: Boolean(callbackUrl),
-      }),
-    );
+    const oauthConfig = this.validateInstagramOAuthConfig();
     const state = this.signState({
       companyId: input.companyId,
       userId: input.userId || null,
       returnTo: this.resolveReturnTo(input.returnTo),
       issuedAt: new Date().toISOString(),
-    });
-    const authorizeUrl =
-      this.configService.get<string>('META_OAUTH_AUTHORIZE_URL')?.trim() ||
-      `https://www.facebook.com/v${this.graphVersion}/dialog/oauth`;
-    const scope =
-      this.configService.get<string>('INSTAGRAM_OAUTH_SCOPE')?.trim() ||
-      [
-        'instagram_business_basic',
-        'instagram_business_manage_messages',
-        'instagram_manage_comments',
-      ].join(',');
+    }, oauthConfig.clientSecret);
 
-    const url = new URL(authorizeUrl);
-    url.searchParams.set('client_id', clientId);
-    url.searchParams.set('redirect_uri', callbackUrl);
+    const url = new URL(oauthConfig.authorizeUrl);
+    url.searchParams.set('client_id', oauthConfig.clientId);
+    url.searchParams.set('redirect_uri', oauthConfig.redirectUri);
     url.searchParams.set('response_type', 'code');
     url.searchParams.set('state', state);
-    url.searchParams.set('scope', scope);
+    url.searchParams.set('scope', oauthConfig.scope);
+
+    const authUrl = url.toString();
+    const developmentDebug =
+      process.env.NODE_ENV !== 'production'
+        ? {
+            generatedOAuthUrl: this.redactOAuthState(authUrl),
+          }
+        : undefined;
 
     return {
       provider: 'instagram',
-      authUrl: url.toString(),
-      callbackUrl,
+      authUrl,
+      callbackUrl: oauthConfig.redirectUri,
       mode: 'oauth' as const,
+      ...(developmentDebug ? { debug: developmentDebug } : {}),
     };
   }
 
@@ -417,7 +416,7 @@ export class InstagramService {
   }
 
   private async exchangeCodeForToken(code: string) {
-    const clientId = this.readRequiredConfig('META_APP_ID');
+    const clientId = this.readMetaAppIdForTokenExchange();
     const clientSecret = this.readRequiredConfig('META_APP_SECRET');
     const tokenUrl =
       this.configService.get<string>('META_OAUTH_TOKEN_URL')?.trim() ||
@@ -571,10 +570,10 @@ export class InstagramService {
     return crypto.createHash('sha256').update(secret).digest();
   }
 
-  private signState(payload: SignedOAuthState) {
+  private signState(payload: SignedOAuthState, appSecret?: string) {
     const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
     const signature = crypto
-      .createHmac('sha256', this.readRequiredConfig('META_APP_SECRET'))
+      .createHmac('sha256', appSecret || this.readRequiredConfig('META_APP_SECRET'))
       .update(body)
       .digest('base64url');
     return `${body}.${signature}`;
@@ -678,34 +677,96 @@ export class InstagramService {
     );
   }
 
-  private readMetaAppIdForOAuth() {
-    const value = process.env.META_APP_ID?.trim();
-    const exists = Boolean(value);
-    const isNumeric = Boolean(value && /^\d+$/.test(value));
-    const callbackUrl = this.getCallbackUrl();
+  private validateInstagramOAuthConfig(): InstagramOAuthConfig {
+    const clientId = process.env.META_APP_ID?.trim();
+    const clientSecret = process.env.META_APP_SECRET?.trim();
+    const redirectUri = process.env.INSTAGRAM_REDIRECT_URI?.trim();
+    const authorizeUrl =
+      process.env.META_OAUTH_AUTHORIZE_URL?.trim() ||
+      `https://www.facebook.com/v${this.graphVersion}/dialog/oauth`;
+    const scope =
+      process.env.INSTAGRAM_OAUTH_SCOPE?.trim() ||
+      [
+        'instagram_business_basic',
+        'instagram_business_manage_messages',
+        'instagram_manage_comments',
+      ].join(',');
+    const authorizeUrlHost = this.extractUrlHost(authorizeUrl);
+    const metaAppIdExists = Boolean(clientId);
+    const metaAppIdIsNumeric = Boolean(clientId && /^\d+$/.test(clientId));
+    const metaAppSecretExists = Boolean(clientSecret);
+    const redirectUriExists = Boolean(redirectUri);
+    const authorizeUrlIsFacebook =
+      authorizeUrl.startsWith('https://www.facebook.com/') &&
+      authorizeUrlHost === 'www.facebook.com';
 
     this.logger.log(
       JSON.stringify({
-        event: 'instagram.oauth.meta_app_id.validation',
-        metaAppIdExists: exists,
-        metaAppIdIsNumeric: isNumeric,
-        oauthRedirectUriExists: Boolean(callbackUrl),
+        event: 'instagram.oauth.config.validation',
+        metaAppIdExists,
+        metaAppIdIsNumeric,
+        redirectUriExists,
+        authorizeUrlHost,
       }),
     );
 
-    if (!exists) {
+    if (
+      !metaAppIdExists ||
+      !metaAppIdIsNumeric ||
+      !metaAppSecretExists ||
+      !redirectUriExists ||
+      !authorizeUrlIsFacebook
+    ) {
+      throw new BadRequestException({
+        code: 'instagram_oauth_config_invalid',
+        message:
+          'Configuracao OAuth do Instagram invalida. Corrija as variaveis do Render antes de conectar.',
+        details: {
+          metaAppIdExists,
+          metaAppIdIsNumeric,
+          metaAppSecretExists,
+          redirectUriExists,
+          authorizeUrlHost,
+          authorizeUrlIsFacebook,
+        },
+      });
+    }
+
+    return {
+      clientId: clientId as string,
+      clientSecret: clientSecret as string,
+      redirectUri: redirectUri as string,
+      authorizeUrl,
+      authorizeUrlHost,
+      scope,
+    };
+  }
+
+  private readMetaAppIdForTokenExchange() {
+    const value = process.env.META_APP_ID?.trim();
+    if (!value || !/^\d+$/.test(value)) {
       throw new BadRequestException(
-        'META_APP_ID nao configurado. Configure o ID numerico do App Meta no Render.',
+        'META_APP_ID invalido. Configure o ID numerico do App Meta no Render.',
       );
     }
 
-    if (!isNumeric) {
-      throw new BadRequestException(
-        'META_APP_ID invalido. Use apenas o ID numerico do App Meta, sem texto ou aspas.',
-      );
-    }
+    return value;
+  }
 
-    return value as string;
+  private extractUrlHost(value: string) {
+    try {
+      return new URL(value).host;
+    } catch {
+      return 'invalid_url';
+    }
+  }
+
+  private redactOAuthState(authUrl: string) {
+    const url = new URL(authUrl);
+    if (url.searchParams.has('state')) {
+      url.searchParams.set('state', 'REDACTED');
+    }
+    return url.toString();
   }
 
   private readRequiredConfig(key: string) {
