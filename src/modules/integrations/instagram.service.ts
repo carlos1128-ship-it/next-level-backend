@@ -69,8 +69,16 @@ export class InstagramService {
     userId?: string | null;
     returnTo?: string | null;
   }) {
-    const clientId = this.readRequiredConfig('META_APP_ID');
+    const clientId = this.readMetaAppIdForOAuth();
     const callbackUrl = this.getCallbackUrl();
+    this.logger.log(
+      JSON.stringify({
+        event: 'instagram.oauth.config_check',
+        metaAppIdExists: true,
+        metaAppIdIsNumeric: true,
+        oauthRedirectUriExists: Boolean(callbackUrl),
+      }),
+    );
     const state = this.signState({
       companyId: input.companyId,
       userId: input.userId || null,
@@ -668,6 +676,36 @@ export class InstagramService {
       this.configService.get<string>('META_APP_ID')?.trim() &&
         this.configService.get<string>('META_APP_SECRET')?.trim(),
     );
+  }
+
+  private readMetaAppIdForOAuth() {
+    const value = process.env.META_APP_ID?.trim();
+    const exists = Boolean(value);
+    const isNumeric = Boolean(value && /^\d+$/.test(value));
+    const callbackUrl = this.getCallbackUrl();
+
+    this.logger.log(
+      JSON.stringify({
+        event: 'instagram.oauth.meta_app_id.validation',
+        metaAppIdExists: exists,
+        metaAppIdIsNumeric: isNumeric,
+        oauthRedirectUriExists: Boolean(callbackUrl),
+      }),
+    );
+
+    if (!exists) {
+      throw new BadRequestException(
+        'META_APP_ID nao configurado. Configure o ID numerico do App Meta no Render.',
+      );
+    }
+
+    if (!isNumeric) {
+      throw new BadRequestException(
+        'META_APP_ID invalido. Use apenas o ID numerico do App Meta, sem texto ou aspas.',
+      );
+    }
+
+    return value as string;
   }
 
   private readRequiredConfig(key: string) {
