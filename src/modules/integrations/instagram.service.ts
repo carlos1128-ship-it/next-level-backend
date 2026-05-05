@@ -58,7 +58,9 @@ export class InstagramService {
       this.configService.get<string>('META_GRAPH_BASE_URL')?.trim() ||
       'https://graph.facebook.com';
     this.graphVersion = (
-      this.configService.get<string>('META_GRAPH_VERSION') || '20.0'
+      this.configService.get<string>('META_GRAPH_API_VERSION')?.trim() ||
+      this.configService.get<string>('META_GRAPH_VERSION')?.trim() ||
+      '20.0'
     ).replace(/^v/i, '');
   }
 
@@ -77,15 +79,13 @@ export class InstagramService {
     });
     const authorizeUrl =
       this.configService.get<string>('META_OAUTH_AUTHORIZE_URL')?.trim() ||
-      `${this.graphBaseUrl}/v${this.graphVersion}/dialog/oauth`;
+      `https://www.facebook.com/v${this.graphVersion}/dialog/oauth`;
     const scope =
       this.configService.get<string>('INSTAGRAM_OAUTH_SCOPE')?.trim() ||
       [
-        'instagram_basic',
-        'instagram_manage_messages',
-        'pages_show_list',
-        'pages_manage_metadata',
-        'pages_messaging',
+        'instagram_business_basic',
+        'instagram_business_manage_messages',
+        'instagram_manage_comments',
       ].join(',');
 
     const url = new URL(authorizeUrl);
@@ -618,6 +618,7 @@ export class InstagramService {
 
   private getCallbackUrl() {
     const configured =
+      this.configService.get<string>('INSTAGRAM_REDIRECT_URI')?.trim() ||
       this.configService.get<string>('CALLBACK_URL')?.trim() ||
       this.configService.get<string>('INSTAGRAM_CALLBACK_URL')?.trim();
 
