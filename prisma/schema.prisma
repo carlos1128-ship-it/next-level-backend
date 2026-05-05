@@ -250,6 +250,8 @@ model Company {
   customers             Customer[]
   operationalCosts      OperationalCost[]
   integrations          Integration[]
+  integrationAccounts   IntegrationAccount[]
+  integrationEvents     IntegrationEvent[]
   webhookEvents         WebhookEvent[]
   webhookLogs           WebhookLog[]
   alerts                Alert[]
@@ -521,6 +523,42 @@ model Integration {
   @@unique([companyId, provider])
   @@unique([provider, externalId])
   @@index([companyId, provider])
+}
+
+model IntegrationAccount {
+  id              String              @id @default(cuid())
+  companyId       String
+  provider        IntegrationProvider
+  igBusinessId    String?
+  igUsername      String?
+  pageId          String?
+  pageName        String?
+  pageAccessToken String?             @db.Text
+  tokenExpiry     DateTime?
+  status          String              @default("connected")
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, provider])
+  @@unique([provider, igBusinessId])
+  @@index([companyId, provider])
+  @@index([provider, pageId])
+}
+
+model IntegrationEvent {
+  id        String              @id @default(cuid())
+  companyId String
+  provider  IntegrationProvider
+  type      String
+  payload   Json
+  createdAt DateTime            @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, provider, createdAt])
+  @@index([provider, type, createdAt])
 }
 
 model WebhookEvent {

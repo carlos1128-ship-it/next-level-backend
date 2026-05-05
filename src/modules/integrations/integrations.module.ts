@@ -4,6 +4,7 @@ import { IntegrationsController } from './integrations.controller';
 import { IntegrationsOAuthController } from './integrations-oauth.controller';
 import { MetaIntegrationModule } from '../meta/meta.module';
 import { InstagramService } from './instagram.service';
+import { InstagramController } from './instagram.controller';
 import { MetaGraphService } from './meta-graph.service';
 import { ShopeeScraperService } from './shopee-scraper.service';
 import { EvolutionController } from './evolution.controller';
@@ -15,7 +16,12 @@ import { AiModule } from '../ai/ai.module';
 @Global()
 @Module({
   imports: [DashboardModule, AiModule, MetaIntegrationModule],
-  controllers: [IntegrationsController, IntegrationsOAuthController, EvolutionController],
+  controllers: [
+    IntegrationsController,
+    IntegrationsOAuthController,
+    EvolutionController,
+    InstagramController,
+  ],
   providers: [
     IntegrationsService, 
     InstagramService, 

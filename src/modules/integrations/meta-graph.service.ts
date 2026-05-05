@@ -118,7 +118,7 @@ export class MetaGraphService {
           throw new HttpException(
             {
               message:
-                'A conexao com os servidores do WhatsApp esta instavel. Ja estamos tentando reconectar automaticamente.',
+                'A conexao com os servidores da Meta esta instavel. Ja estamos tentando reconectar automaticamente.',
             },
             HttpStatus.FAILED_DEPENDENCY,
           );

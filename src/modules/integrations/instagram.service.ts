@@ -1,16 +1,380 @@
-import { Injectable } from '@nestjs/common';
-import { IntegrationProvider } from '@prisma/client';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { IntegrationProvider, Prisma } from '@prisma/client';
+import axios from 'axios';
+import * as crypto from 'crypto';
+import { Request } from 'express';
+import { PrismaService } from '../../prisma/prisma.service';
 import { IntegrationsService } from './integrations.service';
 import { MetaGraphService } from './meta-graph.service';
 
+type SignedOAuthState = {
+  companyId: string;
+  userId?: string | null;
+  returnTo: string;
+  issuedAt: string;
+};
+
+type MetaPage = {
+  id?: string;
+  name?: string;
+  access_token?: string;
+  instagram_business_account?: {
+    id?: string;
+    username?: string;
+  };
+};
+
+type InstagramWebhookPayload = {
+  object?: string;
+  entry?: Array<{
+    id?: string;
+    time?: number;
+    messaging?: unknown[];
+  }>;
+};
+
 @Injectable()
 export class InstagramService {
+  private readonly logger = new Logger(InstagramService.name);
+  private readonly graphBaseUrl: string;
+  private readonly graphVersion: string;
+
   constructor(
+    private readonly configService: ConfigService,
+    private readonly prisma: PrismaService,
+    private readonly eventEmitter: EventEmitter2,
     private readonly integrationsService: IntegrationsService,
     private readonly metaGraphService: MetaGraphService,
-  ) {}
+  ) {
+    this.graphBaseUrl =
+      this.configService.get<string>('META_GRAPH_BASE_URL')?.trim() ||
+      'https://graph.facebook.com';
+    this.graphVersion = (
+      this.configService.get<string>('META_GRAPH_VERSION') || '20.0'
+    ).replace(/^v/i, '');
+  }
+
+  async buildConnectUrl(input: {
+    companyId: string;
+    userId?: string | null;
+    returnTo?: string | null;
+  }) {
+    const clientId = this.readRequiredConfig('META_APP_ID');
+    const callbackUrl = this.getCallbackUrl();
+    const state = this.signState({
+      companyId: input.companyId,
+      userId: input.userId || null,
+      returnTo: this.resolveReturnTo(input.returnTo),
+      issuedAt: new Date().toISOString(),
+    });
+    const authorizeUrl =
+      this.configService.get<string>('META_OAUTH_AUTHORIZE_URL')?.trim() ||
+      `${this.graphBaseUrl}/v${this.graphVersion}/dialog/oauth`;
+    const scope =
+      this.configService.get<string>('INSTAGRAM_OAUTH_SCOPE')?.trim() ||
+      [
+        'instagram_basic',
+        'instagram_manage_messages',
+        'pages_show_list',
+        'pages_manage_metadata',
+        'pages_messaging',
+      ].join(',');
+
+    const url = new URL(authorizeUrl);
+    url.searchParams.set('client_id', clientId);
+    url.searchParams.set('redirect_uri', callbackUrl);
+    url.searchParams.set('response_type', 'code');
+    url.searchParams.set('state', state);
+    url.searchParams.set('scope', scope);
+
+    return {
+      provider: 'instagram',
+      authUrl: url.toString(),
+      callbackUrl,
+      mode: 'oauth' as const,
+    };
+  }
+
+  async handleOAuthCallback(code: string, stateRaw: string) {
+    if (!code?.trim()) {
+      throw new BadRequestException('Codigo OAuth nao informado');
+    }
+
+    const state = this.verifyState(stateRaw);
+    const userAccessToken = await this.exchangeCodeForToken(code.trim());
+    const page = await this.discoverInstagramPage(userAccessToken);
+    const encryptedPageToken = this.encryptToken(page.pageAccessToken);
+    const tokenExpiry = this.calculateTokenExpiry();
+
+    await this.prisma.$transaction([
+      this.prisma.integrationAccount.upsert({
+        where: {
+          companyId_provider: {
+            companyId: state.companyId,
+            provider: IntegrationProvider.INSTAGRAM,
+          },
+        },
+        update: {
+          igBusinessId: page.igBusinessId,
+          igUsername: page.igUsername,
+          pageId: page.pageId,
+          pageName: page.pageName,
+          pageAccessToken: encryptedPageToken,
+          tokenExpiry,
+          status: 'connected',
+        },
+        create: {
+          companyId: state.companyId,
+          provider: IntegrationProvider.INSTAGRAM,
+          igBusinessId: page.igBusinessId,
+          igUsername: page.igUsername,
+          pageId: page.pageId,
+          pageName: page.pageName,
+          pageAccessToken: encryptedPageToken,
+          tokenExpiry,
+          status: 'connected',
+        },
+      }),
+      this.prisma.integration.upsert({
+        where: {
+          companyId_provider: {
+            companyId: state.companyId,
+            provider: IntegrationProvider.INSTAGRAM,
+          },
+        },
+        update: {
+          accessToken: encryptedPageToken,
+          externalId: page.igBusinessId,
+          status: 'connected',
+        },
+        create: {
+          companyId: state.companyId,
+          provider: IntegrationProvider.INSTAGRAM,
+          accessToken: encryptedPageToken,
+          externalId: page.igBusinessId,
+          status: 'connected',
+        },
+      }),
+    ]);
+
+    const subscription = await this.subscribePageToInstagramMessages({
+      companyId: state.companyId,
+      pageId: page.pageId,
+      pageAccessToken: page.pageAccessToken,
+    });
+
+    this.logger.log(
+      JSON.stringify({
+        event: 'instagram.oauth.connected',
+        companyId: state.companyId,
+        pageId: page.pageId,
+        igBusinessId: page.igBusinessId,
+        subscribed: subscription.success,
+      }),
+    );
+
+    return {
+      companyId: state.companyId,
+      returnTo: state.returnTo,
+      connected: true,
+      igBusinessId: page.igBusinessId,
+      igUsername: page.igUsername,
+      subscription,
+    };
+  }
+
+  async getStatus(companyId: string) {
+    const account = await this.prisma.integrationAccount.findFirst({
+      where: {
+        companyId,
+        provider: IntegrationProvider.INSTAGRAM,
+      },
+      select: {
+        igBusinessId: true,
+        igUsername: true,
+        pageId: true,
+        pageName: true,
+        tokenExpiry: true,
+        status: true,
+        updatedAt: true,
+      },
+    });
+
+    if (!account || account.status === 'disconnected') {
+      return {
+        connected: false,
+        status: 'disconnected',
+        provider_setup_required: !this.hasOAuthConfig(),
+      };
+    }
+
+    const expired =
+      account.tokenExpiry instanceof Date && account.tokenExpiry.getTime() <= Date.now();
+
+    return {
+      connected: !expired,
+      status: expired ? 'token_expired' : account.status,
+      provider_setup_required: !this.hasOAuthConfig(),
+      igBusinessId: account.igBusinessId,
+      igUsername: account.igUsername,
+      pageId: account.pageId,
+      pageName: account.pageName,
+      tokenExpiry: account.tokenExpiry,
+      updatedAt: account.updatedAt,
+    };
+  }
+
+  async disconnect(companyId: string) {
+    await this.prisma.$transaction([
+      this.prisma.integrationAccount.updateMany({
+        where: { companyId, provider: IntegrationProvider.INSTAGRAM },
+        data: {
+          status: 'disconnected',
+          pageAccessToken: null,
+        },
+      }),
+      this.prisma.integration.updateMany({
+        where: { companyId, provider: IntegrationProvider.INSTAGRAM },
+        data: {
+          status: 'disconnected',
+          accessToken: '',
+        },
+      }),
+    ]);
+
+    return { disconnected: true };
+  }
+
+  verifyWebhookChallenge(query: {
+    mode?: string;
+    verifyToken?: string;
+    challenge?: string;
+  }) {
+    const expected =
+      this.configService.get<string>('WEBHOOK_VERIFY_TOKEN')?.trim() ||
+      this.configService.get<string>('META_WEBHOOK_VERIFY_TOKEN')?.trim();
+
+    if (
+      query.mode === 'subscribe' &&
+      expected &&
+      query.verifyToken === expected &&
+      query.challenge
+    ) {
+      return query.challenge;
+    }
+
+    throw new ForbiddenException('Verificacao do webhook Instagram falhou');
+  }
+
+  async processWebhook(
+    payload: InstagramWebhookPayload,
+    req: Request & { rawBody?: Buffer },
+  ) {
+    this.assertValidSignature(req);
+
+    if (payload?.object !== 'instagram') {
+      return { received: true, ignored: true };
+    }
+
+    const entries = Array.isArray(payload.entry) ? payload.entry : [];
+    let processed = 0;
+    let ignored = 0;
+
+    for (const entry of entries) {
+      const igBusinessId = entry.id?.trim();
+      if (!igBusinessId) {
+        ignored += 1;
+        continue;
+      }
+
+      const account = await this.prisma.integrationAccount.findFirst({
+        where: {
+          provider: IntegrationProvider.INSTAGRAM,
+          igBusinessId,
+          status: { not: 'disconnected' },
+        },
+        select: {
+          companyId: true,
+        },
+      });
+
+      if (!account) {
+        ignored += 1;
+        await this.logWebhookFailure(null, payload, 'Conta Instagram nao encontrada');
+        continue;
+      }
+
+      await this.prisma.integrationEvent.create({
+        data: {
+          companyId: account.companyId,
+          provider: IntegrationProvider.INSTAGRAM,
+          type: 'message_received',
+          payload: payload as Prisma.InputJsonValue,
+        },
+      });
+
+      const webhookEvent = await this.prisma.webhookEvent.create({
+        data: {
+          companyId: account.companyId,
+          provider: IntegrationProvider.INSTAGRAM,
+          payload: payload as Prisma.InputJsonValue,
+        },
+      });
+
+      await this.prisma.webhookLog.create({
+        data: {
+          companyId: account.companyId,
+          provider: IntegrationProvider.INSTAGRAM,
+          status: 'SUCCESS',
+          eventId: webhookEvent.id,
+          message: 'Evento Instagram recebido',
+        },
+      });
+
+      this.eventEmitter.emit('webhooks.received', {
+        eventId: webhookEvent.id,
+        provider: IntegrationProvider.INSTAGRAM,
+        companyId: account.companyId,
+      });
+      processed += 1;
+    }
+
+    return { received: true, processed, ignored };
+  }
 
   async sendDm(companyId: string, recipientId: string, message: string) {
+    const account = await this.prisma.integrationAccount.findFirst({
+      where: {
+        companyId,
+        provider: IntegrationProvider.INSTAGRAM,
+        status: { not: 'disconnected' },
+      },
+    });
+
+    if (account?.pageId && account.pageAccessToken) {
+      await this.metaGraphService.requestWithRetry({
+        companyId,
+        method: 'POST',
+        path: `${account.pageId}/messages`,
+        accessToken: this.decryptToken(account.pageAccessToken),
+        data: {
+          messaging_type: 'RESPONSE',
+          recipient: { id: recipientId },
+          message: { text: message },
+        },
+      });
+
+      return { sent: true };
+    }
+
     const integration = await this.integrationsService.getActiveIntegration(
       companyId,
       IntegrationProvider.INSTAGRAM,
@@ -20,14 +384,315 @@ export class InstagramService {
       companyId,
       method: 'POST',
       path: `${integration.externalId}/messages`,
-      accessToken: integration.accessToken,
+      accessToken: this.decryptToken(integration.accessToken),
       data: {
-        messaging_product: 'instagram',
+        messaging_type: 'RESPONSE',
         recipient: { id: recipientId },
         message: { text: message },
       },
     });
 
     return { sent: true };
+  }
+
+  private async exchangeCodeForToken(code: string) {
+    const clientId = this.readRequiredConfig('META_APP_ID');
+    const clientSecret = this.readRequiredConfig('META_APP_SECRET');
+    const tokenUrl =
+      this.configService.get<string>('META_OAUTH_TOKEN_URL')?.trim() ||
+      `${this.graphBaseUrl}/v${this.graphVersion}/oauth/access_token`;
+    const callbackUrl = this.getCallbackUrl();
+
+    const { data } = await axios.get<{ access_token?: string }>(tokenUrl, {
+      params: {
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: callbackUrl,
+        code,
+      },
+      timeout: 10000,
+    });
+
+    if (!data.access_token) {
+      throw new BadRequestException('Meta nao retornou access_token');
+    }
+
+    return data.access_token;
+  }
+
+  private async discoverInstagramPage(userAccessToken: string) {
+    const { data } = await axios.get<{ data?: MetaPage[] }>(
+      `${this.graphBaseUrl}/v${this.graphVersion}/me/accounts`,
+      {
+        params: {
+          fields:
+            'id,name,access_token,instagram_business_account{id,username}',
+          access_token: userAccessToken,
+        },
+        timeout: 10000,
+      },
+    );
+    const pages = Array.isArray(data.data) ? data.data : [];
+    const page = pages.find((item) => item.instagram_business_account?.id);
+    const ig = page?.instagram_business_account;
+
+    if (!page?.id || !page.access_token || !ig?.id) {
+      throw new BadRequestException(
+        'Nenhuma Pagina do Facebook com Instagram Business vinculado foi encontrada.',
+      );
+    }
+
+    return {
+      pageId: page.id,
+      pageName: page.name || null,
+      pageAccessToken: page.access_token,
+      igBusinessId: ig.id,
+      igUsername: ig.username || null,
+    };
+  }
+
+  private async subscribePageToInstagramMessages(input: {
+    companyId: string;
+    pageId: string;
+    pageAccessToken: string;
+  }) {
+    try {
+      await this.metaGraphService.requestWithRetry({
+        companyId: input.companyId,
+        method: 'POST',
+        path: `${input.pageId}/subscribed_apps`,
+        accessToken: input.pageAccessToken,
+        params: {
+          subscribed_fields: 'messages,messaging_postbacks,message_reactions',
+        },
+      });
+
+      return { success: true };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Falha ao assinar webhooks';
+      this.logger.warn(
+        JSON.stringify({
+          event: 'instagram.webhook.subscribe_failed',
+          companyId: input.companyId,
+          pageId: input.pageId,
+          message,
+        }),
+      );
+      return { success: false, message };
+    }
+  }
+
+  private assertValidSignature(req: Request & { rawBody?: Buffer }) {
+    const appSecret = this.readRequiredConfig('META_APP_SECRET');
+    const signature = this.readHeader(req, 'x-hub-signature-256');
+    if (!signature?.startsWith('sha256=')) {
+      throw new UnauthorizedException('Assinatura Instagram ausente');
+    }
+
+    const rawBody = req.rawBody || Buffer.from(JSON.stringify(req.body || {}));
+    const expected =
+      'sha256=' +
+      crypto.createHmac('sha256', appSecret).update(rawBody).digest('hex');
+
+    if (!this.timingSafeEqual(signature, expected)) {
+      throw new UnauthorizedException('Assinatura Instagram invalida');
+    }
+  }
+
+  private encryptToken(token: string) {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', this.getEncryptionKey(), iv);
+    const encrypted = Buffer.concat([
+      cipher.update(token, 'utf8'),
+      cipher.final(),
+    ]);
+    const tag = cipher.getAuthTag();
+
+    return [
+      'v1',
+      iv.toString('base64url'),
+      tag.toString('base64url'),
+      encrypted.toString('base64url'),
+    ].join(':');
+  }
+
+  private decryptToken(value: string) {
+    if (!value.startsWith('v1:')) {
+      return value;
+    }
+
+    const [, ivRaw, tagRaw, encryptedRaw] = value.split(':');
+    const decipher = crypto.createDecipheriv(
+      'aes-256-gcm',
+      this.getEncryptionKey(),
+      Buffer.from(ivRaw, 'base64url'),
+    );
+    decipher.setAuthTag(Buffer.from(tagRaw, 'base64url'));
+
+    return Buffer.concat([
+      decipher.update(Buffer.from(encryptedRaw, 'base64url')),
+      decipher.final(),
+    ]).toString('utf8');
+  }
+
+  private getEncryptionKey() {
+    const secret =
+      this.configService.get<string>('INTEGRATION_TOKEN_ENCRYPTION_KEY')?.trim() ||
+      this.configService.get<string>('META_APP_SECRET')?.trim();
+
+    if (!secret) {
+      throw new BadRequestException(
+        'INTEGRATION_TOKEN_ENCRYPTION_KEY ou META_APP_SECRET precisa estar configurado.',
+      );
+    }
+
+    return crypto.createHash('sha256').update(secret).digest();
+  }
+
+  private signState(payload: SignedOAuthState) {
+    const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const signature = crypto
+      .createHmac('sha256', this.readRequiredConfig('META_APP_SECRET'))
+      .update(body)
+      .digest('base64url');
+    return `${body}.${signature}`;
+  }
+
+  private verifyState(raw: string | undefined) {
+    if (!raw?.trim()) {
+      throw new BadRequestException('state OAuth nao informado');
+    }
+
+    const [body, signature] = raw.split('.');
+    if (!body || !signature) {
+      throw new BadRequestException('state OAuth invalido');
+    }
+
+    const expected = crypto
+      .createHmac('sha256', this.readRequiredConfig('META_APP_SECRET'))
+      .update(body)
+      .digest('base64url');
+
+    if (!this.timingSafeEqual(signature, expected)) {
+      throw new BadRequestException('state OAuth invalido');
+    }
+
+    const parsed = JSON.parse(
+      Buffer.from(body, 'base64url').toString('utf8'),
+    ) as Partial<SignedOAuthState>;
+
+    if (!parsed.companyId) {
+      throw new BadRequestException('companyId ausente no state OAuth');
+    }
+
+    return {
+      companyId: parsed.companyId,
+      userId: parsed.userId || null,
+      returnTo: this.resolveReturnTo(parsed.returnTo),
+      issuedAt: parsed.issuedAt || new Date().toISOString(),
+    };
+  }
+
+  private timingSafeEqual(left: string, right: string) {
+    const leftBuffer = Buffer.from(left);
+    const rightBuffer = Buffer.from(right);
+    if (leftBuffer.length !== rightBuffer.length) {
+      return false;
+    }
+    return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+  }
+
+  private getCallbackUrl() {
+    const configured =
+      this.configService.get<string>('CALLBACK_URL')?.trim() ||
+      this.configService.get<string>('INSTAGRAM_CALLBACK_URL')?.trim();
+
+    if (configured) {
+      return configured;
+    }
+
+    const publicApi =
+      this.configService.get<string>('PUBLIC_API_URL')?.trim() ||
+      this.configService.get<string>('APP_URL')?.trim() ||
+      'http://localhost:3333/api';
+    const normalized = publicApi.replace(/\/+$/, '');
+    const apiBase = /\/api$/i.test(normalized) ? normalized : `${normalized}/api`;
+    return `${apiBase}/instagram/callback`;
+  }
+
+  private resolveReturnTo(raw: string | null | undefined) {
+    const frontend =
+      this.configService.get<string>('FRONTEND_APP_URL')?.trim() ||
+      'http://localhost:5173';
+    const fallback = new URL('/integrations', frontend).toString();
+    if (!raw?.trim()) return fallback;
+
+    try {
+      const incoming = new URL(raw);
+      if (incoming.origin !== new URL(frontend).origin) {
+        return fallback;
+      }
+      return incoming.toString();
+    } catch {
+      if (!raw.startsWith('/')) return fallback;
+      return new URL(raw, frontend).toString();
+    }
+  }
+
+  private calculateTokenExpiry() {
+    const days = Number(
+      this.configService.get<string>('INSTAGRAM_PAGE_TOKEN_TTL_DAYS') || 60,
+    );
+    const expiresAt = new Date();
+    expiresAt.setUTCDate(expiresAt.getUTCDate() + (Number.isFinite(days) ? days : 60));
+    return expiresAt;
+  }
+
+  private hasOAuthConfig() {
+    return Boolean(
+      this.configService.get<string>('META_APP_ID')?.trim() &&
+        this.configService.get<string>('META_APP_SECRET')?.trim(),
+    );
+  }
+
+  private readRequiredConfig(key: string) {
+    const value = this.configService.get<string>(key)?.trim();
+    if (!value) {
+      throw new BadRequestException(`${key} nao configurado`);
+    }
+    return value;
+  }
+
+  private readHeader(req: Request, name: string) {
+    const value = req.headers[name.toLowerCase()];
+    if (Array.isArray(value)) return value[0] || '';
+    return typeof value === 'string' ? value : '';
+  }
+
+  private async logWebhookFailure(
+    companyId: string | null,
+    payload: unknown,
+    message: string,
+  ) {
+    await this.prisma.webhookLog
+      .create({
+        data: {
+          companyId: companyId || undefined,
+          provider: IntegrationProvider.INSTAGRAM,
+          status: 'FAILED',
+          message,
+        },
+      })
+      .catch(() => undefined);
+
+    this.logger.warn(
+      JSON.stringify({
+        event: 'instagram.webhook.ignored',
+        companyId,
+        message,
+        payloadPreview: JSON.stringify(payload).slice(0, 500),
+      }),
+    );
   }
 }
