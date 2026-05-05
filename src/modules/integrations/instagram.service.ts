@@ -258,17 +258,30 @@ export class InstagramService {
     verifyToken?: string;
     challenge?: string;
   }) {
-    const expected =
-      this.configService.get<string>('WEBHOOK_VERIFY_TOKEN')?.trim() ||
-      this.configService.get<string>('META_WEBHOOK_VERIFY_TOKEN')?.trim();
+    const expected = process.env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN?.trim();
+    const tokenMatched = Boolean(
+      query.verifyToken &&
+        expected &&
+        this.timingSafeEqual(query.verifyToken, expected),
+    );
+    const challengeExists = Boolean(query.challenge);
+
+    this.logger.log(
+      JSON.stringify({
+        event: 'instagram.webhook.verify',
+        modeReceived: query.mode || null,
+        verifyTokenEnvExists: Boolean(expected),
+        tokenMatched,
+        challengeExists,
+      }),
+    );
 
     if (
       query.mode === 'subscribe' &&
-      expected &&
-      query.verifyToken === expected &&
-      query.challenge
+      tokenMatched &&
+      challengeExists
     ) {
-      return query.challenge;
+      return query.challenge as string;
     }
 
     throw new ForbiddenException('Verificacao do webhook Instagram falhou');

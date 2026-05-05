@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Logger,
   Post,
   Query,
   Req,
@@ -23,6 +24,8 @@ type AuthenticatedRequest = Request & {
 
 @Controller('instagram')
 export class InstagramController {
+  private readonly logger = new Logger(InstagramController.name);
+
   constructor(private readonly instagramService: InstagramService) {}
 
   @Get('connect')
@@ -92,15 +95,27 @@ export class InstagramController {
   @Public()
   @Get('webhook')
   verifyWebhook(
-    @Query('hub.mode') mode: string,
-    @Query('hub.verify_token') verifyToken: string,
-    @Query('hub.challenge') challenge: string,
+    @Req() req: Request,
+    @Res() res: Response,
   ) {
-    return this.instagramService.verifyWebhookChallenge({
+    const mode = this.readQueryValue(req.query['hub.mode']);
+    const verifyToken = this.readQueryValue(req.query['hub.verify_token']);
+    const challenge = this.readQueryValue(req.query['hub.challenge']);
+    const challengeText = this.instagramService.verifyWebhookChallenge({
       mode,
       verifyToken,
       challenge,
     });
+
+    this.logger.log(
+      JSON.stringify({
+        event: 'instagram.webhook.verify.response',
+        contentType: 'text/plain',
+        returnedChallenge: Boolean(challengeText),
+      }),
+    );
+
+    return res.status(200).type('text/plain').send(challengeText);
   }
 
   @Public()
@@ -110,5 +125,14 @@ export class InstagramController {
       req.body as Record<string, unknown>,
       req,
     );
+  }
+
+  private readQueryValue(value: unknown) {
+    if (Array.isArray(value)) {
+      const first = value.find((item) => typeof item === 'string' && item.trim());
+      return typeof first === 'string' ? first.trim() : undefined;
+    }
+
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
   }
 }
