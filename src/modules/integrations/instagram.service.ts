@@ -41,6 +41,11 @@ type InstagramWebhookPayload = {
   }>;
 };
 
+type InstagramOAuthTokenResponse = {
+  access_token?: string;
+  user_id?: string | number;
+};
+
 type InstagramOAuthConfig = {
   clientId: string;
   clientSecret: string;
@@ -89,9 +94,9 @@ export class InstagramService {
     const url = new URL(oauthConfig.authorizeUrl);
     url.searchParams.set('client_id', oauthConfig.clientId);
     url.searchParams.set('redirect_uri', oauthConfig.redirectUri);
+    url.searchParams.set('scope', oauthConfig.scope);
     url.searchParams.set('response_type', 'code');
     url.searchParams.set('state', state);
-    url.searchParams.set('scope', oauthConfig.scope);
 
     const authUrl = url.toString();
     const developmentDebug =
@@ -116,9 +121,9 @@ export class InstagramService {
     }
 
     const state = this.verifyState(stateRaw);
-    const userAccessToken = await this.exchangeCodeForToken(code.trim());
-    const page = await this.discoverInstagramPage(userAccessToken);
-    const encryptedPageToken = this.encryptToken(page.pageAccessToken);
+    const tokenResult = await this.exchangeCodeForToken(code.trim());
+    const account = await this.discoverInstagramAccount(tokenResult);
+    const encryptedPageToken = this.encryptToken(account.accessToken);
     const tokenExpiry = this.calculateTokenExpiry();
 
     await this.prisma.$transaction([
@@ -130,10 +135,10 @@ export class InstagramService {
           },
         },
         update: {
-          igBusinessId: page.igBusinessId,
-          igUsername: page.igUsername,
-          pageId: page.pageId,
-          pageName: page.pageName,
+          igBusinessId: account.igBusinessId,
+          igUsername: account.igUsername,
+          pageId: account.pageId,
+          pageName: account.pageName,
           pageAccessToken: encryptedPageToken,
           tokenExpiry,
           status: 'connected',
@@ -141,10 +146,10 @@ export class InstagramService {
         create: {
           companyId: state.companyId,
           provider: IntegrationProvider.INSTAGRAM,
-          igBusinessId: page.igBusinessId,
-          igUsername: page.igUsername,
-          pageId: page.pageId,
-          pageName: page.pageName,
+          igBusinessId: account.igBusinessId,
+          igUsername: account.igUsername,
+          pageId: account.pageId,
+          pageName: account.pageName,
           pageAccessToken: encryptedPageToken,
           tokenExpiry,
           status: 'connected',
@@ -159,32 +164,39 @@ export class InstagramService {
         },
         update: {
           accessToken: encryptedPageToken,
-          externalId: page.igBusinessId,
+          externalId: account.igBusinessId,
           status: 'connected',
         },
         create: {
           companyId: state.companyId,
           provider: IntegrationProvider.INSTAGRAM,
           accessToken: encryptedPageToken,
-          externalId: page.igBusinessId,
+          externalId: account.igBusinessId,
           status: 'connected',
         },
       }),
     ]);
 
-    const subscription = await this.subscribePageToInstagramMessages({
-      companyId: state.companyId,
-      pageId: page.pageId,
-      pageAccessToken: page.pageAccessToken,
-    });
+    const subscription = account.pageId
+      ? await this.subscribePageToInstagramMessages({
+          companyId: state.companyId,
+          pageId: account.pageId,
+          pageAccessToken: account.accessToken,
+        })
+      : {
+          success: true,
+          skipped: true,
+          reason: 'instagram_login_app_webhook',
+        };
 
     this.logger.log(
       JSON.stringify({
         event: 'instagram.oauth.connected',
         companyId: state.companyId,
-        pageId: page.pageId,
-        igBusinessId: page.igBusinessId,
+        pageId: account.pageId,
+        igBusinessId: account.igBusinessId,
         subscribed: subscription.success,
+        instagramLogin: !account.pageId,
       }),
     );
 
@@ -192,8 +204,8 @@ export class InstagramService {
       companyId: state.companyId,
       returnTo: state.returnTo,
       connected: true,
-      igBusinessId: page.igBusinessId,
-      igUsername: page.igUsername,
+      igBusinessId: account.igBusinessId,
+      igUsername: account.igUsername,
       subscription,
     };
   }
@@ -415,29 +427,90 @@ export class InstagramService {
     return { sent: true };
   }
 
-  private async exchangeCodeForToken(code: string) {
+  private async exchangeCodeForToken(code: string): Promise<{
+    accessToken: string;
+    userId: string | null;
+  }> {
     const clientId = this.readMetaAppIdForTokenExchange();
     const clientSecret = this.readRequiredConfig('META_APP_SECRET');
     const tokenUrl =
-      this.configService.get<string>('META_OAUTH_TOKEN_URL')?.trim() ||
-      `${this.graphBaseUrl}/v${this.graphVersion}/oauth/access_token`;
+      process.env.INSTAGRAM_OAUTH_TOKEN_URL?.trim() ||
+      'https://api.instagram.com/oauth/access_token';
     const callbackUrl = this.getCallbackUrl();
-
-    const { data } = await axios.get<{ access_token?: string }>(tokenUrl, {
-      params: {
-        client_id: clientId,
-        client_secret: clientSecret,
-        redirect_uri: callbackUrl,
-        code,
-      },
-      timeout: 10000,
+    const body = new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      grant_type: 'authorization_code',
+      redirect_uri: callbackUrl,
+      code,
     });
 
+    const { data } = await axios.post<InstagramOAuthTokenResponse>(
+      tokenUrl,
+      body,
+      {
+        timeout: 10000,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+      },
+    );
+
     if (!data.access_token) {
-      throw new BadRequestException('Meta nao retornou access_token');
+      throw new BadRequestException('Instagram nao retornou access_token');
     }
 
-    return data.access_token;
+    return {
+      accessToken: data.access_token,
+      userId:
+        data.user_id === undefined || data.user_id === null
+          ? null
+          : String(data.user_id),
+    };
+  }
+
+  private async discoverInstagramAccount(tokenResult: {
+    accessToken: string;
+    userId: string | null;
+  }) {
+    if (tokenResult.userId) {
+      const profile = await this.fetchInstagramLoginProfile(
+        tokenResult.userId,
+        tokenResult.accessToken,
+      ).catch(() => null);
+
+      return {
+        igBusinessId: tokenResult.userId,
+        igUsername: profile?.username || null,
+        pageId: null,
+        pageName: null,
+        accessToken: tokenResult.accessToken,
+      };
+    }
+
+    const page = await this.discoverInstagramPage(tokenResult.accessToken);
+    return {
+      igBusinessId: page.igBusinessId,
+      igUsername: page.igUsername,
+      pageId: page.pageId,
+      pageName: page.pageName,
+      accessToken: page.pageAccessToken,
+    };
+  }
+
+  private async fetchInstagramLoginProfile(userId: string, accessToken: string) {
+    const { data } = await axios.get<{ username?: string }>(
+      `https://graph.instagram.com/v${this.graphVersion}/${userId}`,
+      {
+        params: {
+          fields: 'username',
+          access_token: accessToken,
+        },
+        timeout: 10000,
+      },
+    );
+
+    return data;
   }
 
   private async discoverInstagramPage(userAccessToken: string) {
@@ -683,22 +756,24 @@ export class InstagramService {
     const redirectUri = process.env.INSTAGRAM_REDIRECT_URI?.trim();
     const authorizeUrl =
       process.env.META_OAUTH_AUTHORIZE_URL?.trim() ||
-      `https://www.facebook.com/v${this.graphVersion}/dialog/oauth`;
+      'https://www.instagram.com/oauth/authorize';
     const scope =
       process.env.INSTAGRAM_OAUTH_SCOPE?.trim() ||
       [
         'instagram_business_basic',
-        'instagram_business_manage_messages',
         'instagram_manage_comments',
+        'instagram_business_manage_messages',
       ].join(',');
     const authorizeUrlHost = this.extractUrlHost(authorizeUrl);
     const metaAppIdExists = Boolean(clientId);
     const metaAppIdIsNumeric = Boolean(clientId && /^\d+$/.test(clientId));
     const metaAppSecretExists = Boolean(clientSecret);
     const redirectUriExists = Boolean(redirectUri);
-    const authorizeUrlIsFacebook =
-      authorizeUrl.startsWith('https://www.facebook.com/') &&
-      authorizeUrlHost === 'www.facebook.com';
+    const scopes = scope.split(',').map((item) => item.trim()).filter(Boolean);
+    const scopesExist = scopes.length > 0;
+    const authorizeUrlIsInstagram =
+      authorizeUrl.startsWith('https://www.instagram.com/') &&
+      authorizeUrlHost === 'www.instagram.com';
 
     this.logger.log(
       JSON.stringify({
@@ -706,7 +781,8 @@ export class InstagramService {
         metaAppIdExists,
         metaAppIdIsNumeric,
         redirectUriExists,
-        authorizeUrlHost,
+        authorizeHost: authorizeUrlHost,
+        scopesCount: scopes.length,
       }),
     );
 
@@ -715,7 +791,8 @@ export class InstagramService {
       !metaAppIdIsNumeric ||
       !metaAppSecretExists ||
       !redirectUriExists ||
-      !authorizeUrlIsFacebook
+      !scopesExist ||
+      !authorizeUrlIsInstagram
     ) {
       throw new BadRequestException({
         code: 'instagram_oauth_config_invalid',
@@ -726,8 +803,9 @@ export class InstagramService {
           metaAppIdIsNumeric,
           metaAppSecretExists,
           redirectUriExists,
-          authorizeUrlHost,
-          authorizeUrlIsFacebook,
+          authorizeHost: authorizeUrlHost,
+          scopesCount: scopes.length,
+          authorizeUrlIsInstagram,
         },
       });
     }
