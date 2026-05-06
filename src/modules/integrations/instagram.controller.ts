@@ -52,32 +52,41 @@ export class InstagramController {
     @Res() res: Response,
   ) {
     if (error) {
-      const frontend = (process.env.FRONTEND_APP_URL || 'http://localhost:5173').replace(/\/+$/, '');
-      const redirectUrl = new URL('/integrations', frontend);
-      redirectUrl.searchParams.set('integration_provider', 'instagram');
-      redirectUrl.searchParams.set('integration_status', 'error');
-      redirectUrl.searchParams.set(
-        'integration_message',
-        errorDescription || error,
-      );
       return res.redirect(
         302,
-        redirectUrl.toString(),
+        this.buildIntegrationRedirect('error', errorDescription || error),
       );
     }
 
-    const result = await this.instagramService.handleOAuthCallback(code, state);
-    const redirectUrl = new URL(result.returnTo);
-    redirectUrl.searchParams.set('integration_provider', 'instagram');
-    redirectUrl.searchParams.set('integration_status', 'connected');
-    redirectUrl.searchParams.set(
-      'integration_message',
-      result.subscription.success
-        ? 'Instagram conectado com sucesso.'
-        : 'Instagram conectado. A assinatura do webhook precisa ser revisada no Meta App.',
-    );
+    try {
+      const result = await this.instagramService.handleOAuthCallback(code, state);
+      const message = result.subscription.success
+          ? 'Instagram conectado com sucesso.'
+          : 'Instagram conectado. A assinatura do webhook precisa ser revisada no Meta App.';
 
-    return res.redirect(302, redirectUrl.toString());
+      return res.redirect(
+        302,
+        this.buildIntegrationRedirect('connected', message, result.returnTo),
+      );
+    } catch (callbackError) {
+      const message =
+        callbackError instanceof Error
+          ? callbackError.message
+          : 'Nao foi possivel concluir o OAuth do Instagram.';
+      this.logger.warn(
+        JSON.stringify({
+          event: 'instagram.oauth.callback_failed',
+          hasCode: Boolean(code),
+          hasState: Boolean(state),
+          message,
+        }),
+      );
+
+      return res.redirect(
+        302,
+        this.buildIntegrationRedirect('error', message),
+      );
+    }
   }
 
   @Get('status')
@@ -90,6 +99,12 @@ export class InstagramController {
   @UseGuards(ActiveCompanyGuard)
   disconnect(@Query('companyId') companyId: string) {
     return this.instagramService.disconnect(companyId);
+  }
+
+  @Public()
+  @Get('debug/oauth-url')
+  debugOAuthUrl() {
+    return this.instagramService.getOAuthDebugInfo();
   }
 
   @Public()
@@ -134,5 +149,18 @@ export class InstagramController {
     }
 
     return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  }
+
+  private buildIntegrationRedirect(
+    status: 'connected' | 'error',
+    message: string,
+    returnTo?: string,
+  ) {
+    const frontend = (process.env.FRONTEND_APP_URL || 'http://localhost:5173').replace(/\/+$/, '');
+    const redirectUrl = new URL(returnTo || '/integrations', frontend);
+    redirectUrl.searchParams.set('integration_provider', 'instagram');
+    redirectUrl.searchParams.set('integration_status', status);
+    redirectUrl.searchParams.set('integration_message', message);
+    return redirectUrl.toString();
   }
 }

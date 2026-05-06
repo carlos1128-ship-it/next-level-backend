@@ -44,7 +44,8 @@ const PROVIDER_ENV_PREFIX: Record<OAuthProvider, string> = {
 
 const PROVIDER_SCOPES: Record<OAuthProvider, string> = {
   whatsapp: 'whatsapp_business_management whatsapp_business_messaging',
-  instagram: 'instagram_basic instagram_manage_messages pages_manage_metadata',
+  instagram:
+    'instagram_business_basic instagram_manage_comments instagram_business_manage_messages',
   mercadolivre: 'offline_access read write',
 };
 
@@ -66,6 +67,12 @@ export class IntegrationsOAuthController {
     },
   ) {
     const provider = this.parseProvider(providerParam);
+    if (provider === 'instagram') {
+      throw new BadRequestException(
+        'Use /api/instagram/connect para Instagram Login oficial.',
+      );
+    }
+
     const callbackUrl = this.buildCallbackUrl(req, provider);
     const state = this.encodeState({
       provider,

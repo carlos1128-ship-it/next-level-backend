@@ -52,6 +52,9 @@ type InstagramOAuthConfig = {
   redirectUri: string;
   authorizeUrl: string;
   authorizeUrlHost: string;
+  tokenUrl: string;
+  tokenUrlHost: string;
+  rawScope: string;
   scope: string;
 };
 
@@ -111,6 +114,29 @@ export class InstagramService {
       callbackUrl: oauthConfig.redirectUri,
       mode: 'oauth' as const,
       ...(developmentDebug ? { debug: developmentDebug } : {}),
+    };
+  }
+
+  getOAuthDebugInfo() {
+    const oauthConfig = this.validateInstagramOAuthConfig();
+    const generatedAuthorizeUrl = this.buildOAuthAuthorizeUrl(oauthConfig.authorizeUrl, {
+      client_id: oauthConfig.clientId,
+      redirect_uri: oauthConfig.redirectUri,
+      scope: oauthConfig.scope,
+      response_type: 'code',
+      state: 'STATE_PLACEHOLDER',
+    }).replace('state=STATE_PLACEHOLDER', 'state=<STATE>');
+
+    return {
+      authorizeHost: oauthConfig.authorizeUrlHost,
+      clientIdExists: Boolean(oauthConfig.clientId),
+      clientIdIsNumeric: /^\d+$/.test(oauthConfig.clientId),
+      redirectUriUsed: oauthConfig.redirectUri,
+      rawScopeUsed: oauthConfig.rawScope,
+      normalizedScopeUsed: oauthConfig.scope,
+      encodedScopePreview: encodeURIComponent(oauthConfig.scope),
+      responseType: 'code',
+      generatedAuthorizeUrl,
     };
   }
 
@@ -430,22 +456,17 @@ export class InstagramService {
     accessToken: string;
     userId: string | null;
   }> {
-    const clientId = this.readMetaAppIdForTokenExchange();
-    const clientSecret = this.readRequiredConfig('META_APP_SECRET');
-    const tokenUrl =
-      process.env.INSTAGRAM_OAUTH_TOKEN_URL?.trim() ||
-      'https://api.instagram.com/oauth/access_token';
-    const callbackUrl = this.getCallbackUrl();
+    const oauthConfig = this.validateInstagramOAuthConfig();
     const body = new URLSearchParams({
-      client_id: clientId,
-      client_secret: clientSecret,
+      client_id: oauthConfig.clientId,
+      client_secret: oauthConfig.clientSecret,
       grant_type: 'authorization_code',
-      redirect_uri: callbackUrl,
+      redirect_uri: oauthConfig.redirectUri,
       code,
     });
 
     const { data } = await axios.post<InstagramOAuthTokenResponse>(
-      tokenUrl,
+      oauthConfig.tokenUrl,
       body,
       {
         timeout: 10000,
@@ -695,25 +716,6 @@ export class InstagramService {
     return crypto.timingSafeEqual(leftBuffer, rightBuffer);
   }
 
-  private getCallbackUrl() {
-    const configured =
-      this.configService.get<string>('INSTAGRAM_REDIRECT_URI')?.trim() ||
-      this.configService.get<string>('CALLBACK_URL')?.trim() ||
-      this.configService.get<string>('INSTAGRAM_CALLBACK_URL')?.trim();
-
-    if (configured) {
-      return configured;
-    }
-
-    const publicApi =
-      this.configService.get<string>('PUBLIC_API_URL')?.trim() ||
-      this.configService.get<string>('APP_URL')?.trim() ||
-      'http://localhost:3333/api';
-    const normalized = publicApi.replace(/\/+$/, '');
-    const apiBase = /\/api$/i.test(normalized) ? normalized : `${normalized}/api`;
-    return `${apiBase}/instagram/callback`;
-  }
-
   private resolveReturnTo(raw: string | null | undefined) {
     const frontend =
       this.configService.get<string>('FRONTEND_APP_URL')?.trim() ||
@@ -745,7 +747,9 @@ export class InstagramService {
   private hasOAuthConfig() {
     return Boolean(
       this.configService.get<string>('META_APP_ID')?.trim() &&
-        this.configService.get<string>('META_APP_SECRET')?.trim(),
+        this.configService.get<string>('META_APP_SECRET')?.trim() &&
+        this.configService.get<string>('INSTAGRAM_REDIRECT_URI')?.trim() &&
+        this.configService.get<string>('INSTAGRAM_OAUTH_SCOPE')?.trim(),
     );
   }
 
@@ -753,28 +757,29 @@ export class InstagramService {
     const clientId = process.env.META_APP_ID?.trim();
     const clientSecret = process.env.META_APP_SECRET?.trim();
     const redirectUri = process.env.INSTAGRAM_REDIRECT_URI?.trim();
+    const rawScope = process.env.INSTAGRAM_OAUTH_SCOPE?.trim();
     const authorizeUrl =
       process.env.META_OAUTH_AUTHORIZE_URL?.trim() ||
       'https://www.instagram.com/oauth/authorize';
-    const scope =
-      this.normalizeInstagramOAuthScopes(
-        process.env.INSTAGRAM_OAUTH_SCOPE?.trim() ||
-          [
-            'instagram_business_basic',
-            'instagram_manage_comments',
-            'instagram_business_manage_messages',
-          ].join(' '),
-      );
+    const tokenUrl =
+      process.env.INSTAGRAM_OAUTH_TOKEN_URL?.trim() ||
+      'https://api.instagram.com/oauth/access_token';
+    const scope = this.normalizeInstagramOAuthScopes(rawScope || '');
     const authorizeUrlHost = this.extractUrlHost(authorizeUrl);
+    const tokenUrlHost = this.extractUrlHost(tokenUrl);
     const metaAppIdExists = Boolean(clientId);
     const metaAppIdIsNumeric = Boolean(clientId && /^\d+$/.test(clientId));
     const metaAppSecretExists = Boolean(clientSecret);
     const redirectUriExists = Boolean(redirectUri);
+    const scopesEnvExists = Boolean(rawScope);
     const scopes = scope.split(' ').map((item) => item.trim()).filter(Boolean);
     const scopesExist = scopes.length > 0;
     const authorizeUrlIsInstagram =
-      authorizeUrl.startsWith('https://www.instagram.com/') &&
+      authorizeUrl.startsWith('https://www.instagram.com/oauth/authorize') &&
       authorizeUrlHost === 'www.instagram.com';
+    const tokenUrlIsInstagram =
+      tokenUrl.startsWith('https://api.instagram.com/oauth/access_token') &&
+      tokenUrlHost === 'api.instagram.com';
 
     this.logger.log(
       JSON.stringify({
@@ -783,6 +788,8 @@ export class InstagramService {
         metaAppIdIsNumeric,
         redirectUriExists,
         authorizeHost: authorizeUrlHost,
+        tokenUrlHost,
+        scopesEnvExists,
         scopesCount: scopes.length,
       }),
     );
@@ -792,8 +799,10 @@ export class InstagramService {
       !metaAppIdIsNumeric ||
       !metaAppSecretExists ||
       !redirectUriExists ||
+      !scopesEnvExists ||
       !scopesExist ||
-      !authorizeUrlIsInstagram
+      !authorizeUrlIsInstagram ||
+      !tokenUrlIsInstagram
     ) {
       throw new BadRequestException({
         code: 'instagram_oauth_config_invalid',
@@ -804,9 +813,12 @@ export class InstagramService {
           metaAppIdIsNumeric,
           metaAppSecretExists,
           redirectUriExists,
+          scopesEnvExists,
           authorizeHost: authorizeUrlHost,
+          tokenUrlHost,
           scopesCount: scopes.length,
           authorizeUrlIsInstagram,
+          tokenUrlIsInstagram,
         },
       });
     }
@@ -817,6 +829,9 @@ export class InstagramService {
       redirectUri: redirectUri as string,
       authorizeUrl,
       authorizeUrlHost,
+      tokenUrl,
+      tokenUrlHost,
+      rawScope: rawScope as string,
       scope,
     };
   }
@@ -836,17 +851,6 @@ export class InstagramService {
       .join('&');
 
     return `${baseUrl}${separator}${query}`;
-  }
-
-  private readMetaAppIdForTokenExchange() {
-    const value = process.env.META_APP_ID?.trim();
-    if (!value || !/^\d+$/.test(value)) {
-      throw new BadRequestException(
-        'META_APP_ID invalido. Configure o ID numerico do App Meta no Render.',
-      );
-    }
-
-    return value;
   }
 
   private extractUrlHost(value: string) {
