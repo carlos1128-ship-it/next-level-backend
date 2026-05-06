@@ -91,14 +91,13 @@ export class InstagramService {
       issuedAt: new Date().toISOString(),
     }, oauthConfig.clientSecret);
 
-    const url = new URL(oauthConfig.authorizeUrl);
-    url.searchParams.set('client_id', oauthConfig.clientId);
-    url.searchParams.set('redirect_uri', oauthConfig.redirectUri);
-    url.searchParams.set('scope', oauthConfig.scope);
-    url.searchParams.set('response_type', 'code');
-    url.searchParams.set('state', state);
-
-    const authUrl = url.toString();
+    const authUrl = this.buildOAuthAuthorizeUrl(oauthConfig.authorizeUrl, {
+      client_id: oauthConfig.clientId,
+      redirect_uri: oauthConfig.redirectUri,
+      scope: oauthConfig.scope,
+      response_type: 'code',
+      state,
+    });
     const developmentDebug =
       process.env.NODE_ENV !== 'production'
         ? {
@@ -758,18 +757,20 @@ export class InstagramService {
       process.env.META_OAUTH_AUTHORIZE_URL?.trim() ||
       'https://www.instagram.com/oauth/authorize';
     const scope =
-      process.env.INSTAGRAM_OAUTH_SCOPE?.trim() ||
-      [
-        'instagram_business_basic',
-        'instagram_manage_comments',
-        'instagram_business_manage_messages',
-      ].join(',');
+      this.normalizeInstagramOAuthScopes(
+        process.env.INSTAGRAM_OAUTH_SCOPE?.trim() ||
+          [
+            'instagram_business_basic',
+            'instagram_manage_comments',
+            'instagram_business_manage_messages',
+          ].join(' '),
+      );
     const authorizeUrlHost = this.extractUrlHost(authorizeUrl);
     const metaAppIdExists = Boolean(clientId);
     const metaAppIdIsNumeric = Boolean(clientId && /^\d+$/.test(clientId));
     const metaAppSecretExists = Boolean(clientSecret);
     const redirectUriExists = Boolean(redirectUri);
-    const scopes = scope.split(',').map((item) => item.trim()).filter(Boolean);
+    const scopes = scope.split(' ').map((item) => item.trim()).filter(Boolean);
     const scopesExist = scopes.length > 0;
     const authorizeUrlIsInstagram =
       authorizeUrl.startsWith('https://www.instagram.com/') &&
@@ -818,6 +819,23 @@ export class InstagramService {
       authorizeUrlHost,
       scope,
     };
+  }
+
+  private normalizeInstagramOAuthScopes(value: string) {
+    return value
+      .split(/[\s,]+/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .join(' ');
+  }
+
+  private buildOAuthAuthorizeUrl(baseUrl: string, params: Record<string, string>) {
+    const separator = baseUrl.includes('?') ? '&' : '?';
+    const query = Object.entries(params)
+      .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+      .join('&');
+
+    return `${baseUrl}${separator}${query}`;
   }
 
   private readMetaAppIdForTokenExchange() {
