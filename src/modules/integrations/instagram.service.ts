@@ -56,6 +56,13 @@ type InstagramOAuthConfig = {
   tokenUrlHost: string;
   rawScope: string;
   scope: string;
+  extraAuthorizeParams: Record<string, string>;
+};
+
+type ParsedOAuthUrl = {
+  url: URL;
+  params: Record<string, string | string[]>;
+  scopeNormalized: string;
 };
 
 @Injectable()
@@ -95,6 +102,7 @@ export class InstagramService {
     }, oauthConfig.clientSecret);
 
     const authUrl = this.buildOAuthAuthorizeUrl(oauthConfig.authorizeUrl, {
+      ...oauthConfig.extraAuthorizeParams,
       client_id: oauthConfig.clientId,
       redirect_uri: oauthConfig.redirectUri,
       scope: oauthConfig.scope,
@@ -119,24 +127,86 @@ export class InstagramService {
 
   getOAuthDebugInfo() {
     const oauthConfig = this.validateInstagramOAuthConfig();
-    const generatedAuthorizeUrl = this.buildOAuthAuthorizeUrl(oauthConfig.authorizeUrl, {
-      client_id: oauthConfig.clientId,
-      redirect_uri: oauthConfig.redirectUri,
-      scope: oauthConfig.scope,
-      response_type: 'code',
-      state: 'STATE_PLACEHOLDER',
-    }).replace('state=STATE_PLACEHOLDER', 'state=<STATE>');
+    const snapshot = this.buildOAuthDebugSnapshot(oauthConfig);
 
     return {
+      generatedAuthorizeUrl: snapshot.generatedAuthorizeUrl,
       authorizeHost: oauthConfig.authorizeUrlHost,
-      clientIdExists: Boolean(oauthConfig.clientId),
-      clientIdIsNumeric: /^\d+$/.test(oauthConfig.clientId),
+      authorizePath: snapshot.parsed.url.pathname,
+      queryParams: snapshot.safeQueryParams,
       redirectUriUsed: oauthConfig.redirectUri,
       rawScopeUsed: oauthConfig.rawScope,
       normalizedScopeUsed: oauthConfig.scope,
       encodedScopePreview: encodeURIComponent(oauthConfig.scope),
-      responseType: 'code',
-      generatedAuthorizeUrl,
+      responseType: snapshot.safeQueryParams.response_type || null,
+      envSummary: {
+        metaAppIdExists: Boolean(oauthConfig.clientId),
+        metaAppIdIsNumeric: /^\d+$/.test(oauthConfig.clientId),
+        instagramRedirectUriExists: Boolean(oauthConfig.redirectUri),
+        instagramOauthScopeExists: Boolean(oauthConfig.rawScope),
+        metaOauthAuthorizeUrl: oauthConfig.authorizeUrl,
+        instagramOauthTokenUrl: oauthConfig.tokenUrl,
+      },
+    };
+  }
+
+  compareOAuthUrl(metaEmbeddedUrl: string | undefined, authorization?: string) {
+    this.assertDebugCompareAllowed(authorization);
+
+    if (!metaEmbeddedUrl?.trim()) {
+      throw new BadRequestException('metaEmbeddedUrl nao informado');
+    }
+
+    const oauthConfig = this.validateInstagramOAuthConfig();
+    const ourSnapshot = this.buildOAuthDebugSnapshot(oauthConfig);
+    const our = ourSnapshot.parsed;
+    const meta = this.parseOAuthUrl(metaEmbeddedUrl.trim());
+    const expectedParams = ['client_id', 'redirect_uri', 'scope', 'response_type', 'state'];
+    const ourKeys = this.paramKeys(our.params);
+    const metaKeys = this.paramKeys(meta.params);
+    const sameHost = our.url.host === meta.url.host;
+    const samePath = our.url.pathname === meta.url.pathname;
+    const sameClientId = this.firstParam(our.params.client_id) === this.firstParam(meta.params.client_id);
+    const sameRedirectUri = this.firstParam(our.params.redirect_uri) === this.firstParam(meta.params.redirect_uri);
+    const sameScope = our.scopeNormalized === meta.scopeNormalized;
+    const missingParamsFromOurUrl = expectedParams.filter((key) => !ourKeys.includes(key));
+    const extraParamsInOurUrl = ourKeys.filter((key) => !expectedParams.includes(key));
+    const missingParamsFromMetaUrl = expectedParams.filter((key) => !metaKeys.includes(key));
+    const extraParamsInMetaUrl = metaKeys.filter((key) => !expectedParams.includes(key));
+
+    return {
+      generatedAuthorizeUrl: ourSnapshot.generatedAuthorizeUrl,
+      metaEmbeddedUrl: this.redactOAuthState(meta.url.toString()),
+      comparison: {
+        sameHost,
+        samePath,
+        sameClientId,
+        sameRedirectUri,
+        sameScope,
+        missingParamsFromOurUrl,
+        extraParamsInOurUrl,
+        missingParamsFromMetaUrl,
+        extraParamsInMetaUrl,
+      },
+      ourUrl: {
+        host: our.url.host,
+        path: our.url.pathname,
+        queryParams: this.redactQueryParams(our.params),
+      },
+      metaUrl: {
+        host: meta.url.host,
+        path: meta.url.pathname,
+        queryParams: this.redactQueryParams(meta.params),
+      },
+      possibleCause: this.diagnoseOAuthDifference({
+        sameHost,
+        samePath,
+        sameClientId,
+        sameRedirectUri,
+        sameScope,
+        extraParamsInMetaUrl,
+        missingParamsFromMetaUrl,
+      }),
     };
   }
 
@@ -764,6 +834,7 @@ export class InstagramService {
     const tokenUrl =
       process.env.INSTAGRAM_OAUTH_TOKEN_URL?.trim() ||
       'https://api.instagram.com/oauth/access_token';
+    const extraAuthorizeParams = this.readInstagramAuthorizeExtraParams();
     const scope = this.normalizeInstagramOAuthScopes(rawScope || '');
     const authorizeUrlHost = this.extractUrlHost(authorizeUrl);
     const tokenUrlHost = this.extractUrlHost(tokenUrl);
@@ -833,6 +904,7 @@ export class InstagramService {
       tokenUrlHost,
       rawScope: rawScope as string,
       scope,
+      extraAuthorizeParams,
     };
   }
 
@@ -842,6 +914,152 @@ export class InstagramService {
       .map((item) => item.trim())
       .filter(Boolean)
       .join(' ');
+  }
+
+  private readInstagramAuthorizeExtraParams() {
+    const extra: Record<string, string> = {};
+    const raw = process.env.INSTAGRAM_OAUTH_EXTRA_PARAMS?.trim();
+
+    if (!raw) {
+      extra.force_reauth = 'true';
+      return extra;
+    }
+
+    raw.split('&').forEach((pair) => {
+      const [keyRaw, ...valueParts] = pair.split('=');
+      const key = decodeURIComponent((keyRaw || '').trim());
+      const value = decodeURIComponent(valueParts.join('=').trim());
+      if (!key || ['client_id', 'redirect_uri', 'scope', 'response_type', 'state'].includes(key)) {
+        return;
+      }
+      extra[key] = value || 'true';
+    });
+
+    return extra;
+  }
+
+  private buildOAuthDebugSnapshot(oauthConfig: InstagramOAuthConfig) {
+    const generatedUrlForParsing = this.buildOAuthAuthorizeUrl(oauthConfig.authorizeUrl, {
+      ...oauthConfig.extraAuthorizeParams,
+      client_id: oauthConfig.clientId,
+      redirect_uri: oauthConfig.redirectUri,
+      scope: oauthConfig.scope,
+      response_type: 'code',
+      state: 'STATE_PLACEHOLDER',
+    });
+    const parsed = this.parseOAuthUrl(generatedUrlForParsing);
+    const generatedAuthorizeUrl = generatedUrlForParsing.replace(
+      'state=STATE_PLACEHOLDER',
+      'state=<STATE>',
+    );
+
+    return {
+      generatedAuthorizeUrl,
+      parsed,
+      safeQueryParams: this.redactQueryParams(parsed.params),
+    };
+  }
+
+  private parseOAuthUrl(value: string): ParsedOAuthUrl {
+    try {
+      const url = new URL(value);
+      const params: Record<string, string | string[]> = {};
+      url.searchParams.forEach((paramValue, key) => {
+        const current = params[key];
+        if (Array.isArray(current)) {
+          current.push(paramValue);
+        } else if (current !== undefined) {
+          params[key] = [current, paramValue];
+        } else {
+          params[key] = paramValue;
+        }
+      });
+
+      return {
+        url,
+        params,
+        scopeNormalized: this.normalizeInstagramOAuthScopes(
+          this.firstParam(params.scope) || '',
+        ),
+      };
+    } catch {
+      throw new BadRequestException('URL OAuth invalida');
+    }
+  }
+
+  private redactQueryParams(params: Record<string, string | string[]>) {
+    const redacted: Record<string, string | string[]> = {};
+    Object.entries(params).forEach(([key, value]) => {
+      redacted[key] = key === 'state' ? '<STATE>' : value;
+    });
+    return redacted;
+  }
+
+  private assertDebugCompareAllowed(authorization?: string) {
+    if (process.env.NODE_ENV !== 'production') return;
+
+    const expected = process.env.INTERNAL_AUTOMATION_TOKEN?.trim();
+    if (!expected) {
+      throw new UnauthorizedException('INTERNAL_AUTOMATION_TOKEN nao configurado');
+    }
+
+    const provided = authorization?.replace(/^Bearer\s+/i, '').trim();
+    if (!provided || !this.timingSafeEqual(provided, expected)) {
+      throw new UnauthorizedException('Token interno invalido');
+    }
+  }
+
+  private diagnoseOAuthDifference(input: {
+    sameHost: boolean;
+    samePath: boolean;
+    sameClientId: boolean;
+    sameRedirectUri: boolean;
+    sameScope: boolean;
+    extraParamsInMetaUrl: string[];
+    missingParamsFromMetaUrl: string[];
+  }) {
+    if (!input.sameHost) {
+      return 'Host diferente do link oficial Meta.';
+    }
+    if (!input.samePath) {
+      return 'Path OAuth diferente do link oficial Meta.';
+    }
+    if (!input.sameClientId) {
+      return 'client_id diferente. Confirme se META_APP_ID e Instagram App ID sao do mesmo app.';
+    }
+    if (!input.sameRedirectUri) {
+      return 'redirect_uri diferente da URL oficial/configurada.';
+    }
+    if (!input.sameScope) {
+      return 'Scopes diferentes. O link Meta inclui uma lista diferente de permissoes.';
+    }
+
+    const platformHints = [
+      'force_reauth',
+      'enable_fb_login',
+      'platform_app_id',
+      'business_login_config_id',
+      'config_id',
+      'logger_id',
+      'next',
+    ].filter((key) => input.extraParamsInMetaUrl.includes(key));
+
+    if (platformHints.length) {
+      return `Link Meta tem parametros adicionais: ${platformHints.join(', ')}.`;
+    }
+    if (input.missingParamsFromMetaUrl.length) {
+      return `Link Meta nao tem parametros esperados: ${input.missingParamsFromMetaUrl.join(', ')}.`;
+    }
+
+    return 'URLs equivalentes nos campos essenciais. Se Invalid platform app persistir, a causa provavel e configuracao no painel Meta.';
+  }
+
+  private paramKeys(params: Record<string, string | string[]>) {
+    return Object.keys(params).sort((left, right) => left.localeCompare(right));
+  }
+
+  private firstParam(value: string | string[] | undefined) {
+    return Array.isArray(value) ? value[0] : value;
   }
 
   private buildOAuthAuthorizeUrl(baseUrl: string, params: Record<string, string>) {

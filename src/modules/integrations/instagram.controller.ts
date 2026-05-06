@@ -1,6 +1,8 @@
 import {
+  Body,
   Controller,
   Get,
+  Headers,
   Logger,
   Post,
   Query,
@@ -105,6 +107,18 @@ export class InstagramController {
   @Get('debug/oauth-url')
   debugOAuthUrl() {
     return this.instagramService.getOAuthDebugInfo();
+  }
+
+  @Public()
+  @Post('debug/compare-oauth-url')
+  compareOAuthUrl(
+    @Body('metaEmbeddedUrl') metaEmbeddedUrl: string | undefined,
+    @Headers('authorization') authorization: string | undefined,
+  ) {
+    return this.instagramService.compareOAuthUrl(
+      metaEmbeddedUrl,
+      authorization,
+    );
   }
 
   @Public()
