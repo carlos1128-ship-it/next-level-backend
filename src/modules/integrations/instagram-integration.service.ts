@@ -234,14 +234,22 @@ export class InstagramIntegrationService {
         contactNumber: true,
         remoteJid: true,
         externalThreadId: true,
+        externalAccountId: true,
       },
       take: 200,
     });
+    const conversationBusinessIds = conversations.reduce<string[]>((acc, item) => {
+      const id = item.externalAccountId?.trim();
+      if (id && !acc.includes(id)) acc.push(id);
+      return acc;
+    }, []);
     const knownCustomerIds = conversations.reduce<string[]>((acc, item) => {
       [item.remoteJid, item.externalThreadId, item.contactNumber?.replace(/^instagram:/, '')]
         .forEach((value) => {
           const id = value?.trim();
-          if (id && !acc.includes(id)) acc.push(id);
+          if (id && !conversationBusinessIds.includes(id) && !acc.includes(id)) {
+            acc.push(id);
+          }
         });
       return acc;
     }, []);
@@ -387,6 +395,9 @@ export class InstagramIntegrationService {
       where: {
         companyId,
         provider: IntegrationProvider.INSTAGRAM,
+        NOT: {
+          externalAccountId: candidate,
+        },
         OR: [
           { contactNumber },
           { remoteJid: candidate },

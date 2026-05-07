@@ -782,15 +782,19 @@ export class InstagramSendService {
         contactNumber: true,
         remoteJid: true,
         externalThreadId: true,
+        externalAccountId: true,
       },
       take: 500,
     });
+    const knownBusinessIds = this.mergeKnownIds(
+      conversations.map((item) => item.externalAccountId),
+    );
 
     return conversations.reduce<string[]>((acc, item) => {
       [item.remoteJid, item.externalThreadId, item.contactNumber?.replace(/^instagram:/, '')]
         .forEach((value) => {
           const id = value?.trim();
-          if (id && !acc.includes(id)) acc.push(id);
+          if (id && !knownBusinessIds.includes(id) && !acc.includes(id)) acc.push(id);
         });
       return acc;
     }, []);

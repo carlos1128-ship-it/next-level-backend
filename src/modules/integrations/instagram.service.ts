@@ -274,23 +274,26 @@ export class InstagramService {
       },
     });
     const existingMetadata = this.readObjectMetadata(existingAccount?.metadata);
-    const knownCustomerIds = await this.getKnownInstagramCustomerIds(state.companyId);
-    const preserveBusinessId = (value: unknown) => {
-      const id = this.readKnownId(value);
-      if (!id || knownCustomerIds.includes(id)) return null;
-      return id;
-    };
+    const knownWebhookBusinessIds = await this.getKnownInstagramWebhookBusinessIds(
+      state.companyId,
+    );
+    const knownCustomerIds = (
+      await this.getKnownInstagramCustomerIds(state.companyId)
+    ).filter((id) => !knownWebhookBusinessIds.includes(id));
+    const preservedWebhookCandidates = this.mergeKnownIds([
+      knownWebhookBusinessIds,
+      existingMetadata.webhookRecipientId,
+      existingMetadata.recipientId,
+      existingMetadata.instagramAccountId,
+      existingAccount?.instagramAccountId,
+    ]).filter((id) => !knownCustomerIds.includes(id));
     const preservedWebhookRecipientId =
-      preserveBusinessId(existingMetadata.webhookRecipientId) ||
-      preserveBusinessId(existingMetadata.recipientId) ||
-      preserveBusinessId(existingMetadata.instagramAccountId) ||
-      (existingAccount?.instagramAccountId &&
-      existingAccount.instagramAccountId !== account.igBusinessId &&
-      !knownCustomerIds.includes(existingAccount.instagramAccountId)
-        ? existingAccount.instagramAccountId
-        : null);
+      preservedWebhookCandidates.find((id) => id !== account.igBusinessId) ||
+      preservedWebhookCandidates[0] ||
+      null;
     const instagramAccountId = preservedWebhookRecipientId || account.igBusinessId;
     const allKnownBusinessIds = this.mergeKnownIds([
+      knownWebhookBusinessIds,
       existingAccount?.instagramAccountId,
       existingAccount?.igBusinessId,
       existingAccount?.pageId,
@@ -300,6 +303,10 @@ export class InstagramService {
       account.igBusinessId,
       account.pageId,
     ]).filter((id) => !knownCustomerIds.includes(id));
+    const oauthWouldOverwriteWebhookId =
+      Boolean(preservedWebhookRecipientId) &&
+      preservedWebhookRecipientId !== account.igBusinessId &&
+      existingAccount?.instagramAccountId === account.igBusinessId;
     const accountMetadata = {
       ...existingMetadata,
       scopes: oauthConfig.scopes,
@@ -316,6 +323,18 @@ export class InstagramService {
       tokenStoredAt: new Date().toISOString(),
       tokenExpiresAt: tokenExpiry.toISOString(),
     };
+
+    if (oauthWouldOverwriteWebhookId) {
+      this.logger.warn(
+        JSON.stringify({
+          event: 'instagram.oauth.mapping_preserved',
+          companyId: state.companyId,
+          webhookRecipientId: preservedWebhookRecipientId,
+          igBusinessId: account.igBusinessId,
+          allKnownBusinessIds,
+        }),
+      );
+    }
 
     await this.prisma.$transaction([
       this.prisma.integrationAccount.upsert({
@@ -1068,6 +1087,61 @@ export class InstagramService {
     }, []);
   }
 
+  private async getKnownInstagramWebhookBusinessIds(companyId: string) {
+    const conversations = await this.prisma.conversation.findMany({
+      where: {
+        companyId,
+        provider: IntegrationProvider.INSTAGRAM,
+        externalAccountId: { not: null },
+      },
+      select: {
+        externalAccountId: true,
+      },
+      take: 500,
+    });
+    const events = await this.prisma.integrationEvent.findMany({
+      where: {
+        companyId,
+        provider: IntegrationProvider.INSTAGRAM,
+      },
+      select: {
+        payload: true,
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+      take: 200,
+    });
+
+    return this.mergeKnownIds([
+      conversations.map((conversation) => conversation.externalAccountId),
+      events.flatMap((event) => this.extractWebhookBusinessIdsFromPayload(event.payload)),
+    ]);
+  }
+
+  private extractWebhookBusinessIdsFromPayload(payload: unknown) {
+    const metadata = this.readObjectMetadata(payload);
+    const normalized = this.readObjectMetadata(metadata.normalized);
+    const raw = this.readObjectMetadata(normalized.raw);
+    const rawRecipient = this.readObjectMetadata(raw.recipient);
+    const entry = Array.isArray(metadata.entry) ? metadata.entry : [];
+    const firstEntry = this.readObjectMetadata(entry[0]);
+    const firstMessaging = Array.isArray(firstEntry.messaging)
+      ? this.readObjectMetadata(firstEntry.messaging[0])
+      : {};
+    const firstMessagingRecipient = this.readObjectMetadata(firstMessaging.recipient);
+
+    return this.mergeKnownIds([
+      normalized.recipientId,
+      normalized.pageId,
+      normalized.entryId,
+      normalized.instagramAccountId,
+      rawRecipient.id,
+      firstEntry.id,
+      firstMessagingRecipient.id,
+    ]);
+  }
+
   private async getKnownInstagramCustomerIds(companyId: string) {
     const conversations = await this.prisma.conversation.findMany({
       where: {
@@ -1078,15 +1152,19 @@ export class InstagramService {
         contactNumber: true,
         remoteJid: true,
         externalThreadId: true,
+        externalAccountId: true,
       },
       take: 500,
     });
+    const knownBusinessIds = this.mergeKnownIds(
+      conversations.map((item) => item.externalAccountId),
+    );
 
     return conversations.reduce<string[]>((acc, item) => {
       [item.remoteJid, item.externalThreadId, item.contactNumber?.replace(/^instagram:/, '')]
         .forEach((value) => {
           const id = value?.trim();
-          if (id && !acc.includes(id)) acc.push(id);
+          if (id && !knownBusinessIds.includes(id) && !acc.includes(id)) acc.push(id);
         });
       return acc;
     }, []);
