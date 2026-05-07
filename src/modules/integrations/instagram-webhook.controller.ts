@@ -13,6 +13,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Request, Response } from 'express';
 import { Public } from '../../common/decorators/public.decorator';
+import { InstagramIntegrationService } from './instagram-integration.service';
 import { InstagramMessageProcessorService } from './instagram-message-processor.service';
 import { InstagramWebhookService } from './instagram-webhook.service';
 
@@ -24,6 +25,7 @@ export class InstagramWebhookController {
     private readonly configService: ConfigService,
     private readonly instagramWebhookService: InstagramWebhookService,
     private readonly instagramMessageProcessorService: InstagramMessageProcessorService,
+    private readonly instagramIntegrationService: InstagramIntegrationService,
   ) {}
 
   @Public()
@@ -44,6 +46,56 @@ export class InstagramWebhookController {
     return this.instagramWebhookService.processWebhook(
       req.body as Record<string, unknown>,
       req,
+    );
+  }
+
+  @Public()
+  @Get('internal/resolve-account')
+  async resolveAccount(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('recipientId') recipientId?: string,
+    @Query('entryId') entryId?: string,
+  ) {
+    this.assertInternalToken(authorization);
+    const cleanRecipientId = recipientId?.trim();
+    if (!cleanRecipientId) {
+      throw new BadRequestException('recipientId e obrigatorio');
+    }
+
+    const resolution =
+      await this.instagramIntegrationService.resolveAccountForWebhookDetailed({
+        recipientId: cleanRecipientId,
+        instagramAccountId: cleanRecipientId,
+        pageId: cleanRecipientId,
+        entryId: entryId?.trim() || undefined,
+      });
+
+    return {
+      recipientId: cleanRecipientId,
+      matched: resolution.matched,
+      companyId: resolution.account?.companyId || null,
+      integrationAccountId: resolution.account?.id || null,
+      matchedBy: resolution.matchedBy,
+      provider: 'instagram',
+      status: resolution.account?.status || null,
+      unresolvedReason: resolution.unresolvedReason || null,
+    };
+  }
+
+  @Public()
+  @Post('internal/reprocess-event')
+  reprocessEvent(
+    @Headers('authorization') authorization: string | undefined,
+    @Body() body: { integrationEventId?: string },
+  ) {
+    this.assertInternalToken(authorization);
+    const integrationEventId = body.integrationEventId?.trim();
+    if (!integrationEventId) {
+      throw new BadRequestException('integrationEventId e obrigatorio');
+    }
+
+    return this.instagramMessageProcessorService.reprocessIntegrationEvent(
+      integrationEventId,
     );
   }
 

@@ -30,7 +30,7 @@ export class InstagramSendService {
       throw new BadRequestException('Token do Instagram expirado.');
     }
 
-    const targetId = account?.igBusinessId || account?.pageId;
+    const targetId = account?.instagramAccountId || account?.igBusinessId || account?.pageId;
     const encryptedToken = account?.pageAccessToken;
 
     let graphTargetId = targetId;

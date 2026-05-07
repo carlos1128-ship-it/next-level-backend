@@ -81,11 +81,27 @@ export class InstagramWebhookService {
     let ignored = 0;
 
     for (const message of messages) {
-      const account = await this.instagramIntegrationService.resolveAccountForWebhook({
-        instagramAccountId: message.instagramAccountId,
-        pageId: message.pageId,
-        recipientId: message.recipientId,
-      });
+      const resolution =
+        await this.instagramIntegrationService.resolveAccountForWebhookDetailed({
+          instagramAccountId: message.instagramAccountId,
+          pageId: message.pageId,
+          recipientId: message.recipientId,
+          entryId: message.entryId,
+        });
+      const account = resolution.account;
+
+      this.logger.log(
+        JSON.stringify({
+          event: 'instagram.company.resolve.started',
+          recipientId: message.recipientId || null,
+          entryIdExists: Boolean(message.entryId),
+          matched: resolution.matched,
+          matchedBy: resolution.matchedBy,
+          companyId: account?.companyId || null,
+          integrationAccountId: account?.id || null,
+          unresolvedReason: resolution.unresolvedReason || null,
+        }),
+      );
 
       const existing = await this.prisma.integrationEvent.findUnique({
         where: {
@@ -136,6 +152,8 @@ export class InstagramWebhookService {
             integrationEventId: event.id,
             instagramAccountId: message.instagramAccountId || null,
             recipientId: message.recipientId || null,
+            entryIdExists: Boolean(message.entryId),
+            unresolvedReason: resolution.unresolvedReason || null,
           }),
         );
         continue;
@@ -220,6 +238,7 @@ export class InstagramWebhookService {
             : 'unsupported';
 
         messages.push({
+          entryId,
           instagramAccountId: entryId || recipientId,
           pageId: recipientId,
           senderId,

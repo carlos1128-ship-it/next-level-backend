@@ -14,6 +14,7 @@ import { InstagramIntegrationService } from './instagram-integration.service';
 import { InstagramSendService } from './instagram-send.service';
 
 export type NormalizedInstagramMessage = {
+  entryId?: string | null;
   instagramAccountId?: string | null;
   pageId?: string | null;
   senderId: string;
@@ -119,6 +120,94 @@ export class InstagramMessageProcessorService {
     }, input.companyId);
   }
 
+  async reprocessIntegrationEvent(eventId: string) {
+    const event = await this.prisma.integrationEvent.findUnique({
+      where: { id: eventId },
+    });
+
+    const normalized = this.readStoredNormalizedMessage(event?.payload);
+    if (!event || event.provider !== IntegrationProvider.INSTAGRAM || !normalized) {
+      return {
+        processed: false,
+        matched: false,
+        status: 'ignored',
+        errorMessage: 'Evento Instagram inexistente ou payload invalido',
+      };
+    }
+
+    const resolution =
+      await this.instagramIntegrationService.resolveAccountForWebhookDetailed({
+        instagramAccountId: normalized.instagramAccountId,
+        pageId: normalized.pageId,
+        recipientId: normalized.recipientId,
+        entryId: normalized.entryId,
+      });
+
+    if (!resolution.account) {
+      await this.prisma.integrationEvent.update({
+        where: { id: eventId },
+        data: {
+          companyId: null,
+          status: 'unresolved',
+          processed: false,
+          errorMessage: resolution.unresolvedReason || 'Empresa nao resolvida',
+        },
+      });
+
+      this.logger.warn(
+        JSON.stringify({
+          event: 'instagram.company.resolve.started',
+          recipientId: normalized.recipientId || null,
+          entryIdExists: Boolean(normalized.entryId),
+          matched: false,
+          matchedBy: null,
+          unresolvedReason: resolution.unresolvedReason || null,
+        }),
+      );
+
+      return {
+        processed: false,
+        matched: false,
+        status: 'unresolved',
+        recipientId: normalized.recipientId,
+        matchedBy: null,
+        unresolvedReason: resolution.unresolvedReason,
+      };
+    }
+
+    this.logger.log(
+      JSON.stringify({
+        event: 'instagram.company.resolve.started',
+        recipientId: normalized.recipientId || null,
+        entryIdExists: Boolean(normalized.entryId),
+        matched: true,
+        matchedBy: resolution.matchedBy,
+        companyId: resolution.account.companyId,
+        integrationAccountId: resolution.account.id,
+      }),
+    );
+
+    await this.prisma.integrationEvent.update({
+      where: { id: eventId },
+      data: {
+        companyId: resolution.account.companyId,
+        status: 'received',
+        processed: false,
+        errorMessage: null,
+        processedAt: null,
+      },
+    });
+
+    const result = await this.processIntegrationEvent(eventId);
+    return {
+      matched: true,
+      matchedBy: resolution.matchedBy,
+      companyId: resolution.account.companyId,
+      integrationAccountId: resolution.account.id,
+      result,
+    };
+  }
+
   private async processNormalizedMessage(
     message: NormalizedInstagramMessage,
     options: ProcessOptions = {},
@@ -130,6 +219,7 @@ export class InstagramMessageProcessorService {
           instagramAccountId: message.instagramAccountId,
           pageId: message.pageId,
           recipientId: message.recipientId,
+          entryId: message.entryId,
         });
     const companyId = companyIdOverride || account?.companyId;
 
@@ -139,6 +229,7 @@ export class InstagramMessageProcessorService {
           event: 'instagram.dm.company_unresolved',
           instagramAccountId: message.instagramAccountId || null,
           recipientId: message.recipientId || null,
+          entryIdExists: Boolean(message.entryId),
           messageId: message.messageId,
         }),
       );
@@ -304,6 +395,7 @@ export class InstagramMessageProcessorService {
           senderId: message.senderId,
           recipientId: message.recipientId,
           instagramAccountId: message.instagramAccountId,
+          entryId: message.entryId,
         }),
         rawPayload: this.toJson(message.raw),
       },
@@ -559,6 +651,7 @@ export class InstagramMessageProcessorService {
     return {
       instagramAccountId:
         typeof item.instagramAccountId === 'string' ? item.instagramAccountId : null,
+      entryId: typeof item.entryId === 'string' ? item.entryId : null,
       pageId: typeof item.pageId === 'string' ? item.pageId : null,
       senderId: item.senderId,
       recipientId: item.recipientId,

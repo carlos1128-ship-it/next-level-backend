@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { IntegrationProvider } from '@prisma/client';
+import { IntegrationAccount, IntegrationProvider, Prisma } from '@prisma/client';
 import * as crypto from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { IntegrationsService } from './integrations.service';
@@ -9,6 +9,17 @@ type ResolveInstagramAccountInput = {
   instagramAccountId?: string | null;
   pageId?: string | null;
   recipientId?: string | null;
+  entryId?: string | null;
+};
+
+export type InstagramAccountResolution = {
+  account: IntegrationAccount | null;
+  matched: boolean;
+  matchedBy: string | null;
+  recipientId: string | null;
+  entryIdExists: boolean;
+  candidates: string[];
+  unresolvedReason?: string;
 };
 
 @Injectable()
@@ -20,26 +31,107 @@ export class InstagramIntegrationService {
   ) {}
 
   async resolveAccountForWebhook(input: ResolveInstagramAccountInput) {
-    const candidates = [
-      input.instagramAccountId,
-      input.recipientId,
-      input.pageId,
-    ]
-      .map((item) => item?.trim())
-      .filter(Boolean) as string[];
+    return (await this.resolveAccountForWebhookDetailed(input)).account;
+  }
 
-    if (!candidates.length) return null;
+  async resolveAccountForWebhookDetailed(
+    input: ResolveInstagramAccountInput,
+  ): Promise<InstagramAccountResolution> {
+    const candidates = this.buildCandidates(input);
+    const baseWhere = {
+      provider: IntegrationProvider.INSTAGRAM,
+      status: { not: 'disconnected' },
+    } satisfies Prisma.IntegrationAccountWhereInput;
 
-    return this.prisma.integrationAccount.findFirst({
-      where: {
-        provider: IntegrationProvider.INSTAGRAM,
-        status: { not: 'disconnected' },
-        OR: [
-          { igBusinessId: { in: candidates } },
-          { pageId: { in: candidates } },
-        ],
-      },
-    });
+    for (const candidate of candidates) {
+      const directChecks: Array<{
+        matchedBy: string;
+        where: Prisma.IntegrationAccountWhereInput;
+      }> = [
+        { matchedBy: 'instagramAccountId', where: { instagramAccountId: candidate } },
+        { matchedBy: 'igBusinessId', where: { igBusinessId: candidate } },
+        { matchedBy: 'pageId', where: { pageId: candidate } },
+        {
+          matchedBy: 'metadata.recipientId',
+          where: { metadata: { path: ['recipientId'], equals: candidate } },
+        },
+        {
+          matchedBy: 'metadata.instagramAccountId',
+          where: { metadata: { path: ['instagramAccountId'], equals: candidate } },
+        },
+        {
+          matchedBy: 'metadata.igUserId',
+          where: { metadata: { path: ['igUserId'], equals: candidate } },
+        },
+        {
+          matchedBy: 'metadata.id',
+          where: { metadata: { path: ['id'], equals: candidate } },
+        },
+        {
+          matchedBy: 'metadata.pageId',
+          where: { metadata: { path: ['pageId'], equals: candidate } },
+        },
+        {
+          matchedBy: 'metadata.providerAccountId',
+          where: { metadata: { path: ['providerAccountId'], equals: candidate } },
+        },
+        {
+          matchedBy: 'metadata.accountId',
+          where: { metadata: { path: ['accountId'], equals: candidate } },
+        },
+      ];
+
+      for (const check of directChecks) {
+        const account = await this.prisma.integrationAccount.findFirst({
+          where: { ...baseWhere, ...check.where },
+        });
+        if (account) {
+          return this.match(input, candidates, account, check.matchedBy);
+        }
+      }
+
+      const integration = await this.prisma.integration.findFirst({
+        where: {
+          provider: IntegrationProvider.INSTAGRAM,
+          status: { not: 'disconnected' },
+          externalId: candidate,
+        },
+        select: { companyId: true },
+      });
+      if (integration) {
+        const account = await this.prisma.integrationAccount.findFirst({
+          where: { ...baseWhere, companyId: integration.companyId },
+        });
+        if (account) {
+          return this.match(input, candidates, account, 'integration.externalId');
+        }
+      }
+
+      const company = await this.prisma.company.findFirst({
+        where: { instagramAccountId: candidate },
+        select: { id: true },
+      });
+      if (company) {
+        const account = await this.prisma.integrationAccount.findFirst({
+          where: { ...baseWhere, companyId: company.id },
+        });
+        if (account) {
+          return this.match(input, candidates, account, 'company.instagramAccountId');
+        }
+      }
+    }
+
+    return {
+      account: null,
+      matched: false,
+      matchedBy: null,
+      recipientId: input.recipientId?.trim() || null,
+      entryIdExists: Boolean(input.entryId?.trim()),
+      candidates,
+      unresolvedReason: candidates.length
+        ? 'no_instagram_account_matched'
+        : 'missing_instagram_identifiers',
+    };
   }
 
   async getActiveAccount(companyId: string) {
@@ -90,5 +182,34 @@ export class InstagramIntegrationService {
     }
 
     return crypto.createHash('sha256').update(secret).digest();
+  }
+
+  private buildCandidates(input: ResolveInstagramAccountInput) {
+    return [
+      input.recipientId,
+      input.instagramAccountId,
+      input.pageId,
+      input.entryId,
+    ].reduce<string[]>((acc, item) => {
+      const value = item?.trim();
+      if (value && !acc.includes(value)) acc.push(value);
+      return acc;
+    }, []);
+  }
+
+  private match(
+    input: ResolveInstagramAccountInput,
+    candidates: string[],
+    account: IntegrationAccount,
+    matchedBy: string,
+  ): InstagramAccountResolution {
+    return {
+      account,
+      matched: true,
+      matchedBy,
+      recipientId: input.recipientId?.trim() || null,
+      entryIdExists: Boolean(input.entryId?.trim()),
+      candidates,
+    };
   }
 }
