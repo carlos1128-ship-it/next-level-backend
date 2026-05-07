@@ -15,6 +15,7 @@ import { Request, Response } from 'express';
 import { Public } from '../../common/decorators/public.decorator';
 import { InstagramIntegrationService } from './instagram-integration.service';
 import { InstagramMessageProcessorService } from './instagram-message-processor.service';
+import { InstagramSendService } from './instagram-send.service';
 import { InstagramWebhookService } from './instagram-webhook.service';
 
 type InstagramWebhookRequest = Request & { rawBody?: Buffer };
@@ -26,6 +27,7 @@ export class InstagramWebhookController {
     private readonly instagramWebhookService: InstagramWebhookService,
     private readonly instagramMessageProcessorService: InstagramMessageProcessorService,
     private readonly instagramIntegrationService: InstagramIntegrationService,
+    private readonly instagramSendService: InstagramSendService,
   ) {}
 
   @Public()
@@ -97,6 +99,44 @@ export class InstagramWebhookController {
     return this.instagramMessageProcessorService.reprocessIntegrationEvent(
       integrationEventId,
     );
+  }
+
+  @Public()
+  @Get('internal/token-status')
+  tokenStatus(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('companyId') companyId?: string,
+  ) {
+    this.assertInternalToken(authorization);
+    const cleanCompanyId = companyId?.trim();
+    if (!cleanCompanyId) {
+      throw new BadRequestException('companyId e obrigatorio');
+    }
+
+    return this.instagramSendService.getTokenStatus(cleanCompanyId);
+  }
+
+  @Public()
+  @Post('internal/test-send')
+  testSend(
+    @Headers('authorization') authorization: string | undefined,
+    @Body()
+    body: {
+      companyId?: string;
+      recipientId?: string;
+      text?: string;
+    },
+  ) {
+    this.assertInternalToken(authorization);
+    const companyId = body.companyId?.trim();
+    const recipientId = body.recipientId?.trim();
+    const text = body.text?.trim();
+
+    if (!companyId || !recipientId || !text) {
+      throw new BadRequestException('companyId, recipientId e text sao obrigatorios');
+    }
+
+    return this.instagramSendService.testSend(companyId, recipientId, text);
   }
 
   @Public()

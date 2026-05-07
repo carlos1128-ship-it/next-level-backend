@@ -255,6 +255,15 @@ export class InstagramService {
     const account = await this.discoverInstagramAccount(tokenResult);
     const encryptedPageToken = this.encryptToken(account.accessToken);
     const tokenExpiry = this.calculateTokenExpiry();
+    const oauthConfig = this.validateInstagramOAuthConfig();
+    const accountMetadata = {
+      scopes: oauthConfig.scopes,
+      recipientId: account.igBusinessId,
+      instagramAccountId: account.igBusinessId,
+      igUserId: account.igBusinessId,
+      id: account.igBusinessId,
+      pageId: account.pageId,
+    };
 
     await this.prisma.$transaction([
       this.prisma.integrationAccount.upsert({
@@ -265,6 +274,7 @@ export class InstagramService {
           },
         },
         update: {
+          instagramAccountId: account.igBusinessId,
           igBusinessId: account.igBusinessId,
           igUsername: account.igUsername,
           pageId: account.pageId,
@@ -272,10 +282,12 @@ export class InstagramService {
           pageAccessToken: encryptedPageToken,
           tokenExpiry,
           status: 'connected',
+          metadata: accountMetadata,
         },
         create: {
           companyId: state.companyId,
           provider: IntegrationProvider.INSTAGRAM,
+          instagramAccountId: account.igBusinessId,
           igBusinessId: account.igBusinessId,
           igUsername: account.igUsername,
           pageId: account.pageId,
@@ -283,6 +295,7 @@ export class InstagramService {
           pageAccessToken: encryptedPageToken,
           tokenExpiry,
           status: 'connected',
+          metadata: accountMetadata,
         },
       }),
       this.prisma.integration.upsert({
@@ -304,6 +317,10 @@ export class InstagramService {
           externalId: account.igBusinessId,
           status: 'connected',
         },
+      }),
+      this.prisma.company.update({
+        where: { id: state.companyId },
+        data: { instagramAccountId: account.igBusinessId },
       }),
     ]);
 

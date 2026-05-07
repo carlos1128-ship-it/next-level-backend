@@ -29,6 +29,7 @@ export type NormalizedInstagramMessage = {
 type ProcessOptions = {
   dryRun?: boolean;
   source?: 'webhook' | 'internal_test';
+  retryExistingInbound?: boolean;
 };
 
 @Injectable()
@@ -44,7 +45,7 @@ export class InstagramMessageProcessorService {
     private readonly instagramSendService: InstagramSendService,
   ) {}
 
-  async processIntegrationEvent(eventId: string) {
+  async processIntegrationEvent(eventId: string, options: ProcessOptions = {}) {
     const claimed = await this.prisma.integrationEvent.updateMany({
       where: {
         id: eventId,
@@ -75,6 +76,7 @@ export class InstagramMessageProcessorService {
     try {
       const result = await this.processNormalizedMessage(normalized, {
         source: 'webhook',
+        retryExistingInbound: options.retryExistingInbound,
       });
       await this.finishEvent(eventId, result.status, this.readResultError(result));
       return result;
@@ -198,7 +200,9 @@ export class InstagramMessageProcessorService {
       },
     });
 
-    const result = await this.processIntegrationEvent(eventId);
+    const result = await this.processIntegrationEvent(eventId, {
+      retryExistingInbound: true,
+    });
     return {
       matched: true,
       matchedBy: resolution.matchedBy,
@@ -243,7 +247,7 @@ export class InstagramMessageProcessorService {
     const conversation = await this.upsertConversation(companyId, message);
     const inbound = await this.createInboundMessage(companyId, conversation.id, message);
 
-    if (!inbound.created) {
+    if (!inbound.created && !options.retryExistingInbound) {
       return {
         processed: true,
         status: 'duplicate',
