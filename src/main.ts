@@ -93,6 +93,7 @@ async function bootstrap() {
       skip: (req) =>
         req.path.startsWith('/api/evolution/webhook') ||
         req.path.startsWith('/api/whatsapp/webhooks/evolution') ||
+        req.path.startsWith('/api/instagram/webhook') ||
         req.path.startsWith('/webhooks/'),
     }),
   );

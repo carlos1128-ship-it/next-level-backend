@@ -38,10 +38,7 @@ export class AttendantService {
     provider: IntegrationProvider;
     companyId?: string | null;
   }) {
-    if (
-      payload.provider !== IntegrationProvider.WHATSAPP &&
-      payload.provider !== IntegrationProvider.INSTAGRAM
-    ) {
+    if (payload.provider !== IntegrationProvider.WHATSAPP) {
       return;
     }
 
@@ -56,10 +53,7 @@ export class AttendantService {
     if (!companyId) return;
 
     const rawPayload = event.payload as Record<string, unknown>;
-    const messages =
-      payload.provider === IntegrationProvider.INSTAGRAM
-        ? this.extractInstagramMessages(rawPayload)
-        : this.extractWhatsappMessages(rawPayload);
+    const messages = this.extractWhatsappMessages(rawPayload);
 
     for (const message of messages) {
       await this.processIncomingMessage(
@@ -276,16 +270,41 @@ export class AttendantService {
   }
 
   async listConversationFeed(companyId: string, limit = 20) {
-    return this.prisma.conversation.findMany({
+    const conversations = await this.prisma.conversation.findMany({
       where: { companyId },
       orderBy: { updatedAt: 'desc' },
       take: limit,
       include: {
         messages: {
-          orderBy: { timestamp: 'asc' },
+          orderBy: { timestamp: 'desc' },
           take: HISTORY_LIMIT,
         },
       },
+    });
+
+    return conversations.map((conversation) => {
+      const lastMessage = conversation.messages[0];
+      return {
+        id: conversation.id,
+        companyId: conversation.companyId,
+        whatsappConnectionId: conversation.whatsappConnectionId,
+        provider: conversation.provider,
+        channel: conversation.channel,
+        remoteJid: conversation.remoteJid,
+        contactName: conversation.contactName,
+        contactNumber: conversation.contactNumber,
+        externalThreadId: conversation.externalThreadId,
+        externalAccountId: conversation.externalAccountId,
+        status: conversation.status,
+        botPaused: conversation.botPaused || conversation.isPaused,
+        lastMessage: lastMessage?.content || conversation.lastMessagePreview || '',
+        lastMessageDirection: lastMessage?.direction || null,
+        lastMessageStatus: lastMessage?.status || null,
+        lastMessageAt: conversation.lastMessageAt.toISOString(),
+        createdAt: conversation.createdAt,
+        updatedAt: conversation.updatedAt,
+        messages: conversation.messages.reverse(),
+      };
     });
   }
 

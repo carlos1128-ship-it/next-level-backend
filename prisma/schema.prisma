@@ -187,6 +187,7 @@ enum ImportedEntityStatus {
 enum AIUsageFeature {
   CHAT_IA             @map("chat_ia")
   WHATSAPP_AGENT      @map("whatsapp_agent")
+  INSTAGRAM_AGENT     @map("instagram_agent")
   IMAGE_ANALYSIS      @map("image_analysis")
   AUDIO_TRANSCRIPTION @map("audio_transcription")
   WEB_SEARCH          @map("web_search")
@@ -548,15 +549,21 @@ model IntegrationAccount {
 }
 
 model IntegrationEvent {
-  id        String              @id @default(cuid())
-  companyId String
-  provider  IntegrationProvider
-  type      String
-  payload   Json
-  createdAt DateTime            @default(now())
+  id           String              @id @default(cuid())
+  companyId    String?
+  provider     IntegrationProvider
+  type         String
+  externalId   String?
+  status       String              @default("received")
+  processed    Boolean             @default(false)
+  errorMessage String?             @db.Text
+  payload      Json
+  processedAt  DateTime?
+  createdAt    DateTime            @default(now())
 
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
 
+  @@unique([provider, externalId])
   @@index([companyId, provider, createdAt])
   @@index([provider, type, createdAt])
 }
@@ -726,6 +733,10 @@ model Conversation {
   id                   String                 @id @default(cuid())
   companyId            String
   whatsappConnectionId String?
+  provider             IntegrationProvider    @default(WHATSAPP)
+  channel              String                 @default("whatsapp")
+  externalThreadId     String?
+  externalAccountId    String?
   contactNumber        String
   remoteJid            String?
   contactName          String?
@@ -744,6 +755,9 @@ model Conversation {
   whatsappConnection   WhatsappConnection?    @relation(fields: [whatsappConnectionId], references: [id], onDelete: SetNull)
 
   @@unique([companyId, contactNumber])
+  @@index([companyId, provider, updatedAt])
+  @@index([companyId, channel, updatedAt])
+  @@index([companyId, provider, contactNumber])
   @@index([whatsappConnectionId])
   @@index([companyId, remoteJid])
   @@index([companyId, updatedAt])
@@ -754,6 +768,8 @@ model Message {
   id                 String              @id @default(cuid())
   companyId          String
   conversationId     String
+  provider           IntegrationProvider @default(WHATSAPP)
+  channel            String              @default("whatsapp")
   externalMessageId  String?
   content            String              @default("") @db.Text
   role               String              @default("user")
@@ -776,7 +792,10 @@ model Message {
   saleAIAttributions SaleAIAttribution[]
 
   @@unique([conversationId, externalMessageId])
+  @@unique([companyId, provider, externalMessageId])
   @@index([companyId, createdAt])
+  @@index([companyId, provider, createdAt])
+  @@index([companyId, channel, createdAt])
   @@index([conversationId, createdAt])
   @@index([conversationId, timestamp])
 }

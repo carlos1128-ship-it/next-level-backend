@@ -27,6 +27,7 @@ type FeatureLimit = {
 const LIMITED_FEATURES = [
   AIUsageFeature.CHAT_IA,
   AIUsageFeature.WHATSAPP_AGENT,
+  AIUsageFeature.INSTAGRAM_AGENT,
   AIUsageFeature.INTELLIGENT_IMPORT,
 ];
 
@@ -34,36 +35,43 @@ const DEFAULT_PLAN_LIMITS: Record<string, Partial<Record<AIUsageFeature, Feature
   common: {
     [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 500, monthlyTokenLimit: null, enabled: true },
     [AIUsageFeature.WHATSAPP_AGENT]: { monthlyRequestLimit: 1500, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.INSTAGRAM_AGENT]: { monthlyRequestLimit: 1500, monthlyTokenLimit: null, enabled: true },
     [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: 100, monthlyTokenLimit: null, enabled: true },
   },
   free: {
     [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 100, monthlyTokenLimit: null, enabled: true },
     [AIUsageFeature.WHATSAPP_AGENT]: { monthlyRequestLimit: 300, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.INSTAGRAM_AGENT]: { monthlyRequestLimit: 300, monthlyTokenLimit: null, enabled: true },
     [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: 50, monthlyTokenLimit: null, enabled: true },
   },
   test: {
     [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 100, monthlyTokenLimit: null, enabled: true },
     [AIUsageFeature.WHATSAPP_AGENT]: { monthlyRequestLimit: 300, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.INSTAGRAM_AGENT]: { monthlyRequestLimit: 300, monthlyTokenLimit: null, enabled: true },
     [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: 50, monthlyTokenLimit: null, enabled: true },
   },
   basic: {
     [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 500, monthlyTokenLimit: null, enabled: true },
     [AIUsageFeature.WHATSAPP_AGENT]: { monthlyRequestLimit: 1500, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.INSTAGRAM_AGENT]: { monthlyRequestLimit: 1500, monthlyTokenLimit: null, enabled: true },
     [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: 100, monthlyTokenLimit: null, enabled: true },
   },
   premium: {
     [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 3000, monthlyTokenLimit: null, enabled: true },
     [AIUsageFeature.WHATSAPP_AGENT]: { monthlyRequestLimit: 8000, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.INSTAGRAM_AGENT]: { monthlyRequestLimit: 8000, monthlyTokenLimit: null, enabled: true },
     [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: 500, monthlyTokenLimit: null, enabled: true },
   },
   business: {
     [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 10000, monthlyTokenLimit: null, enabled: true },
     [AIUsageFeature.WHATSAPP_AGENT]: { monthlyRequestLimit: 30000, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.INSTAGRAM_AGENT]: { monthlyRequestLimit: 30000, monthlyTokenLimit: null, enabled: true },
     [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: 2000, monthlyTokenLimit: null, enabled: true },
   },
   pro_business: {
     [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 10000, monthlyTokenLimit: null, enabled: true },
     [AIUsageFeature.WHATSAPP_AGENT]: { monthlyRequestLimit: 30000, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.INSTAGRAM_AGENT]: { monthlyRequestLimit: 30000, monthlyTokenLimit: null, enabled: true },
     [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: 2000, monthlyTokenLimit: null, enabled: true },
   },
 };
@@ -71,6 +79,7 @@ const DEFAULT_PLAN_LIMITS: Record<string, Partial<Record<AIUsageFeature, Feature
 const FEATURE_LABELS: Record<AIUsageFeature, string> = {
   [AIUsageFeature.CHAT_IA]: 'Chat IA',
   [AIUsageFeature.WHATSAPP_AGENT]: 'Atendente WhatsApp',
+  [AIUsageFeature.INSTAGRAM_AGENT]: 'Atendente Instagram',
   [AIUsageFeature.IMAGE_ANALYSIS]: 'Analise de imagem',
   [AIUsageFeature.AUDIO_TRANSCRIPTION]: 'Transcricao de audio',
   [AIUsageFeature.WEB_SEARCH]: 'Busca web',
@@ -82,6 +91,7 @@ const FEATURE_LABELS: Record<AIUsageFeature, string> = {
 const FEATURE_UNITS: Record<AIUsageFeature, string> = {
   [AIUsageFeature.CHAT_IA]: 'mensagens',
   [AIUsageFeature.WHATSAPP_AGENT]: 'mensagens',
+  [AIUsageFeature.INSTAGRAM_AGENT]: 'mensagens',
   [AIUsageFeature.IMAGE_ANALYSIS]: 'analises',
   [AIUsageFeature.AUDIO_TRANSCRIPTION]: 'transcricoes',
   [AIUsageFeature.WEB_SEARCH]: 'buscas',

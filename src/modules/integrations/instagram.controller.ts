@@ -133,50 +133,6 @@ export class InstagramController {
     );
   }
 
-  @Public()
-  @Get('webhook')
-  verifyWebhook(
-    @Req() req: Request,
-    @Res() res: Response,
-  ) {
-    const mode = this.readQueryValue(req.query['hub.mode']);
-    const verifyToken = this.readQueryValue(req.query['hub.verify_token']);
-    const challenge = this.readQueryValue(req.query['hub.challenge']);
-    const challengeText = this.instagramService.verifyWebhookChallenge({
-      mode,
-      verifyToken,
-      challenge,
-    });
-
-    this.logger.log(
-      JSON.stringify({
-        event: 'instagram.webhook.verify.response',
-        contentType: 'text/plain',
-        returnedChallenge: Boolean(challengeText),
-      }),
-    );
-
-    return res.status(200).type('text/plain').send(challengeText);
-  }
-
-  @Public()
-  @Post('webhook')
-  webhook(@Req() req: AuthenticatedRequest) {
-    return this.instagramService.processWebhook(
-      req.body as Record<string, unknown>,
-      req,
-    );
-  }
-
-  private readQueryValue(value: unknown) {
-    if (Array.isArray(value)) {
-      const first = value.find((item) => typeof item === 'string' && item.trim());
-      return typeof first === 'string' ? first.trim() : undefined;
-    }
-
-    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
-  }
-
   private buildIntegrationRedirect(
     status: 'connected' | 'error',
     message: string,
