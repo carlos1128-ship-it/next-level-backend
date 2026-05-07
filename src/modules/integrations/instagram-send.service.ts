@@ -25,10 +25,20 @@ type InstagramSendResult = {
   providerMessageId: string | null;
 };
 
+type ImportInstagramTokenInput = {
+  companyId: string;
+  instagramAccountId: string;
+  username?: string | null;
+  accessToken: string;
+  tokenExpiresAt?: string | null;
+  scopes?: string[];
+};
+
 @Injectable()
 export class InstagramSendService {
   private readonly logger = new Logger(InstagramSendService.name);
   private readonly endpointHost = 'graph.instagram.com';
+  private readonly refreshThresholdMs = 7 * 24 * 60 * 60 * 1000;
 
   constructor(
     private readonly configService: ConfigService,
@@ -43,17 +53,16 @@ export class InstagramSendService {
     options: { messageId?: string | null } = {},
   ): Promise<InstagramSendResult> {
     const credentials = await this.loadSendCredentials(companyId);
-    const { account, accessToken, igAccountId } = credentials;
-    const tokenExpired =
-      account?.tokenExpiry instanceof Date &&
-      account.tokenExpiry.getTime() <= Date.now();
+    const { account, igAccountId } = credentials;
     const endpointPathTemplate = this.getMessagesPathTemplate();
+    let accessToken = credentials.accessToken;
 
-    if (tokenExpired) {
+    if (this.isTokenExpired(account?.tokenExpiry)) {
       const providerError = this.buildLocalProviderError(
-        'TOKEN_EXPIRED',
-        'Token do Instagram expirado.',
+        'TOKEN_EXPIRED_REAUTH_REQUIRED',
+        'Token do Instagram expirado. Reconecte o Instagram ou importe um novo token.',
       );
+      await this.markAccountReconnectRequired(companyId, 'token_expired');
       await this.markMessage(options.messageId, 'failed', providerError);
       throw new BadRequestException({
         message: providerError.message,
@@ -68,6 +77,11 @@ export class InstagramSendService {
           !accessToken ? 'TOKEN_INVALID' : 'ENDPOINT_INVALID',
           'Conta Instagram sem credenciais de envio.',
         );
+      }
+
+      if (this.shouldRefreshBeforeSend(account?.tokenExpiry)) {
+        const refresh = await this.refreshToken(companyId, accessToken, account?.id);
+        accessToken = refresh.accessToken || accessToken;
       }
 
       const response = await axios.post<{
@@ -100,6 +114,18 @@ export class InstagramSendService {
       };
     } catch (error) {
       const providerError = this.normalizeProviderError(error);
+      if (
+        providerError.classification === 'TOKEN_EXPIRED' ||
+        providerError.classification === 'TOKEN_EXPIRED_REAUTH_REQUIRED' ||
+        providerError.classification === 'TOKEN_INVALID'
+      ) {
+        await this.markAccountReconnectRequired(
+          companyId,
+          providerError.classification === 'TOKEN_INVALID'
+            ? 'reconnect_required'
+            : 'token_expired',
+        );
+      }
       await this.markMessage(options.messageId, 'failed', providerError);
       this.logger.warn(
         JSON.stringify({
@@ -142,61 +168,142 @@ export class InstagramSendService {
   async getTokenStatus(companyId: string) {
     const account = await this.instagramIntegrationService.getActiveAccount(companyId);
     const encryptedToken = account?.pageAccessToken || null;
-    let tokenStatus: 'not_checked' | 'valid' | 'invalid' = 'not_checked';
-    let tokenError: InstagramProviderError | null = null;
-
-    if (encryptedToken) {
-      try {
-        const accessToken = this.instagramIntegrationService.decryptToken(encryptedToken);
-        await axios.get(this.buildMeUrl(), {
-          timeout: 10000,
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-          params: {
-            fields: 'id,username,account_type',
-          },
-        });
-        tokenStatus = 'valid';
-      } catch (error) {
-        tokenStatus = 'invalid';
-        tokenError = this.normalizeProviderError(error);
-      }
-    }
-
-    const tokenExpired =
-      account?.tokenExpiry instanceof Date &&
-      account.tokenExpiry.getTime() <= Date.now();
+    const tokenExpired = this.isTokenExpired(account?.tokenExpiry);
     const scopesStored = this.readScopes(account?.metadata);
     const instagramAccountId =
       account?.instagramAccountId || account?.pageId || account?.igBusinessId || null;
 
     return {
+      provider: 'instagram',
       connected: Boolean(account && account.status !== 'disconnected'),
       hasEncryptedToken: Boolean(encryptedToken),
       instagramAccountId,
       username: account?.igUsername || null,
       scopesStored,
       tokenExpiresAt: account?.tokenExpiry?.toISOString() || null,
-      tokenStatus,
+      tokenExpired,
+      status: account?.status || 'disconnected',
       canAttemptSend: Boolean(
         account &&
           encryptedToken &&
           instagramAccountId &&
           !tokenExpired &&
-          tokenStatus !== 'invalid',
+          !['token_expired', 'reconnect_required'].includes(account.status),
       ),
-      providerError: tokenError
-        ? {
-            classification: tokenError.classification,
-            status: tokenError.status,
-            message: tokenError.message,
-            type: tokenError.type,
-            code: tokenError.code,
-            subcode: tokenError.subcode,
-            fbtraceId: tokenError.fbtraceId,
-          }
-        : null,
+    };
+  }
+
+  async importToken(input: ImportInstagramTokenInput) {
+    const companyId = input.companyId.trim();
+    const instagramAccountId = input.instagramAccountId.trim();
+    const accessToken = input.accessToken.trim();
+    const username = input.username?.trim() || null;
+
+    if (!companyId || !instagramAccountId || !accessToken) {
+      throw new BadRequestException(
+        'companyId, instagramAccountId e accessToken sao obrigatorios',
+      );
+    }
+
+    const tokenExpiry = this.resolveImportedTokenExpiry(input.tokenExpiresAt);
+    const encryptedToken = this.instagramIntegrationService.encryptToken(accessToken);
+    const account = await this.instagramIntegrationService.getActiveAccount(companyId);
+    const existingMetadata =
+      account?.metadata && typeof account.metadata === 'object' && !Array.isArray(account.metadata)
+        ? (account.metadata as Record<string, unknown>)
+        : {};
+    const scopes = this.normalizeScopes(input.scopes);
+    const metadata = this.toJson({
+      ...existingMetadata,
+      scopes,
+      recipientId: instagramAccountId,
+      instagramAccountId,
+      igUserId: instagramAccountId,
+      id: instagramAccountId,
+      tokenImportedAt: new Date().toISOString(),
+    });
+
+    const updatedAccount = await this.prisma.integrationAccount.upsert({
+      where: {
+        companyId_provider: {
+          companyId,
+          provider: IntegrationProvider.INSTAGRAM,
+        },
+      },
+      update: {
+        instagramAccountId,
+        igBusinessId: account?.igBusinessId || instagramAccountId,
+        igUsername: username || account?.igUsername,
+        pageId: account?.pageId || instagramAccountId,
+        pageAccessToken: encryptedToken,
+        tokenExpiry,
+        status: 'connected',
+        metadata,
+      },
+      create: {
+        companyId,
+        provider: IntegrationProvider.INSTAGRAM,
+        instagramAccountId,
+        igBusinessId: instagramAccountId,
+        igUsername: username,
+        pageId: instagramAccountId,
+        pageAccessToken: encryptedToken,
+        tokenExpiry,
+        status: 'connected',
+        metadata,
+      },
+      select: {
+        id: true,
+        companyId: true,
+        provider: true,
+        instagramAccountId: true,
+        igUsername: true,
+        tokenExpiry: true,
+        status: true,
+        metadata: true,
+      },
+    });
+
+    await Promise.all([
+      this.prisma.integration.upsert({
+        where: {
+          companyId_provider: {
+            companyId,
+            provider: IntegrationProvider.INSTAGRAM,
+          },
+        },
+        update: {
+          accessToken: encryptedToken,
+          externalId: instagramAccountId,
+          status: 'connected',
+        },
+        create: {
+          companyId,
+          provider: IntegrationProvider.INSTAGRAM,
+          accessToken: encryptedToken,
+          externalId: instagramAccountId,
+          status: 'connected',
+        },
+      }),
+      this.prisma.company.update({
+        where: { id: companyId },
+        data: { instagramAccountId },
+      }),
+    ]);
+
+    return {
+      imported: true,
+      connected: true,
+      provider: 'instagram',
+      integrationAccountId: updatedAccount.id,
+      companyId: updatedAccount.companyId,
+      instagramAccountId: updatedAccount.instagramAccountId,
+      username: updatedAccount.igUsername,
+      hasEncryptedToken: true,
+      tokenExpiresAt: updatedAccount.tokenExpiry?.toISOString() || null,
+      tokenExpired: this.isTokenExpired(updatedAccount.tokenExpiry),
+      status: updatedAccount.status,
+      scopesStored: this.readScopes(updatedAccount.metadata),
     };
   }
 
@@ -285,6 +392,105 @@ export class InstagramSendService {
       accessToken,
       hasEncryptedToken: Boolean(encryptedToken),
     };
+  }
+
+  private async refreshToken(
+    companyId: string,
+    accessToken: string,
+    integrationAccountId?: string | null,
+  ) {
+    this.logger.log(
+      JSON.stringify({
+        event: 'instagram.token.refresh.started',
+        companyId,
+        integrationAccountId: integrationAccountId || null,
+      }),
+    );
+
+    try {
+      const response = await axios.get<{
+        access_token?: string;
+        token_type?: string;
+        expires_in?: number;
+      }>(`https://${this.endpointHost}/refresh_access_token`, {
+        timeout: 10000,
+        params: {
+          grant_type: 'ig_refresh_token',
+          access_token: accessToken,
+        },
+      });
+      const nextToken = response.data?.access_token;
+      const expiresIn = Number(response.data?.expires_in || 0);
+
+      if (!nextToken) {
+        throw this.buildLocalProviderError(
+          'UNKNOWN_META_ERROR',
+          'Meta nao retornou novo token do Instagram.',
+        );
+      }
+
+      const tokenExpiry = new Date(
+        Date.now() + (expiresIn > 0 ? expiresIn : 60 * 24 * 60 * 60) * 1000,
+      );
+      const encryptedToken = this.instagramIntegrationService.encryptToken(nextToken);
+      await Promise.all([
+        this.prisma.integrationAccount.updateMany({
+          where: {
+            companyId,
+            provider: IntegrationProvider.INSTAGRAM,
+            status: { not: 'disconnected' },
+          },
+          data: {
+            pageAccessToken: encryptedToken,
+            tokenExpiry,
+            status: 'connected',
+          },
+        }),
+        this.prisma.integration.updateMany({
+          where: {
+            companyId,
+            provider: IntegrationProvider.INSTAGRAM,
+          },
+          data: {
+            accessToken: encryptedToken,
+            status: 'connected',
+          },
+        }),
+      ]);
+
+      this.logger.log(
+        JSON.stringify({
+          event: 'instagram.token.refresh.succeeded',
+          companyId,
+          integrationAccountId: integrationAccountId || null,
+          tokenExpiresAt: tokenExpiry.toISOString(),
+        }),
+      );
+
+      return { refreshed: true, accessToken: nextToken, tokenExpiresAt: tokenExpiry };
+    } catch (error) {
+      const providerError = this.normalizeProviderError(error);
+      const classification =
+        providerError.classification === 'TOKEN_EXPIRED'
+          ? 'TOKEN_EXPIRED_REAUTH_REQUIRED'
+          : providerError.classification;
+      this.logger.warn(
+        JSON.stringify({
+          event: 'instagram.token.refresh.failed',
+          companyId,
+          integrationAccountId: integrationAccountId || null,
+          classification,
+          status: providerError.status,
+          code: providerError.code,
+          type: providerError.type,
+          fbtrace_id: providerError.fbtraceId,
+        }),
+      );
+      if (classification === 'TOKEN_EXPIRED_REAUTH_REQUIRED') {
+        await this.markAccountReconnectRequired(companyId, 'reconnect_required');
+      }
+      throw this.buildLocalProviderError(classification, providerError.message);
+    }
   }
 
   private normalizeProviderError(error: unknown): InstagramProviderError {
@@ -465,6 +671,55 @@ export class InstagramSendService {
         .filter(Boolean);
     }
     return [];
+  }
+
+  private normalizeScopes(scopes: string[] | undefined) {
+    const defaults = [
+      'instagram_business_basic',
+      'instagram_business_manage_messages',
+      'instagram_business_manage_comments',
+    ];
+    const allowed = new Set(defaults);
+    const incoming = Array.isArray(scopes) ? scopes : [];
+    return [...incoming, ...defaults]
+      .map((scope) => scope.trim())
+      .filter((scope, index, list) => allowed.has(scope) && list.indexOf(scope) === index);
+  }
+
+  private resolveImportedTokenExpiry(value: string | null | undefined) {
+    if (value?.trim()) {
+      const parsed = new Date(value);
+      if (!Number.isNaN(parsed.getTime())) return parsed;
+    }
+    return new Date(Date.now() + 60 * 24 * 60 * 60 * 1000);
+  }
+
+  private isTokenExpired(value: Date | null | undefined) {
+    return value instanceof Date && value.getTime() <= Date.now();
+  }
+
+  private shouldRefreshBeforeSend(value: Date | null | undefined) {
+    return value instanceof Date && value.getTime() - Date.now() <= this.refreshThresholdMs;
+  }
+
+  private async markAccountReconnectRequired(companyId: string, status: string) {
+    await Promise.all([
+      this.prisma.integrationAccount.updateMany({
+        where: {
+          companyId,
+          provider: IntegrationProvider.INSTAGRAM,
+          status: { not: 'disconnected' },
+        },
+        data: { status },
+      }),
+      this.prisma.integration.updateMany({
+        where: {
+          companyId,
+          provider: IntegrationProvider.INSTAGRAM,
+        },
+        data: { status },
+      }),
+    ]).catch(() => undefined);
   }
 
   private isInstagramProviderError(value: unknown): value is InstagramProviderError {

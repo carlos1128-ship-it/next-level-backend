@@ -140,6 +140,32 @@ export class InstagramWebhookController {
   }
 
   @Public()
+  @Post('internal/import-token')
+  importToken(
+    @Headers('authorization') authorization: string | undefined,
+    @Body()
+    body: {
+      companyId?: string;
+      instagramAccountId?: string;
+      username?: string;
+      accessToken?: string;
+      tokenExpiresAt?: string;
+      scopes?: string[];
+    },
+  ) {
+    this.assertInternalToken(authorization);
+
+    return this.instagramSendService.importToken({
+      companyId: body.companyId || '',
+      instagramAccountId: body.instagramAccountId || '',
+      username: body.username || null,
+      accessToken: body.accessToken || '',
+      tokenExpiresAt: body.tokenExpiresAt || null,
+      scopes: Array.isArray(body.scopes) ? body.scopes : undefined,
+    });
+  }
+
+  @Public()
   @Post('internal/test-ai-reply')
   testAiReply(
     @Headers('authorization') authorization: string | undefined,

@@ -364,6 +364,7 @@ export class InstagramService {
         provider: IntegrationProvider.INSTAGRAM,
       },
       select: {
+        instagramAccountId: true,
         igBusinessId: true,
         igUsername: true,
         pageId: true,
@@ -384,16 +385,23 @@ export class InstagramService {
 
     const expired =
       account.tokenExpiry instanceof Date && account.tokenExpiry.getTime() <= Date.now();
+    const reconnectRequired = ['token_expired', 'reconnect_required'].includes(
+      account.status,
+    );
 
     return {
-      connected: !expired,
+      connected: !expired && !reconnectRequired,
       status: expired ? 'token_expired' : account.status,
       provider_setup_required: !this.hasOAuthConfig(),
+      provider: 'instagram',
+      instagramAccountId: account.instagramAccountId || account.igBusinessId,
       igBusinessId: account.igBusinessId,
       igUsername: account.igUsername,
       pageId: account.pageId,
       pageName: account.pageName,
       tokenExpiry: account.tokenExpiry,
+      tokenExpiresAt: account.tokenExpiry,
+      tokenExpired: expired || reconnectRequired,
       updatedAt: account.updatedAt,
     };
   }
