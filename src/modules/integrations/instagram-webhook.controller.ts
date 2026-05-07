@@ -80,6 +80,9 @@ export class InstagramWebhookController {
       matchedBy: resolution.matchedBy,
       provider: 'instagram',
       status: resolution.account?.status || null,
+      knownIds: this.instagramIntegrationService.getKnownInstagramIds(
+        resolution.account,
+      ),
       unresolvedReason: resolution.unresolvedReason || null,
     };
   }

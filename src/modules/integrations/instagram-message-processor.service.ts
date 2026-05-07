@@ -160,7 +160,9 @@ export class InstagramMessageProcessorService {
         JSON.stringify({
           event: 'instagram.company.resolve.started',
           recipientId: normalized.recipientId || null,
+          entryId: normalized.entryId || null,
           entryIdExists: Boolean(normalized.entryId),
+          knownIdFieldsChecked: resolution.knownIdFieldsChecked,
           matched: false,
           matchedBy: null,
           unresolvedReason: resolution.unresolvedReason || null,
@@ -181,7 +183,9 @@ export class InstagramMessageProcessorService {
       JSON.stringify({
         event: 'instagram.company.resolve.started',
         recipientId: normalized.recipientId || null,
+        entryId: normalized.entryId || null,
         entryIdExists: Boolean(normalized.entryId),
+        knownIdFieldsChecked: resolution.knownIdFieldsChecked,
         matched: true,
         matchedBy: resolution.matchedBy,
         companyId: resolution.account.companyId,

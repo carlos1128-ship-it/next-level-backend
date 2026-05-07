@@ -19,6 +19,7 @@ export type InstagramAccountResolution = {
   recipientId: string | null;
   entryIdExists: boolean;
   candidates: string[];
+  knownIdFieldsChecked: string[];
   unresolvedReason?: string;
 };
 
@@ -72,6 +73,14 @@ export class InstagramIntegrationService {
           where: { metadata: { path: ['pageId'], equals: candidate } },
         },
         {
+          matchedBy: 'metadata.webhookRecipientId',
+          where: { metadata: { path: ['webhookRecipientId'], equals: candidate } },
+        },
+        {
+          matchedBy: 'metadata.igBusinessId',
+          where: { metadata: { path: ['igBusinessId'], equals: candidate } },
+        },
+        {
           matchedBy: 'metadata.providerAccountId',
           where: { metadata: { path: ['providerAccountId'], equals: candidate } },
         },
@@ -88,6 +97,11 @@ export class InstagramIntegrationService {
         if (account) {
           return this.match(input, candidates, account, check.matchedBy);
         }
+      }
+
+      const metadataMatch = await this.findByKnownMetadataId(baseWhere, candidate);
+      if (metadataMatch) {
+        return this.match(input, candidates, metadataMatch.account, metadataMatch.matchedBy);
       }
 
       const integration = await this.prisma.integration.findFirst({
@@ -128,6 +142,7 @@ export class InstagramIntegrationService {
       recipientId: input.recipientId?.trim() || null,
       entryIdExists: Boolean(input.entryId?.trim()),
       candidates,
+      knownIdFieldsChecked: this.knownIdFieldsChecked(),
       unresolvedReason: candidates.length
         ? 'no_instagram_account_matched'
         : 'missing_instagram_identifiers',
@@ -149,6 +164,38 @@ export class InstagramIntegrationService {
       companyId,
       IntegrationProvider.INSTAGRAM,
     );
+  }
+
+  getKnownInstagramIds(account: Pick<
+    IntegrationAccount,
+    'instagramAccountId' | 'igBusinessId' | 'pageId' | 'metadata'
+  > | null | undefined) {
+    const metadata =
+      account?.metadata && typeof account.metadata === 'object' && !Array.isArray(account.metadata)
+        ? (account.metadata as Record<string, unknown>)
+        : {};
+
+    return [
+      account?.instagramAccountId,
+      account?.igBusinessId,
+      account?.pageId,
+      metadata.recipientId,
+      metadata.instagramAccountId,
+      metadata.igUserId,
+      metadata.id,
+      metadata.pageId,
+      metadata.webhookRecipientId,
+      metadata.igBusinessId,
+      metadata.providerAccountId,
+      metadata.accountId,
+      ...(Array.isArray(metadata.allKnownInstagramIds)
+        ? metadata.allKnownInstagramIds
+        : []),
+    ].reduce<string[]>((acc, item) => {
+      const value = typeof item === 'number' ? String(item) : typeof item === 'string' ? item.trim() : '';
+      if (value && !acc.includes(value)) acc.push(value);
+      return acc;
+    }, []);
   }
 
   encryptToken(token: string) {
@@ -211,6 +258,75 @@ export class InstagramIntegrationService {
     }, []);
   }
 
+  private async findByKnownMetadataId(
+    baseWhere: Prisma.IntegrationAccountWhereInput,
+    candidate: string,
+  ) {
+    const accounts = await this.prisma.integrationAccount.findMany({
+      where: baseWhere,
+      take: 100,
+    });
+
+    for (const account of accounts) {
+      const metadata =
+        account.metadata && typeof account.metadata === 'object' && !Array.isArray(account.metadata)
+          ? (account.metadata as Record<string, unknown>)
+          : {};
+      const fields: Array<[string, unknown]> = [
+        ['metadata.webhookRecipientId', metadata.webhookRecipientId],
+        ['metadata.igBusinessId', metadata.igBusinessId],
+        ['metadata.recipientId', metadata.recipientId],
+        ['metadata.instagramAccountId', metadata.instagramAccountId],
+        ['metadata.igUserId', metadata.igUserId],
+        ['metadata.id', metadata.id],
+        ['metadata.pageId', metadata.pageId],
+        ['metadata.providerAccountId', metadata.providerAccountId],
+        ['metadata.accountId', metadata.accountId],
+      ];
+
+      for (const [matchedBy, value] of fields) {
+        if (this.valueMatches(value, candidate)) {
+          return { account, matchedBy };
+        }
+      }
+
+      if (this.valueMatches(metadata.allKnownInstagramIds, candidate)) {
+        return { account, matchedBy: 'metadata.allKnownInstagramIds' };
+      }
+    }
+
+    return null;
+  }
+
+  private valueMatches(value: unknown, candidate: string): boolean {
+    if (typeof value === 'number') return String(value) === candidate;
+    if (typeof value === 'string') return value.trim() === candidate;
+    if (Array.isArray(value)) {
+      return value.some((item) => this.valueMatches(item, candidate));
+    }
+    return false;
+  }
+
+  private knownIdFieldsChecked() {
+    return [
+      'instagramAccountId',
+      'igBusinessId',
+      'pageId',
+      'integration.externalId',
+      'company.instagramAccountId',
+      'metadata.recipientId',
+      'metadata.instagramAccountId',
+      'metadata.igUserId',
+      'metadata.id',
+      'metadata.pageId',
+      'metadata.webhookRecipientId',
+      'metadata.igBusinessId',
+      'metadata.providerAccountId',
+      'metadata.accountId',
+      'metadata.allKnownInstagramIds',
+    ];
+  }
+
   private match(
     input: ResolveInstagramAccountInput,
     candidates: string[],
@@ -224,6 +340,7 @@ export class InstagramIntegrationService {
       recipientId: input.recipientId?.trim() || null,
       entryIdExists: Boolean(input.entryId?.trim()),
       candidates,
+      knownIdFieldsChecked: this.knownIdFieldsChecked(),
     };
   }
 }

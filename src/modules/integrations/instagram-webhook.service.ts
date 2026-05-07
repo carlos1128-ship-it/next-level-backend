@@ -94,7 +94,9 @@ export class InstagramWebhookService {
         JSON.stringify({
           event: 'instagram.company.resolve.started',
           recipientId: message.recipientId || null,
+          entryId: message.entryId || null,
           entryIdExists: Boolean(message.entryId),
+          knownIdFieldsChecked: resolution.knownIdFieldsChecked,
           matched: resolution.matched,
           matchedBy: resolution.matchedBy,
           companyId: account?.companyId || null,
@@ -152,6 +154,7 @@ export class InstagramWebhookService {
             integrationEventId: event.id,
             instagramAccountId: message.instagramAccountId || null,
             recipientId: message.recipientId || null,
+            entryId: message.entryId || null,
             entryIdExists: Boolean(message.entryId),
             unresolvedReason: resolution.unresolvedReason || null,
           }),

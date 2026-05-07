@@ -213,14 +213,26 @@ export class InstagramSendService {
         ? (account.metadata as Record<string, unknown>)
         : {};
     const scopes = this.normalizeScopes(input.scopes);
+    const knownIds = this.mergeKnownIds([
+      existingMetadata.allKnownInstagramIds,
+      account?.instagramAccountId,
+      account?.igBusinessId,
+      account?.pageId,
+      existingMetadata.webhookRecipientId,
+      existingMetadata.igBusinessId,
+      instagramAccountId,
+    ]);
     const metadata = this.toJson({
       ...existingMetadata,
       scopes,
       recipientId: instagramAccountId,
       instagramAccountId,
+      webhookRecipientId: instagramAccountId,
+      igBusinessId: account?.igBusinessId || existingMetadata.igBusinessId || instagramAccountId,
       igUserId: instagramAccountId,
       id: instagramAccountId,
       tokenImportedAt: new Date().toISOString(),
+      allKnownInstagramIds: knownIds,
     });
 
     const updatedAccount = await this.prisma.integrationAccount.upsert({
@@ -684,6 +696,22 @@ export class InstagramSendService {
     return [...incoming, ...defaults]
       .map((scope) => scope.trim())
       .filter((scope, index, list) => allowed.has(scope) && list.indexOf(scope) === index);
+  }
+
+  private mergeKnownIds(values: unknown[]) {
+    return values.reduce<string[]>((acc, value) => {
+      const incoming = Array.isArray(value) ? value : [value];
+      incoming.forEach((item) => {
+        const id =
+          typeof item === 'number'
+            ? String(item)
+            : typeof item === 'string'
+              ? item.trim()
+              : '';
+        if (id && !acc.includes(id)) acc.push(id);
+      });
+      return acc;
+    }, []);
   }
 
   private resolveImportedTokenExpiry(value: string | null | undefined) {

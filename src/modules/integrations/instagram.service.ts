@@ -256,13 +256,50 @@ export class InstagramService {
     const encryptedPageToken = this.encryptToken(account.accessToken);
     const tokenExpiry = this.calculateTokenExpiry();
     const oauthConfig = this.validateInstagramOAuthConfig();
+    const existingAccount = await this.prisma.integrationAccount.findUnique({
+      where: {
+        companyId_provider: {
+          companyId: state.companyId,
+          provider: IntegrationProvider.INSTAGRAM,
+        },
+      },
+      select: {
+        instagramAccountId: true,
+        igBusinessId: true,
+        pageId: true,
+        metadata: true,
+      },
+    });
+    const existingMetadata = this.readObjectMetadata(existingAccount?.metadata);
+    const preservedWebhookRecipientId =
+      this.readKnownId(existingMetadata.webhookRecipientId) ||
+      this.readKnownId(existingMetadata.recipientId) ||
+      this.readKnownId(existingMetadata.instagramAccountId) ||
+      (existingAccount?.instagramAccountId &&
+      existingAccount.instagramAccountId !== account.igBusinessId
+        ? existingAccount.instagramAccountId
+        : null);
+    const instagramAccountId = preservedWebhookRecipientId || account.igBusinessId;
+    const allKnownInstagramIds = this.mergeKnownIds([
+      existingAccount?.instagramAccountId,
+      existingAccount?.igBusinessId,
+      existingAccount?.pageId,
+      existingMetadata.allKnownInstagramIds,
+      preservedWebhookRecipientId,
+      account.igBusinessId,
+      account.pageId,
+    ]);
     const accountMetadata = {
+      ...existingMetadata,
       scopes: oauthConfig.scopes,
-      recipientId: account.igBusinessId,
-      instagramAccountId: account.igBusinessId,
+      recipientId: instagramAccountId,
+      instagramAccountId,
+      webhookRecipientId: preservedWebhookRecipientId || instagramAccountId,
+      igBusinessId: account.igBusinessId,
       igUserId: account.igBusinessId,
       id: account.igBusinessId,
       pageId: account.pageId,
+      allKnownInstagramIds,
     };
 
     await this.prisma.$transaction([
@@ -274,7 +311,7 @@ export class InstagramService {
           },
         },
         update: {
-          instagramAccountId: account.igBusinessId,
+          instagramAccountId,
           igBusinessId: account.igBusinessId,
           igUsername: account.igUsername,
           pageId: account.pageId,
@@ -287,7 +324,7 @@ export class InstagramService {
         create: {
           companyId: state.companyId,
           provider: IntegrationProvider.INSTAGRAM,
-          instagramAccountId: account.igBusinessId,
+          instagramAccountId,
           igBusinessId: account.igBusinessId,
           igUsername: account.igUsername,
           pageId: account.pageId,
@@ -307,20 +344,20 @@ export class InstagramService {
         },
         update: {
           accessToken: encryptedPageToken,
-          externalId: account.igBusinessId,
+          externalId: instagramAccountId,
           status: 'connected',
         },
         create: {
           companyId: state.companyId,
           provider: IntegrationProvider.INSTAGRAM,
           accessToken: encryptedPageToken,
-          externalId: account.igBusinessId,
+          externalId: instagramAccountId,
           status: 'connected',
         },
       }),
       this.prisma.company.update({
         where: { id: state.companyId },
-        data: { instagramAccountId: account.igBusinessId },
+        data: { instagramAccountId },
       }),
     ]);
 
@@ -342,6 +379,7 @@ export class InstagramService {
         companyId: state.companyId,
         pageId: account.pageId,
         igBusinessId: account.igBusinessId,
+        instagramAccountId,
         subscribed: subscription.success,
         instagramLogin: !account.pageId,
       }),
@@ -352,6 +390,7 @@ export class InstagramService {
       returnTo: state.returnTo,
       connected: true,
       igBusinessId: account.igBusinessId,
+      instagramAccountId,
       igUsername: account.igUsername,
       subscription,
     };
@@ -890,6 +929,29 @@ export class InstagramService {
     const expiresAt = new Date();
     expiresAt.setUTCDate(expiresAt.getUTCDate() + (Number.isFinite(days) ? days : 60));
     return expiresAt;
+  }
+
+  private readObjectMetadata(value: unknown) {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  }
+
+  private readKnownId(value: unknown) {
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    return null;
+  }
+
+  private mergeKnownIds(values: unknown[]) {
+    return values.reduce<string[]>((acc, value) => {
+      const incoming = Array.isArray(value) ? value : [value];
+      incoming.forEach((item) => {
+        const id = this.readKnownId(item);
+        if (id && !acc.includes(id)) acc.push(id);
+      });
+      return acc;
+    }, []);
   }
 
   private hasOAuthConfig() {

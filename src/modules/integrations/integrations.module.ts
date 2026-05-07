@@ -10,6 +10,7 @@ import { InstagramWebhookService } from './instagram-webhook.service';
 import { InstagramMessageProcessorService } from './instagram-message-processor.service';
 import { InstagramSendService } from './instagram-send.service';
 import { InstagramIntegrationService } from './instagram-integration.service';
+import { AttendantConversationsController } from './attendant-conversations.controller';
 import { MetaGraphService } from './meta-graph.service';
 import { ShopeeScraperService } from './shopee-scraper.service';
 import { EvolutionController } from './evolution.controller';
@@ -28,6 +29,7 @@ import { AlertsModule } from '../alerts/alerts.module';
     EvolutionController,
     InstagramController,
     InstagramWebhookController,
+    AttendantConversationsController,
   ],
   providers: [
     IntegrationsService, 
