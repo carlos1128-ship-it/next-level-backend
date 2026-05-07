@@ -56,6 +56,8 @@ type InstagramOAuthConfig = {
   tokenUrlHost: string;
   rawScope: string;
   scope: string;
+  scopes: string[];
+  invalidScopesDetected: string[];
   extraAuthorizeParams: Record<string, string>;
 };
 
@@ -70,6 +72,26 @@ export class InstagramService {
   private readonly logger = new Logger(InstagramService.name);
   private readonly graphBaseUrl: string;
   private readonly graphVersion: string;
+  private readonly instagramAuthorizeUrl =
+    'https://www.instagram.com/oauth/authorize';
+  private readonly instagramTokenUrl =
+    'https://api.instagram.com/oauth/access_token';
+  private readonly expectedInstagramClientId = '3641482999326328';
+  private readonly expectedInstagramRedirectUri =
+    'https://next-level-backend.onrender.com/api/instagram/callback';
+  private readonly instagramBusinessScopes = [
+    'instagram_business_basic',
+    'instagram_business_manage_messages',
+    'instagram_business_manage_comments',
+  ];
+  private readonly blockedInstagramScopes = [
+    'pages_show_list',
+    'pages_read_engagement',
+    'pages_manage_metadata',
+    'instagram_basic',
+    'instagram_manage_messages',
+    'instagram_manage_comments',
+  ];
 
   constructor(
     private readonly configService: ConfigService,
@@ -94,6 +116,17 @@ export class InstagramService {
     returnTo?: string | null;
   }) {
     const oauthConfig = this.validateInstagramOAuthConfig();
+    this.logger.log(
+      JSON.stringify({
+        event: 'instagram.oauth.connect_started',
+        companyId: input.companyId,
+        authorizeHost: oauthConfig.authorizeUrlHost,
+        redirectUriUsed: oauthConfig.redirectUri,
+        scopesUsed: oauthConfig.scopes,
+        invalidScopesDetected: oauthConfig.invalidScopesDetected,
+        callbackReached: false,
+      }),
+    );
     const state = this.signState({
       companyId: input.companyId,
       userId: input.userId || null,
@@ -137,6 +170,8 @@ export class InstagramService {
       redirectUriUsed: oauthConfig.redirectUri,
       rawScopeUsed: oauthConfig.rawScope,
       normalizedScopeUsed: oauthConfig.scope,
+      scopesUsed: oauthConfig.scopes,
+      invalidScopesDetected: oauthConfig.invalidScopesDetected,
       encodedScopePreview: encodeURIComponent(oauthConfig.scope),
       responseType: snapshot.safeQueryParams.response_type || null,
       envSummary: {
@@ -144,7 +179,7 @@ export class InstagramService {
         metaAppIdIsNumeric: /^\d+$/.test(oauthConfig.clientId),
         instagramRedirectUriExists: Boolean(oauthConfig.redirectUri),
         instagramOauthScopeExists: Boolean(oauthConfig.rawScope),
-        metaOauthAuthorizeUrl: oauthConfig.authorizeUrl,
+        instagramOauthAuthorizeUrl: oauthConfig.authorizeUrl,
         instagramOauthTokenUrl: oauthConfig.tokenUrl,
       },
     };
@@ -535,16 +570,34 @@ export class InstagramService {
       code,
     });
 
-    const { data } = await axios.post<InstagramOAuthTokenResponse>(
-      oauthConfig.tokenUrl,
-      body,
-      {
-        timeout: 10000,
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
+    let data: InstagramOAuthTokenResponse;
+
+    try {
+      const response = await axios.post<InstagramOAuthTokenResponse>(
+        oauthConfig.tokenUrl,
+        body,
+        {
+          timeout: 10000,
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
         },
-      },
-    );
+      );
+      data = response.data;
+    } catch (error) {
+      this.logger.warn(
+        JSON.stringify({
+          event: 'instagram.oauth.token_exchange_failed',
+          tokenHost: oauthConfig.tokenUrlHost,
+          redirectUriUsed: oauthConfig.redirectUri,
+          scopesUsed: oauthConfig.scopes,
+          message: this.extractSafeHttpErrorMessage(error),
+        }),
+      );
+      throw new BadRequestException(
+        'Instagram recusou a troca do codigo OAuth. Verifique redirect URI, app e permissoes no painel Meta.',
+      );
+    }
 
     if (!data.access_token) {
       throw new BadRequestException('Instagram nao retornou access_token');
@@ -816,40 +869,57 @@ export class InstagramService {
 
   private hasOAuthConfig() {
     return Boolean(
-      this.configService.get<string>('META_APP_ID')?.trim() &&
+      (
+        this.configService.get<string>('INSTAGRAM_CLIENT_ID')?.trim() ||
+        this.configService.get<string>('META_APP_ID')?.trim() ||
+        this.expectedInstagramClientId
+      ) &&
         this.configService.get<string>('META_APP_SECRET')?.trim() &&
-        this.configService.get<string>('INSTAGRAM_REDIRECT_URI')?.trim() &&
-        this.configService.get<string>('INSTAGRAM_OAUTH_SCOPE')?.trim(),
+        (
+          this.configService.get<string>('INSTAGRAM_REDIRECT_URI')?.trim() ||
+          this.expectedInstagramRedirectUri
+        ),
     );
   }
 
   private validateInstagramOAuthConfig(): InstagramOAuthConfig {
-    const clientId = process.env.META_APP_ID?.trim();
+    const clientId =
+      process.env.INSTAGRAM_CLIENT_ID?.trim() ||
+      process.env.META_APP_ID?.trim() ||
+      this.expectedInstagramClientId;
     const clientSecret = process.env.META_APP_SECRET?.trim();
-    const redirectUri = process.env.INSTAGRAM_REDIRECT_URI?.trim();
+    const redirectUri =
+      process.env.INSTAGRAM_REDIRECT_URI?.trim() ||
+      this.expectedInstagramRedirectUri;
     const rawScope = process.env.INSTAGRAM_OAUTH_SCOPE?.trim();
     const authorizeUrl =
+      process.env.INSTAGRAM_OAUTH_AUTHORIZE_URL?.trim() ||
       process.env.META_OAUTH_AUTHORIZE_URL?.trim() ||
-      'https://www.instagram.com/oauth/authorize';
+      this.instagramAuthorizeUrl;
     const tokenUrl =
       process.env.INSTAGRAM_OAUTH_TOKEN_URL?.trim() ||
-      'https://api.instagram.com/oauth/access_token';
+      this.instagramTokenUrl;
     const extraAuthorizeParams = this.readInstagramAuthorizeExtraParams();
-    const scope = this.normalizeInstagramOAuthScopes(rawScope || '');
+    const scopeResult = this.normalizeInstagramOAuthScopes(rawScope || '');
+    const scope = scopeResult.scope;
     const authorizeUrlHost = this.extractUrlHost(authorizeUrl);
     const tokenUrlHost = this.extractUrlHost(tokenUrl);
     const metaAppIdExists = Boolean(clientId);
     const metaAppIdIsNumeric = Boolean(clientId && /^\d+$/.test(clientId));
+    const metaAppIdMatchesExpected = clientId === this.expectedInstagramClientId;
     const metaAppSecretExists = Boolean(clientSecret);
     const redirectUriExists = Boolean(redirectUri);
+    const redirectUriMatchesExpected =
+      redirectUri === this.expectedInstagramRedirectUri ||
+      process.env.NODE_ENV !== 'production';
     const scopesEnvExists = Boolean(rawScope);
-    const scopes = scope.split(' ').map((item) => item.trim()).filter(Boolean);
+    const scopes = scopeResult.scopes;
     const scopesExist = scopes.length > 0;
     const authorizeUrlIsInstagram =
-      authorizeUrl.startsWith('https://www.instagram.com/oauth/authorize') &&
+      authorizeUrl.startsWith(this.instagramAuthorizeUrl) &&
       authorizeUrlHost === 'www.instagram.com';
     const tokenUrlIsInstagram =
-      tokenUrl.startsWith('https://api.instagram.com/oauth/access_token') &&
+      tokenUrl.startsWith(this.instagramTokenUrl) &&
       tokenUrlHost === 'api.instagram.com';
 
     this.logger.log(
@@ -857,20 +927,25 @@ export class InstagramService {
         event: 'instagram.oauth.config.validation',
         metaAppIdExists,
         metaAppIdIsNumeric,
+        metaAppIdMatchesExpected,
         redirectUriExists,
+        redirectUriUsed: redirectUri || null,
+        redirectUriMatchesExpected,
         authorizeHost: authorizeUrlHost,
         tokenUrlHost,
         scopesEnvExists,
-        scopesCount: scopes.length,
+        scopesUsed: scopes,
+        invalidScopesDetected: scopeResult.invalidScopesDetected,
       }),
     );
 
     if (
       !metaAppIdExists ||
       !metaAppIdIsNumeric ||
+      !metaAppIdMatchesExpected ||
       !metaAppSecretExists ||
       !redirectUriExists ||
-      !scopesEnvExists ||
+      !redirectUriMatchesExpected ||
       !scopesExist ||
       !authorizeUrlIsInstagram ||
       !tokenUrlIsInstagram
@@ -882,12 +957,15 @@ export class InstagramService {
         details: {
           metaAppIdExists,
           metaAppIdIsNumeric,
+          metaAppIdMatchesExpected,
           metaAppSecretExists,
           redirectUriExists,
+          redirectUriMatchesExpected,
           scopesEnvExists,
           authorizeHost: authorizeUrlHost,
           tokenUrlHost,
-          scopesCount: scopes.length,
+          scopesUsed: scopes,
+          invalidScopesDetected: scopeResult.invalidScopesDetected,
           authorizeUrlIsInstagram,
           tokenUrlIsInstagram,
         },
@@ -902,18 +980,38 @@ export class InstagramService {
       authorizeUrlHost,
       tokenUrl,
       tokenUrlHost,
-      rawScope: rawScope as string,
+      rawScope: rawScope || '',
       scope,
+      scopes,
+      invalidScopesDetected: scopeResult.invalidScopesDetected,
       extraAuthorizeParams,
     };
   }
 
   private normalizeInstagramOAuthScopes(value: string) {
-    return value
+    const incoming = value
       .split(/[\s,]+/)
       .map((item) => item.trim())
-      .filter(Boolean)
-      .join(' ');
+      .filter(Boolean);
+    const invalidScopesDetected = incoming.filter((scope) =>
+      this.blockedInstagramScopes.includes(scope),
+    );
+    const scopes = [
+      ...incoming.filter(
+        (scope) =>
+          this.instagramBusinessScopes.includes(scope) &&
+          !this.blockedInstagramScopes.includes(scope),
+      ),
+      ...this.instagramBusinessScopes,
+    ].filter((scope, index, list) => list.indexOf(scope) === index);
+
+    return {
+      scopes,
+      invalidScopesDetected: [
+        ...new Set(invalidScopesDetected),
+      ],
+      scope: scopes.join(','),
+    };
   }
 
   private readInstagramAuthorizeExtraParams() {
@@ -921,7 +1019,8 @@ export class InstagramService {
     const raw = process.env.INSTAGRAM_OAUTH_EXTRA_PARAMS?.trim();
 
     if (!raw) {
-      extra.force_reauth = 'true';
+      extra.enable_fb_login = '0';
+      extra.force_authentication = '1';
       return extra;
     }
 
@@ -929,11 +1028,28 @@ export class InstagramService {
       const [keyRaw, ...valueParts] = pair.split('=');
       const key = decodeURIComponent((keyRaw || '').trim());
       const value = decodeURIComponent(valueParts.join('=').trim());
-      if (!key || ['client_id', 'redirect_uri', 'scope', 'response_type', 'state'].includes(key)) {
+      if (
+        !key ||
+        [
+          'client_id',
+          'redirect_uri',
+          'scope',
+          'response_type',
+          'state',
+          'force_reauth',
+        ].includes(key)
+      ) {
         return;
       }
       extra[key] = value || 'true';
     });
+
+    if (!extra.enable_fb_login) {
+      extra.enable_fb_login = '0';
+    }
+    if (!extra.force_authentication) {
+      extra.force_authentication = '1';
+    }
 
     return extra;
   }
@@ -978,13 +1094,21 @@ export class InstagramService {
       return {
         url,
         params,
-        scopeNormalized: this.normalizeInstagramOAuthScopes(
+        scopeNormalized: this.normalizeOAuthScopeForComparison(
           this.firstParam(params.scope) || '',
         ),
       };
     } catch {
       throw new BadRequestException('URL OAuth invalida');
     }
+  }
+
+  private normalizeOAuthScopeForComparison(value: string) {
+    return value
+      .split(/[\s,]+/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .join(',');
   }
 
   private redactQueryParams(params: Record<string, string | string[]>) {
@@ -1099,6 +1223,27 @@ export class InstagramService {
     const value = req.headers[name.toLowerCase()];
     if (Array.isArray(value)) return value[0] || '';
     return typeof value === 'string' ? value : '';
+  }
+
+  private extractSafeHttpErrorMessage(error: unknown) {
+    if (axios.isAxiosError(error)) {
+      const data = error.response?.data as
+        | { error?: { message?: string; type?: string; code?: number } }
+        | undefined;
+      return {
+        status: error.response?.status || null,
+        metaCode: data?.error?.code || null,
+        metaType: data?.error?.type || null,
+        metaMessage: data?.error?.message || error.message,
+      };
+    }
+
+    return {
+      status: null,
+      metaCode: null,
+      metaType: null,
+      metaMessage: error instanceof Error ? error.message : 'Erro desconhecido',
+    };
   }
 
   private async logWebhookFailure(

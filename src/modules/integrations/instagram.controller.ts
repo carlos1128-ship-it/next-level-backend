@@ -53,6 +53,16 @@ export class InstagramController {
     @Query('error_description') errorDescription: string | undefined,
     @Res() res: Response,
   ) {
+    this.logger.log(
+      JSON.stringify({
+        event: 'instagram.oauth.callback_reached',
+        callbackReached: true,
+        hasCode: Boolean(code),
+        hasError: Boolean(error),
+        error: error || null,
+      }),
+    );
+
     if (error) {
       return res.redirect(
         302,
@@ -78,8 +88,10 @@ export class InstagramController {
       this.logger.warn(
         JSON.stringify({
           event: 'instagram.oauth.callback_failed',
+          callbackReached: true,
           hasCode: Boolean(code),
           hasState: Boolean(state),
+          hasError: Boolean(error),
           message,
         }),
       );

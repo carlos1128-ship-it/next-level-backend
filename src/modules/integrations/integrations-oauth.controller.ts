@@ -45,7 +45,7 @@ const PROVIDER_ENV_PREFIX: Record<OAuthProvider, string> = {
 const PROVIDER_SCOPES: Record<OAuthProvider, string> = {
   whatsapp: 'whatsapp_business_management whatsapp_business_messaging',
   instagram:
-    'instagram_business_basic instagram_manage_comments instagram_business_manage_messages',
+    'instagram_business_basic instagram_business_manage_comments instagram_business_manage_messages',
   mercadolivre: 'offline_access read write',
 };
 
