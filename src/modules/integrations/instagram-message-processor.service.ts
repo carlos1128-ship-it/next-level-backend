@@ -98,14 +98,15 @@ export class InstagramMessageProcessorService {
   async processSyntheticMessage(input: {
     companyId: string;
     senderId: string;
+    recipientId: string;
     text: string;
     dryRun?: boolean;
   }) {
     const normalized: NormalizedInstagramMessage = {
-      instagramAccountId: null,
-      pageId: null,
+      instagramAccountId: input.recipientId,
+      pageId: input.recipientId,
       senderId: input.senderId,
-      recipientId: 'internal-test',
+      recipientId: input.recipientId,
       messageId: `internal-test:${Date.now()}:${input.senderId}`,
       text: input.text,
       timestamp: new Date().toISOString(),
@@ -113,13 +114,31 @@ export class InstagramMessageProcessorService {
       raw: {
         source: 'internal_test',
         senderId: input.senderId,
+        recipientId: input.recipientId,
       },
     };
+    const resolution =
+      await this.instagramIntegrationService.resolveAccountForWebhookDetailed({
+        instagramAccountId: input.recipientId,
+        pageId: input.recipientId,
+        recipientId: input.recipientId,
+        entryId: input.recipientId,
+      });
+
+    if (!resolution.account || resolution.account.companyId !== input.companyId) {
+      return {
+        processed: false,
+        status: 'unresolved',
+        matched: Boolean(resolution.account),
+        matchedBy: resolution.matchedBy,
+        errorMessage: 'Conta Instagram nao resolvida pelo recipientId informado',
+      };
+    }
 
     return this.processNormalizedMessage(normalized, {
       dryRun: input.dryRun !== false,
       source: 'internal_test',
-    }, input.companyId);
+    }, resolution.account.companyId);
   }
 
   async reprocessIntegrationEvent(eventId: string) {
@@ -277,7 +296,17 @@ export class InstagramMessageProcessorService {
       };
     }
 
-    const config = await this.getOrCreateAgentConfig(companyId);
+    const config = await this.getAgentConfig(companyId);
+    this.logger.log(
+      JSON.stringify({
+        event: 'instagram.ai.agent_config.loaded',
+        companyId,
+        attendantActive: Boolean(config.isEnabled && config.isOnline),
+        model: config.modelName || null,
+        promptSource: 'AgentConfig',
+        fallbackUsed: false,
+      }),
+    );
     const pauseState = this.resolvePauseState(conversation, config);
 
     if (pauseState.paused) {
@@ -305,6 +334,7 @@ export class InstagramMessageProcessorService {
         companyId,
         conversationId: conversation.id,
         recipientId: message.senderId,
+        businessAccountId: message.recipientId,
         text: transferMessage,
         dryRun: options.dryRun,
         source: options.source,
@@ -316,6 +346,7 @@ export class InstagramMessageProcessorService {
       companyId,
       conversationId: conversation.id,
       recipientId: message.senderId,
+      businessAccountId: message.recipientId,
       text: reply,
       dryRun: options.dryRun,
       source: options.source,
@@ -402,6 +433,8 @@ export class InstagramMessageProcessorService {
           channel: 'instagram',
           senderId: message.senderId,
           recipientId: message.recipientId,
+          customerExternalId: message.senderId,
+          businessAccountId: message.recipientId,
           instagramAccountId: message.instagramAccountId,
           entryId: message.entryId,
         }),
@@ -416,6 +449,7 @@ export class InstagramMessageProcessorService {
     companyId: string;
     conversationId: string;
     recipientId: string;
+    businessAccountId: string;
     text: string;
     dryRun?: boolean;
     source?: string;
@@ -440,6 +474,8 @@ export class InstagramMessageProcessorService {
           channel: 'instagram',
           dryRun: Boolean(input.dryRun),
           source: input.source || 'webhook',
+          outboundRecipientId: input.recipientId,
+          businessAccountId: input.businessAccountId,
         }),
       },
     });
@@ -449,7 +485,7 @@ export class InstagramMessageProcessorService {
         input.companyId,
         input.recipientId,
         input.text,
-        { messageId: outbound.id },
+        { messageId: outbound.id, businessAccountId: input.businessAccountId },
       );
     }
 
@@ -517,10 +553,28 @@ export class InstagramMessageProcessorService {
         source: 'instagram_dm_pipeline',
         channel: 'instagram',
         conversationId,
+        promptSource: 'AgentConfig',
       },
     });
+    const response = result.text.trim();
 
-    return result.text.trim() || config.welcomeMessage || 'Oi! Como posso ajudar?';
+    this.logger.log(
+      JSON.stringify({
+        event: 'instagram.ai.response.generated',
+        companyId,
+        conversationId,
+        model: config.modelName || null,
+        promptSource: 'AgentConfig',
+        fallbackUsed: false,
+        aiResponseGenerated: Boolean(response),
+      }),
+    );
+
+    if (!response) {
+      throw new Error('IA nao gerou resposta para Instagram');
+    }
+
+    return response;
   }
 
   private buildPrompt(input: {
@@ -557,38 +611,16 @@ export class InstagramMessageProcessorService {
     ].join('\n\n');
   }
 
-  private async getOrCreateAgentConfig(companyId: string) {
-    const company = await this.prisma.company.findUnique({
-      where: { id: companyId },
-      select: { name: true, description: true, sector: true, segment: true },
+  private async getAgentConfig(companyId: string) {
+    const config = await this.prisma.agentConfig.findUnique({
+      where: { companyId },
     });
 
-    return this.prisma.agentConfig.upsert({
-      where: { companyId },
-      update: {},
-      create: {
-        companyId,
-        agentName: 'Atendente Next Level',
-        companyDescription:
-          company?.description ||
-          [company?.name, company?.sector, company?.segment].filter(Boolean).join(' - '),
-        welcomeMessage: 'Oi! Sou o atendimento da Next Level. Como posso ajudar?',
-        systemPrompt:
-          'Voce responde com clareza, nao inventa informacoes e transfere para humano quando necessario.',
-        toneOfVoice: 'consultivo',
-        internetSearchEnabled: false,
-        isEnabled: false,
-        pauseForHuman: true,
-        speechToTextEnabled: false,
-        imageUnderstandingEnabled: false,
-        splitRepliesEnabled: false,
-        messageBufferEnabled: true,
-        debounceSeconds: 3,
-        maxContextMessages: 20,
-        modelProvider: 'openai',
-        modelName: 'gpt-4o-mini',
-      },
-    });
+    if (!config) {
+      throw new Error('AgentConfig nao configurado para a empresa');
+    }
+
+    return config;
   }
 
   private resolvePauseState(conversation: Conversation, config: AgentConfig) {

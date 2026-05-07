@@ -95,12 +95,20 @@ export class InstagramIntegrationService {
           where: { ...baseWhere, ...check.where },
         });
         if (account) {
+          if (
+            await this.shouldRejectCustomerCandidate(account, candidate)
+          ) {
+            continue;
+          }
           return this.match(input, candidates, account, check.matchedBy);
         }
       }
 
       const metadataMatch = await this.findByKnownMetadataId(baseWhere, candidate);
       if (metadataMatch) {
+        if (await this.shouldRejectCustomerCandidate(metadataMatch.account, candidate)) {
+          continue;
+        }
         return this.match(input, candidates, metadataMatch.account, metadataMatch.matchedBy);
       }
 
@@ -117,6 +125,9 @@ export class InstagramIntegrationService {
           where: { ...baseWhere, companyId: integration.companyId },
         });
         if (account) {
+          if (await this.shouldRejectCustomerCandidate(account, candidate)) {
+            continue;
+          }
           return this.match(input, candidates, account, 'integration.externalId');
         }
       }
@@ -130,6 +141,9 @@ export class InstagramIntegrationService {
           where: { ...baseWhere, companyId: company.id },
         });
         if (account) {
+          if (await this.shouldRejectCustomerCandidate(account, candidate)) {
+            continue;
+          }
           return this.match(input, candidates, account, 'company.instagramAccountId');
         }
       }
@@ -166,7 +180,7 @@ export class InstagramIntegrationService {
     );
   }
 
-  getKnownInstagramIds(account: Pick<
+  getKnownBusinessIds(account: Pick<
     IntegrationAccount,
     'instagramAccountId' | 'igBusinessId' | 'pageId' | 'metadata'
   > | null | undefined) {
@@ -188,6 +202,9 @@ export class InstagramIntegrationService {
       metadata.igBusinessId,
       metadata.providerAccountId,
       metadata.accountId,
+      ...(Array.isArray(metadata.allKnownBusinessIds)
+        ? metadata.allKnownBusinessIds
+        : []),
       ...(Array.isArray(metadata.allKnownInstagramIds)
         ? metadata.allKnownInstagramIds
         : []),
@@ -196,6 +213,59 @@ export class InstagramIntegrationService {
       if (value && !acc.includes(value)) acc.push(value);
       return acc;
     }, []);
+  }
+
+  getKnownInstagramIds(account: Pick<
+    IntegrationAccount,
+    'instagramAccountId' | 'igBusinessId' | 'pageId' | 'metadata'
+  > | null | undefined) {
+    return this.getKnownBusinessIds(account);
+  }
+
+  async getAccountMappingHealth(companyId: string) {
+    const account = await this.getActiveAccount(companyId);
+    const businessIdsKnown = this.getKnownBusinessIds(account);
+    const conversations = await this.prisma.conversation.findMany({
+      where: {
+        companyId,
+        provider: IntegrationProvider.INSTAGRAM,
+      },
+      select: {
+        contactNumber: true,
+        remoteJid: true,
+        externalThreadId: true,
+      },
+      take: 200,
+    });
+    const knownCustomerIds = conversations.reduce<string[]>((acc, item) => {
+      [item.remoteJid, item.externalThreadId, item.contactNumber?.replace(/^instagram:/, '')]
+        .forEach((value) => {
+          const id = value?.trim();
+          if (id && !acc.includes(id)) acc.push(id);
+        });
+      return acc;
+    }, []);
+    const confirmedBusinessIds = [
+      account?.instagramAccountId,
+      account?.igBusinessId,
+      account?.pageId,
+    ].filter((id): id is string => Boolean(id));
+    const customerIdsAccidentallyStoredAsBusinessIds = businessIdsKnown.filter((id) =>
+      knownCustomerIds.includes(id) && !confirmedBusinessIds.includes(id),
+    );
+
+    return {
+      provider: 'instagram',
+      companyId,
+      integrationAccountId: account?.id || null,
+      status: account?.status || 'disconnected',
+      businessIdsKnown,
+      customerIdsAccidentallyStoredAsBusinessIds,
+      mappingHealthy: Boolean(account) && customerIdsAccidentallyStoredAsBusinessIds.length === 0,
+      recommendedCleanup: customerIdsAccidentallyStoredAsBusinessIds.length
+        ? 'Remover IDs de clientes dos campos de conta conectada e manter apenas em Conversation/Message.'
+        : null,
+    };
   }
 
   encryptToken(token: string) {
@@ -290,6 +360,10 @@ export class InstagramIntegrationService {
         }
       }
 
+      if (this.valueMatches(metadata.allKnownBusinessIds, candidate)) {
+        return { account, matchedBy: 'metadata.allKnownBusinessIds' };
+      }
+
       if (this.valueMatches(metadata.allKnownInstagramIds, candidate)) {
         return { account, matchedBy: 'metadata.allKnownInstagramIds' };
       }
@@ -305,6 +379,34 @@ export class InstagramIntegrationService {
       return value.some((item) => this.valueMatches(item, candidate));
     }
     return false;
+  }
+
+  private async isKnownInstagramCustomerId(companyId: string, candidate: string) {
+    const contactNumber = `instagram:${candidate}`;
+    const count = await this.prisma.conversation.count({
+      where: {
+        companyId,
+        provider: IntegrationProvider.INSTAGRAM,
+        OR: [
+          { contactNumber },
+          { remoteJid: candidate },
+          { externalThreadId: candidate },
+        ],
+      },
+    });
+
+    return count > 0;
+  }
+
+  private async shouldRejectCustomerCandidate(
+    account: IntegrationAccount,
+    candidate: string,
+  ) {
+    if (this.getKnownBusinessIds(account).includes(candidate)) {
+      return false;
+    }
+
+    return this.isKnownInstagramCustomerId(account.companyId, candidate);
   }
 
   private knownIdFieldsChecked() {
@@ -323,6 +425,7 @@ export class InstagramIntegrationService {
       'metadata.igBusinessId',
       'metadata.providerAccountId',
       'metadata.accountId',
+      'metadata.allKnownBusinessIds',
       'metadata.allKnownInstagramIds',
     ];
   }

@@ -44,6 +44,8 @@ type InstagramWebhookPayload = {
 type InstagramOAuthTokenResponse = {
   access_token?: string;
   user_id?: string | number;
+  token_type?: string;
+  expires_in?: number;
 };
 
 type InstagramOAuthConfig = {
@@ -251,10 +253,11 @@ export class InstagramService {
     }
 
     const state = this.verifyState(stateRaw);
-    const tokenResult = await this.exchangeCodeForToken(code.trim());
+    const shortTokenResult = await this.exchangeCodeForToken(code.trim());
+    const tokenResult = await this.exchangeForLongLivedToken(shortTokenResult);
     const account = await this.discoverInstagramAccount(tokenResult);
     const encryptedPageToken = this.encryptToken(account.accessToken);
-    const tokenExpiry = this.calculateTokenExpiry();
+    const tokenExpiry = tokenResult.tokenExpiresAt || this.calculateTokenExpiry();
     const oauthConfig = this.validateInstagramOAuthConfig();
     const existingAccount = await this.prisma.integrationAccount.findUnique({
       where: {
@@ -271,24 +274,32 @@ export class InstagramService {
       },
     });
     const existingMetadata = this.readObjectMetadata(existingAccount?.metadata);
+    const knownCustomerIds = await this.getKnownInstagramCustomerIds(state.companyId);
+    const preserveBusinessId = (value: unknown) => {
+      const id = this.readKnownId(value);
+      if (!id || knownCustomerIds.includes(id)) return null;
+      return id;
+    };
     const preservedWebhookRecipientId =
-      this.readKnownId(existingMetadata.webhookRecipientId) ||
-      this.readKnownId(existingMetadata.recipientId) ||
-      this.readKnownId(existingMetadata.instagramAccountId) ||
+      preserveBusinessId(existingMetadata.webhookRecipientId) ||
+      preserveBusinessId(existingMetadata.recipientId) ||
+      preserveBusinessId(existingMetadata.instagramAccountId) ||
       (existingAccount?.instagramAccountId &&
-      existingAccount.instagramAccountId !== account.igBusinessId
+      existingAccount.instagramAccountId !== account.igBusinessId &&
+      !knownCustomerIds.includes(existingAccount.instagramAccountId)
         ? existingAccount.instagramAccountId
         : null);
     const instagramAccountId = preservedWebhookRecipientId || account.igBusinessId;
-    const allKnownInstagramIds = this.mergeKnownIds([
+    const allKnownBusinessIds = this.mergeKnownIds([
       existingAccount?.instagramAccountId,
       existingAccount?.igBusinessId,
       existingAccount?.pageId,
+      existingMetadata.allKnownBusinessIds,
       existingMetadata.allKnownInstagramIds,
       preservedWebhookRecipientId,
       account.igBusinessId,
       account.pageId,
-    ]);
+    ]).filter((id) => !knownCustomerIds.includes(id));
     const accountMetadata = {
       ...existingMetadata,
       scopes: oauthConfig.scopes,
@@ -299,7 +310,11 @@ export class InstagramService {
       igUserId: account.igBusinessId,
       id: account.igBusinessId,
       pageId: account.pageId,
-      allKnownInstagramIds,
+      allKnownBusinessIds,
+      allKnownInstagramIds: allKnownBusinessIds,
+      tokenType: tokenResult.tokenType,
+      tokenStoredAt: new Date().toISOString(),
+      tokenExpiresAt: tokenExpiry.toISOString(),
     };
 
     await this.prisma.$transaction([
@@ -382,6 +397,8 @@ export class InstagramService {
         instagramAccountId,
         subscribed: subscription.success,
         instagramLogin: !account.pageId,
+        tokenExpiresAtExists: Boolean(tokenExpiry),
+        tokenStored: true,
       }),
     );
 
@@ -624,6 +641,8 @@ export class InstagramService {
   private async exchangeCodeForToken(code: string): Promise<{
     accessToken: string;
     userId: string | null;
+    tokenExpiresAt: Date | null;
+    tokenType: string;
   }> {
     const oauthConfig = this.validateInstagramOAuthConfig();
     const body = new URLSearchParams({
@@ -637,6 +656,13 @@ export class InstagramService {
     let data: InstagramOAuthTokenResponse;
 
     try {
+      this.logger.log(
+        JSON.stringify({
+          event: 'instagram.oauth.token_exchange.started',
+          tokenHost: oauthConfig.tokenUrlHost,
+          redirectUriUsed: oauthConfig.redirectUri,
+        }),
+      );
       const response = await axios.post<InstagramOAuthTokenResponse>(
         oauthConfig.tokenUrl,
         body,
@@ -648,6 +674,14 @@ export class InstagramService {
         },
       );
       data = response.data;
+      this.logger.log(
+        JSON.stringify({
+          event: 'instagram.oauth.token_exchange.succeeded',
+          tokenHost: oauthConfig.tokenUrlHost,
+          tokenExpiresAtExists: Boolean(data.expires_in),
+          tokenStored: false,
+        }),
+      );
     } catch (error) {
       this.logger.warn(
         JSON.stringify({
@@ -673,7 +707,77 @@ export class InstagramService {
         data.user_id === undefined || data.user_id === null
           ? null
           : String(data.user_id),
+      tokenExpiresAt: this.expiresInToDate(data.expires_in),
+      tokenType: data.token_type || 'short_lived',
     };
+  }
+
+  private async exchangeForLongLivedToken(tokenResult: {
+    accessToken: string;
+    userId: string | null;
+    tokenExpiresAt: Date | null;
+    tokenType: string;
+  }): Promise<{
+    accessToken: string;
+    userId: string | null;
+    tokenExpiresAt: Date | null;
+    tokenType: string;
+  }> {
+    this.logger.log(
+      JSON.stringify({
+        event: 'instagram.oauth.long_lived_exchange.started',
+        tokenHost: 'graph.instagram.com',
+      }),
+    );
+
+    try {
+      const response = await axios.get<InstagramOAuthTokenResponse>(
+        `https://graph.instagram.com/access_token`,
+        {
+          timeout: 10000,
+          params: {
+            grant_type: 'ig_exchange_token',
+            client_secret: this.readRequiredConfig('META_APP_SECRET'),
+            access_token: tokenResult.accessToken,
+          },
+        },
+      );
+      const accessToken = response.data?.access_token;
+
+      if (!accessToken) {
+        throw new Error('Instagram nao retornou long-lived access_token');
+      }
+
+      const tokenExpiresAt =
+        this.expiresInToDate(response.data.expires_in) || this.calculateTokenExpiry();
+      this.logger.log(
+        JSON.stringify({
+          event: 'instagram.oauth.long_lived_exchange.succeeded',
+          tokenExpiresAtExists: Boolean(tokenExpiresAt),
+          tokenStored: false,
+        }),
+      );
+
+      return {
+        accessToken,
+        userId: tokenResult.userId,
+        tokenExpiresAt,
+        tokenType: response.data.token_type || 'long_lived',
+      };
+    } catch (error) {
+      this.logger.warn(
+        JSON.stringify({
+          event: 'instagram.oauth.long_lived_exchange.failed',
+          tokenHost: 'graph.instagram.com',
+          message: this.extractSafeHttpErrorMessage(error),
+        }),
+      );
+
+      return {
+        ...tokenResult,
+        tokenExpiresAt: tokenResult.tokenExpiresAt || this.calculateShortLivedTokenExpiry(),
+      };
+    }
   }
 
   private async discoverInstagramAccount(tokenResult: {
@@ -931,6 +1035,16 @@ export class InstagramService {
     return expiresAt;
   }
 
+  private calculateShortLivedTokenExpiry() {
+    return new Date(Date.now() + 60 * 60 * 1000);
+  }
+
+  private expiresInToDate(expiresIn: unknown) {
+    const seconds = Number(expiresIn || 0);
+    if (!Number.isFinite(seconds) || seconds <= 0) return null;
+    return new Date(Date.now() + seconds * 1000);
+  }
+
   private readObjectMetadata(value: unknown) {
     return value && typeof value === 'object' && !Array.isArray(value)
       ? (value as Record<string, unknown>)
@@ -950,6 +1064,30 @@ export class InstagramService {
         const id = this.readKnownId(item);
         if (id && !acc.includes(id)) acc.push(id);
       });
+      return acc;
+    }, []);
+  }
+
+  private async getKnownInstagramCustomerIds(companyId: string) {
+    const conversations = await this.prisma.conversation.findMany({
+      where: {
+        companyId,
+        provider: IntegrationProvider.INSTAGRAM,
+      },
+      select: {
+        contactNumber: true,
+        remoteJid: true,
+        externalThreadId: true,
+      },
+      take: 500,
+    });
+
+    return conversations.reduce<string[]>((acc, item) => {
+      [item.remoteJid, item.externalThreadId, item.contactNumber?.replace(/^instagram:/, '')]
+        .forEach((value) => {
+          const id = value?.trim();
+          if (id && !acc.includes(id)) acc.push(id);
+        });
       return acc;
     }, []);
   }

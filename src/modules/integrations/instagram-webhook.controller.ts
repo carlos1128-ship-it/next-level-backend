@@ -80,11 +80,26 @@ export class InstagramWebhookController {
       matchedBy: resolution.matchedBy,
       provider: 'instagram',
       status: resolution.account?.status || null,
-      knownIds: this.instagramIntegrationService.getKnownInstagramIds(
+      knownIds: this.instagramIntegrationService.getKnownBusinessIds(
         resolution.account,
       ),
       unresolvedReason: resolution.unresolvedReason || null,
     };
+  }
+
+  @Public()
+  @Get('internal/account-mapping')
+  accountMapping(
+    @Headers('authorization') authorization: string | undefined,
+    @Query('companyId') companyId?: string,
+  ) {
+    this.assertInternalToken(authorization);
+    const cleanCompanyId = companyId?.trim();
+    if (!cleanCompanyId) {
+      throw new BadRequestException('companyId e obrigatorio');
+    }
+
+    return this.instagramIntegrationService.getAccountMappingHealth(cleanCompanyId);
   }
 
   @Public()
@@ -176,6 +191,7 @@ export class InstagramWebhookController {
     body: {
       companyId?: string;
       senderId?: string;
+      recipientId?: string;
       text?: string;
       dryRun?: boolean;
     },
@@ -183,15 +199,19 @@ export class InstagramWebhookController {
     this.assertInternalToken(authorization);
     const companyId = body.companyId?.trim();
     const senderId = body.senderId?.trim();
+    const recipientId = body.recipientId?.trim();
     const text = body.text?.trim();
 
-    if (!companyId || !senderId || !text) {
-      throw new BadRequestException('companyId, senderId e text sao obrigatorios');
+    if (!companyId || !senderId || !recipientId || !text) {
+      throw new BadRequestException(
+        'companyId, senderId, recipientId e text sao obrigatorios',
+      );
     }
 
     return this.instagramMessageProcessorService.processSyntheticMessage({
       companyId,
       senderId,
+      recipientId,
       text,
       dryRun: body.dryRun !== false,
     });

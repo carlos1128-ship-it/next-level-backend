@@ -50,26 +50,30 @@ export class InstagramSendService {
     companyId: string,
     recipientId: string,
     text: string,
-    options: { messageId?: string | null } = {},
+    options: { messageId?: string | null; businessAccountId?: string | null } = {},
   ): Promise<InstagramSendResult> {
-    const credentials = await this.loadSendCredentials(companyId);
+    const credentials = await this.loadSendCredentials(companyId, options.businessAccountId);
     const { account, igAccountId } = credentials;
     const endpointPathTemplate = this.getMessagesPathTemplate();
     let accessToken = credentials.accessToken;
+    const mappingValid = Boolean(
+      igAccountId &&
+        recipientId &&
+        igAccountId !== recipientId &&
+        (!options.businessAccountId || options.businessAccountId === igAccountId),
+    );
 
-    if (this.isTokenExpired(account?.tokenExpiry)) {
-      const providerError = this.buildLocalProviderError(
-        'TOKEN_EXPIRED_REAUTH_REQUIRED',
-        'Token do Instagram expirado. Reconecte o Instagram ou importe um novo token.',
-      );
-      await this.markAccountReconnectRequired(companyId, 'token_expired');
-      await this.markMessage(options.messageId, 'failed', providerError);
-      throw new BadRequestException({
-        message: providerError.message,
-        classification: providerError.classification,
-        providerError,
-      });
-    }
+    this.logger.log(
+      JSON.stringify({
+        event: 'instagram.dm.mapping',
+        companyId,
+        businessAccountId: options.businessAccountId || null,
+        customerId: recipientId || null,
+        outboundRecipientId: recipientId || null,
+        sendAccountId: igAccountId || null,
+        mappingValid,
+      }),
+    );
 
     try {
       if (!igAccountId || !accessToken) {
@@ -78,8 +82,27 @@ export class InstagramSendService {
           'Conta Instagram sem credenciais de envio.',
         );
       }
+      if (!mappingValid) {
+        throw this.buildLocalProviderError(
+          'RECIPIENT_INVALID',
+          'Mapeamento Instagram invalido: tentativa de enviar para a propria conta ou conta de envio divergente.',
+        );
+      }
 
-      if (this.shouldRefreshBeforeSend(account?.tokenExpiry)) {
+      const tokenWasExpired = this.isTokenExpired(account?.tokenExpiry);
+      if (tokenWasExpired) {
+        try {
+          const refresh = await this.refreshToken(companyId, accessToken, account?.id);
+          accessToken = refresh.accessToken || accessToken;
+        } catch {
+          throw this.buildLocalProviderError(
+            'TOKEN_EXPIRED_REAUTH_REQUIRED',
+            'Token do Instagram expirado. Reconecte o Instagram pelo OAuth.',
+          );
+        }
+      }
+
+      if (!tokenWasExpired && this.shouldRefreshBeforeSend(account?.tokenExpiry)) {
         const refresh = await this.refreshToken(companyId, accessToken, account?.id);
         accessToken = refresh.accessToken || accessToken;
       }
@@ -171,13 +194,20 @@ export class InstagramSendService {
     const tokenExpired = this.isTokenExpired(account?.tokenExpiry);
     const scopesStored = this.readScopes(account?.metadata);
     const instagramAccountId =
-      account?.instagramAccountId || account?.pageId || account?.igBusinessId || null;
+      account?.instagramAccountId || account?.igBusinessId || account?.pageId || null;
+    const metadata = this.readObjectMetadata(account?.metadata);
 
     return {
       provider: 'instagram',
       connected: Boolean(account && account.status !== 'disconnected'),
       hasEncryptedToken: Boolean(encryptedToken),
       instagramAccountId,
+      webhookRecipientId:
+        this.readString(metadata.webhookRecipientId) ||
+        this.readString(metadata.recipientId) ||
+        account?.instagramAccountId ||
+        null,
+      igBusinessId: account?.igBusinessId || this.readString(metadata.igBusinessId) || null,
       username: account?.igUsername || null,
       scopesStored,
       tokenExpiresAt: account?.tokenExpiry?.toISOString() || null,
@@ -213,7 +243,9 @@ export class InstagramSendService {
         ? (account.metadata as Record<string, unknown>)
         : {};
     const scopes = this.normalizeScopes(input.scopes);
+    const knownCustomerIds = await this.getKnownInstagramCustomerIds(companyId);
     const knownIds = this.mergeKnownIds([
+      existingMetadata.allKnownBusinessIds,
       existingMetadata.allKnownInstagramIds,
       account?.instagramAccountId,
       account?.igBusinessId,
@@ -221,7 +253,7 @@ export class InstagramSendService {
       existingMetadata.webhookRecipientId,
       existingMetadata.igBusinessId,
       instagramAccountId,
-    ]);
+    ]).filter((id) => !knownCustomerIds.includes(id));
     const metadata = this.toJson({
       ...existingMetadata,
       scopes,
@@ -232,6 +264,7 @@ export class InstagramSendService {
       igUserId: instagramAccountId,
       id: instagramAccountId,
       tokenImportedAt: new Date().toISOString(),
+      allKnownBusinessIds: knownIds,
       allKnownInstagramIds: knownIds,
     });
 
@@ -381,10 +414,13 @@ export class InstagramSendService {
       .catch(() => undefined);
   }
 
-  private async loadSendCredentials(companyId: string) {
+  private async loadSendCredentials(companyId: string, preferredBusinessAccountId?: string | null) {
     const account = await this.instagramIntegrationService.getActiveAccount(companyId);
+    const knownBusinessIds = this.instagramIntegrationService.getKnownBusinessIds(account);
     let igAccountId =
-      account?.instagramAccountId || account?.pageId || account?.igBusinessId || null;
+      preferredBusinessAccountId && knownBusinessIds.includes(preferredBusinessAccountId)
+        ? preferredBusinessAccountId
+        : account?.instagramAccountId || account?.igBusinessId || account?.pageId || null;
     let encryptedToken = account?.pageAccessToken || null;
 
     if (!igAccountId || !encryptedToken) {
@@ -669,6 +705,18 @@ export class InstagramSendService {
     return version.replace(/^v/i, '') || '25.0';
   }
 
+  private readObjectMetadata(value: unknown) {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  }
+
+  private readString(value: unknown) {
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    return null;
+  }
+
   private readScopes(metadata: unknown) {
     if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return [];
     const item = metadata as Record<string, unknown>;
@@ -710,6 +758,30 @@ export class InstagramSendService {
               : '';
         if (id && !acc.includes(id)) acc.push(id);
       });
+      return acc;
+    }, []);
+  }
+
+  private async getKnownInstagramCustomerIds(companyId: string) {
+    const conversations = await this.prisma.conversation.findMany({
+      where: {
+        companyId,
+        provider: IntegrationProvider.INSTAGRAM,
+      },
+      select: {
+        contactNumber: true,
+        remoteJid: true,
+        externalThreadId: true,
+      },
+      take: 500,
+    });
+
+    return conversations.reduce<string[]>((acc, item) => {
+      [item.remoteJid, item.externalThreadId, item.contactNumber?.replace(/^instagram:/, '')]
+        .forEach((value) => {
+          const id = value?.trim();
+          if (id && !acc.includes(id)) acc.push(id);
+        });
       return acc;
     }, []);
   }

@@ -226,6 +226,9 @@ export class InstagramWebhookService {
           item.message && typeof item.message === 'object' && !Array.isArray(item.message)
             ? (item.message as Record<string, unknown>)
             : null;
+        if (messageObject?.is_echo === true || senderId === recipientId) {
+          continue;
+        }
         const messageId =
           this.readString(messageObject?.mid) ||
           this.readString(messageObject?.id) ||
