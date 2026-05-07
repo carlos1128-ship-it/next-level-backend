@@ -89,6 +89,14 @@ export class InstagramSendService {
         );
       }
 
+      const reconnectRequired = this.isReconnectRequiredStatus(account?.status);
+      if (reconnectRequired) {
+        throw this.buildLocalProviderError(
+          'TOKEN_EXPIRED_REAUTH_REQUIRED',
+          'Token do Instagram expirado. Reconecte o Instagram pelo OAuth.',
+        );
+      }
+
       const tokenWasExpired = this.isTokenExpired(account?.tokenExpiry);
       if (tokenWasExpired) {
         try {
@@ -191,7 +199,9 @@ export class InstagramSendService {
   async getTokenStatus(companyId: string) {
     const account = await this.instagramIntegrationService.getActiveAccount(companyId);
     const encryptedToken = account?.pageAccessToken || null;
-    const tokenExpired = this.isTokenExpired(account?.tokenExpiry);
+    const tokenExpired =
+      this.isTokenExpired(account?.tokenExpiry) ||
+      this.isReconnectRequiredStatus(account?.status);
     const scopesStored = this.readScopes(account?.metadata);
     const instagramAccountId =
       account?.instagramAccountId || account?.igBusinessId || account?.pageId || null;
@@ -218,7 +228,7 @@ export class InstagramSendService {
           encryptedToken &&
           instagramAccountId &&
           !tokenExpired &&
-          !['token_expired', 'reconnect_required'].includes(account.status),
+          !this.isReconnectRequiredStatus(account.status),
       ),
     };
   }
@@ -796,6 +806,10 @@ export class InstagramSendService {
 
   private isTokenExpired(value: Date | null | undefined) {
     return value instanceof Date && value.getTime() <= Date.now();
+  }
+
+  private isReconnectRequiredStatus(status: string | null | undefined) {
+    return status === 'token_expired' || status === 'reconnect_required';
   }
 
   private shouldRefreshBeforeSend(value: Date | null | undefined) {
