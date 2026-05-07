@@ -30,21 +30,29 @@ export class InstagramSendService {
       throw new BadRequestException('Token do Instagram expirado.');
     }
 
-    const targetId = account?.instagramAccountId || account?.igBusinessId || account?.pageId;
+    const targetId =
+      account?.instagramAccountId || account?.igBusinessId || account?.pageId;
     const encryptedToken = account?.pageAccessToken;
 
-    let graphTargetId = targetId;
-    let accessToken = encryptedToken
-      ? this.instagramIntegrationService.decryptToken(encryptedToken)
-      : null;
-
-    if (!graphTargetId || !accessToken) {
-      const integration = await this.instagramIntegrationService.getActiveIntegration(companyId);
-      graphTargetId = integration.externalId;
-      accessToken = this.instagramIntegrationService.decryptToken(integration.accessToken);
-    }
-
     try {
+      let graphTargetId = targetId;
+      let accessToken = encryptedToken
+        ? this.instagramIntegrationService.decryptToken(encryptedToken)
+        : null;
+
+      if (!graphTargetId || !accessToken) {
+        const integration =
+          await this.instagramIntegrationService.getActiveIntegration(companyId);
+        graphTargetId = integration.externalId;
+        accessToken = this.instagramIntegrationService.decryptToken(
+          integration.accessToken,
+        );
+      }
+
+      if (!graphTargetId || !accessToken) {
+        throw new BadRequestException('Conta Instagram sem token de envio.');
+      }
+
       await this.metaGraphService.requestWithRetry({
         companyId,
         method: 'POST',
