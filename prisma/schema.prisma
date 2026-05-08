@@ -265,6 +265,7 @@ model Company {
   agentConfig           AgentConfig?
   leads                 Lead[]
   appointmentRequests   AppointmentRequest[]
+  businessActionRequests BusinessActionRequest[]
   conversations         Conversation[]
   messages              Message[]
   usageQuota            UsageQuota?
@@ -480,16 +481,31 @@ model Customer {
   name      String
   email     String?
   phone     String?
+  channel   String?
+  provider  IntegrationProvider?
+  externalCustomerId String?
+  sourceConversationId String?
+  sourceMessageId String?
+  source   String?
+  interest String?
+  objective String? @db.Text
+  desiredDate DateTime?
+  desiredTime String?
+  status    String?
+  metadata  Json?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   company              Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
   signals              CustomerSignal[]
   conversationAnalyses ConversationAnalysis[]
+  businessActionRequests BusinessActionRequest[]
 
   @@index([companyId])
   @@index([companyId, name])
   @@index([companyId, email])
+  @@index([companyId, phone])
+  @@index([companyId, channel, updatedAt])
 }
 
 model OperationalCost {
@@ -755,6 +771,7 @@ model Conversation {
   updatedAt            DateTime               @updatedAt
   messages             Message[]
   appointmentRequests  AppointmentRequest[]
+  businessActionRequests BusinessActionRequest[]
   saleAIAttributions   SaleAIAttribution[]
   analyses             ConversationAnalysis[]
   company              Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
@@ -835,12 +852,51 @@ model Lead {
   company            Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
   conversations      ChatConversation[]
   appointmentRequests AppointmentRequest[]
+  businessActionRequests BusinessActionRequest[]
   saleAIAttributions SaleAIAttribution[]
 
   @@unique([companyId, externalId])
   @@index([companyId, status])
   @@index([companyId, channel, updatedAt])
   @@index([companyId, latestIntent, updatedAt])
+}
+
+model BusinessActionRequest {
+  id                 String              @id @default(cuid())
+  companyId          String
+  customerId         String?
+  leadId             String?
+  conversationId     String
+  channel            String
+  provider           IntegrationProvider
+  customerExternalId String
+  sourceMessageId    String?
+  type               String
+  status             String              @default("NEEDS_INFO")
+  customerName       String?
+  phone              String?
+  email              String?
+  requestedService   String?
+  objective          String?             @db.Text
+  desiredDate        DateTime?
+  desiredTime        String?
+  notes              String?             @db.Text
+  metadata           Json?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  company      Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer     Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  lead         Lead?        @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, status, updatedAt])
+  @@index([companyId, type, updatedAt])
+  @@index([companyId, channel, updatedAt])
+  @@index([conversationId, updatedAt])
+  @@index([customerId])
+  @@index([leadId])
+  @@index([sourceMessageId])
 }
 
 model AppointmentRequest {

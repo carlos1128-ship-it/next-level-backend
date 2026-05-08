@@ -499,6 +499,9 @@ export class InstagramMessageProcessorService {
           intent: input.actionAnalysis?.intent || null,
           actionStatus: input.actionAnalysis?.actionStatus || null,
           appointmentRequestId: input.actionAnalysis?.appointmentRequestId || null,
+          businessActionRequestId:
+            input.actionAnalysis?.businessActionRequestId || null,
+          customerId: input.actionAnalysis?.customerId || null,
           leadId: input.actionAnalysis?.leadId || null,
         }),
       },
@@ -535,6 +538,13 @@ export class InstagramMessageProcessorService {
       actionCreated: Boolean(input.actionAnalysis?.actionCreated),
       leadId: input.actionAnalysis?.leadId || null,
       appointmentRequestId: input.actionAnalysis?.appointmentRequestId || null,
+      businessActionRequestId: input.actionAnalysis?.businessActionRequestId || null,
+      customerId: input.actionAnalysis?.customerId || null,
+      shouldCreateCustomer: Boolean(input.actionAnalysis?.shouldCreateCustomer),
+      shouldCreateActionRequest: Boolean(
+        input.actionAnalysis?.shouldCreateActionRequest,
+      ),
+      nextAssistantInstruction: input.actionAnalysis?.nextAssistantInstruction || null,
     };
   }
 
@@ -574,7 +584,12 @@ export class InstagramMessageProcessorService {
             extractedFields: analysis.extractedFields,
             missingFields: analysis.missingFields,
             actionStatus: analysis.actionStatus,
+            shouldCreateCustomer: analysis.shouldCreateCustomer,
+            shouldCreateActionRequest: analysis.shouldCreateActionRequest,
+            nextAssistantInstruction: analysis.nextAssistantInstruction,
+            customerId: analysis.customerId || null,
             leadId: analysis.leadId || null,
+            businessActionRequestId: analysis.businessActionRequestId || null,
             appointmentRequestId: analysis.appointmentRequestId || null,
           }),
         },

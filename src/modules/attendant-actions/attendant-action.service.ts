@@ -2,7 +2,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
-  AppointmentRequestStatus,
   AttendantActionAnalysis,
   AttendantActionInput,
   AttendantActionStatus,
@@ -12,6 +11,17 @@ import {
 import { AttendantContextService } from './attendant-context.service';
 import { AttendantDataExtractionService } from './attendant-data-extraction.service';
 import { AttendantIntentService } from './attendant-intent.service';
+
+const LEAD_INTENTS: AttendantIntent[] = [
+  'SCHEDULE_REQUEST',
+  'MEETING_REQUEST',
+  'SERVICE_REQUEST',
+  'QUOTE_REQUEST',
+  'PRODUCT_INTEREST',
+  'CUSTOMER_DATA_CAPTURE',
+  'SERVICE_INFORMATION',
+  'HUMAN_HANDOFF',
+];
 
 @Injectable()
 export class AttendantActionService {
@@ -25,37 +35,63 @@ export class AttendantActionService {
   ) {}
 
   async analyzeAndPrepare(input: AttendantActionInput): Promise<AttendantActionAnalysis> {
-    const intent = this.intentService.detectIntent(input.text);
-    const extractedFields = this.extractionService.extract(input.text);
-    const missingFields =
-      intent === 'SCHEDULE_REQUEST'
-        ? this.extractionService.missingForSchedule(extractedFields)
-        : [];
-    const actionStatus = this.resolveActionStatus(intent, missingFields);
+    const detectedIntent = this.intentService.detectIntent(input.text);
+    const currentFields = this.extractionService.extract(input.text);
+    const existingDraft = input.conversationId
+      ? await this.findOpenActionDraft(input.companyId, input.conversationId)
+      : null;
+    const effectiveIntent = this.resolveEffectiveIntent(detectedIntent, existingDraft?.type);
+    const extractedFields = this.mergeExtractedFields(
+      this.readDraftFields(existingDraft?.metadata),
+      currentFields,
+    );
+    const missingFields = this.extractionService.missingForIntent(
+      effectiveIntent,
+      extractedFields,
+    );
+    const actionStatus = this.resolveActionStatus(effectiveIntent, missingFields);
     const companyContext = await this.contextService.buildCompanyActionContext(input.companyId);
+    const leadIntent = this.isLeadIntent(effectiveIntent);
+    const shouldCreateCustomer = leadIntent && this.hasCustomerMinimum(extractedFields);
+    const shouldCreateActionRequest =
+      shouldCreateCustomer && this.hasActionMinimum(effectiveIntent, extractedFields);
 
-    if (input.dryRun || !this.shouldPersist(intent)) {
+    if (input.dryRun || !leadIntent) {
       return this.buildAnalysis({
-        intent,
+        intent: effectiveIntent,
         extractedFields,
         missingFields,
         actionStatus,
         companyContext,
+        shouldCreateCustomer,
+        shouldCreateActionRequest,
         actionCreated: false,
+        draftSaved: false,
       });
     }
 
-    const lead = await this.upsertLead(input, intent, actionStatus, extractedFields);
-    const request =
-      intent === 'SCHEDULE_REQUEST'
-        ? await this.upsertAppointmentRequest(
-            input,
-            lead.id,
-            intent,
-            this.toAppointmentStatus(actionStatus),
-            extractedFields,
-          )
-        : null;
+    const shouldSaveActionDraft =
+      Boolean(input.conversationId) &&
+      (effectiveIntent !== 'CUSTOMER_DATA_CAPTURE' || Boolean(existingDraft));
+    let customer: { id: string } | null = null;
+    let lead: { id: string } | null = null;
+
+    if (shouldCreateCustomer) {
+      customer = await this.upsertCustomer(input, effectiveIntent, actionStatus, extractedFields);
+      lead = await this.upsertLead(input, effectiveIntent, actionStatus, extractedFields);
+    }
+
+    const request = shouldSaveActionDraft
+      ? await this.upsertBusinessActionRequest({
+          input,
+          existingId: existingDraft?.id || null,
+          intent: effectiveIntent,
+          status: actionStatus,
+          fields: extractedFields,
+          customerId: customer?.id || null,
+          leadId: lead?.id || null,
+        })
+      : null;
 
     this.logger.log(
       JSON.stringify({
@@ -63,28 +99,104 @@ export class AttendantActionService {
         companyId: input.companyId,
         channel: input.channel,
         provider: input.provider,
-        intent,
+        intent: effectiveIntent,
         actionStatus,
-        leadCreatedOrUpdated: Boolean(lead.id),
-        appointmentRequestId: request?.id || null,
+        customerCreatedOrUpdated: Boolean(customer?.id),
+        leadCreatedOrUpdated: Boolean(lead?.id),
+        businessActionRequestId: request?.id || null,
         missingFields,
       }),
     );
 
     return this.buildAnalysis({
-      intent,
+      intent: effectiveIntent,
       extractedFields,
       missingFields,
       actionStatus,
       companyContext,
-      actionCreated: true,
-      leadId: lead.id,
-      appointmentRequestId: request?.id || null,
+      shouldCreateCustomer,
+      shouldCreateActionRequest,
+      actionCreated: Boolean(
+        customer?.id &&
+          (shouldCreateActionRequest || effectiveIntent === 'CUSTOMER_DATA_CAPTURE'),
+      ),
+      draftSaved: Boolean(request?.id),
+      customerId: customer?.id || null,
+      leadId: lead?.id || null,
+      businessActionRequestId: request?.id || null,
     });
   }
 
   async preview(input: AttendantActionInput) {
     return this.analyzeAndPrepare({ ...input, dryRun: true });
+  }
+
+  private async findOpenActionDraft(companyId: string, conversationId: string) {
+    return this.prisma.businessActionRequest.findFirst({
+      where: {
+        companyId,
+        conversationId,
+        status: { in: ['NEEDS_INFO', 'PENDING_CONFIRMATION'] },
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true, type: true, metadata: true },
+    });
+  }
+
+  private async upsertCustomer(
+    input: AttendantActionInput,
+    intent: AttendantIntent,
+    actionStatus: AttendantActionStatus,
+    fields: ExtractedAttendantFields,
+  ) {
+    const existing = await this.prisma.customer.findFirst({
+      where: {
+        companyId: input.companyId,
+        OR: [
+          fields.phone ? { phone: fields.phone } : undefined,
+          fields.email ? { email: fields.email } : undefined,
+          { externalCustomerId: input.customerExternalId },
+        ].filter(Boolean) as Prisma.CustomerWhereInput[],
+      },
+      select: { id: true },
+    });
+    const data = {
+      name: fields.customerName || 'Cliente IA',
+      email: fields.email || undefined,
+      phone: fields.phone || undefined,
+      channel: input.channel,
+      provider: input.provider,
+      externalCustomerId: input.customerExternalId,
+      sourceConversationId: input.conversationId || undefined,
+      sourceMessageId: input.sourceMessageId || undefined,
+      source: `ia_${input.channel}`,
+      interest: fields.requestedService || fields.objective || undefined,
+      objective: fields.objective || fields.notes || undefined,
+      desiredDate: this.parseDate(fields.desiredDate) || undefined,
+      desiredTime: fields.desiredTime || undefined,
+      status: actionStatus,
+      metadata: this.toJson(this.buildMetadata(input, intent, fields)),
+    };
+
+    if (existing) {
+      return this.prisma.customer.update({
+        where: { id: existing.id },
+        data,
+        select: { id: true },
+      });
+    }
+
+    return this.prisma.customer.create({
+      data: {
+        companyId: input.companyId,
+        ...data,
+        email: fields.email || null,
+        phone: fields.phone || null,
+        desiredDate: this.parseDate(fields.desiredDate),
+        desiredTime: fields.desiredTime || null,
+      },
+      select: { id: true },
+    });
   }
 
   private async upsertLead(
@@ -93,16 +205,7 @@ export class AttendantActionService {
     actionStatus: AttendantActionStatus,
     fields: ExtractedAttendantFields,
   ) {
-    const externalId = this.buildLeadExternalId(input.channel, input.customerExternalId);
-    const metadata = this.toJson({
-      source: 'attendant_action_layer',
-      channel: input.channel,
-      provider: input.provider,
-      customerExternalId: input.customerExternalId,
-      businessAccountId: input.businessAccountId || null,
-      extractedFields: fields,
-    });
-
+    const externalId = `${input.channel}:${input.customerExternalId}`;
     return this.prisma.lead.upsert({
       where: {
         companyId_externalId: {
@@ -120,11 +223,11 @@ export class AttendantActionService {
         sourceConversationId: input.conversationId || undefined,
         latestIntent: intent,
         actionStatus,
-        requestedService: fields.requestedService || undefined,
+        requestedService: fields.requestedService || fields.objective || undefined,
         requestedDate: this.parseDate(fields.desiredDate) || undefined,
         requestedTime: fields.desiredTime || undefined,
         notes: fields.notes || undefined,
-        metadata,
+        metadata: this.toJson(this.buildMetadata(input, intent, fields)),
         lastInteraction: new Date(),
         score: this.scoreIntent(intent),
       },
@@ -140,11 +243,11 @@ export class AttendantActionService {
         sourceConversationId: input.conversationId || null,
         latestIntent: intent,
         actionStatus,
-        requestedService: fields.requestedService || null,
+        requestedService: fields.requestedService || fields.objective || null,
         requestedDate: this.parseDate(fields.desiredDate),
         requestedTime: fields.desiredTime || null,
         notes: fields.notes || null,
-        metadata,
+        metadata: this.toJson(this.buildMetadata(input, intent, fields)),
         lastInteraction: new Date(),
         score: this.scoreIntent(intent),
         status: 'NEW',
@@ -153,75 +256,60 @@ export class AttendantActionService {
     });
   }
 
-  private async upsertAppointmentRequest(
-    input: AttendantActionInput,
-    leadId: string,
-    intent: AttendantIntent,
-    status: AppointmentRequestStatus,
-    fields: ExtractedAttendantFields,
-  ) {
-    const existing = await this.prisma.appointmentRequest.findFirst({
-      where: input.sourceMessageId
-        ? {
-            companyId: input.companyId,
-            sourceMessageId: input.sourceMessageId,
-          }
-        : {
-            companyId: input.companyId,
-            conversationId: input.conversationId || '',
-            status: { in: ['NEEDS_INFO', 'PENDING_CONFIRMATION'] },
-          },
-      orderBy: { updatedAt: 'desc' },
-      select: { id: true },
-    });
-
+  private async upsertBusinessActionRequest(input: {
+    input: AttendantActionInput;
+    existingId?: string | null;
+    intent: AttendantIntent;
+    status: AttendantActionStatus;
+    fields: ExtractedAttendantFields;
+    customerId?: string | null;
+    leadId?: string | null;
+  }) {
     const data = {
-      leadId,
-      customerName: fields.customerName || undefined,
-      phone: fields.phone || undefined,
-      email: fields.email || undefined,
-      intent,
-      status,
-      requestedService: fields.requestedService || undefined,
-      requestedDate: this.parseDate(fields.desiredDate) || undefined,
-      requestedTime: fields.desiredTime || undefined,
-      notes: fields.notes || undefined,
-      metadata: this.toJson({
-        source: 'attendant_action_layer',
-        channel: input.channel,
-        provider: input.provider,
-        customerExternalId: input.customerExternalId,
-        businessAccountId: input.businessAccountId || null,
-        extractedFields: fields,
-      }),
+      customerId: input.customerId || undefined,
+      leadId: input.leadId || undefined,
+      sourceMessageId: input.input.sourceMessageId || undefined,
+      type: input.intent,
+      status: input.status,
+      customerName: input.fields.customerName || undefined,
+      phone: input.fields.phone || undefined,
+      email: input.fields.email || undefined,
+      requestedService: input.fields.requestedService || input.fields.objective || undefined,
+      objective: input.fields.objective || undefined,
+      desiredDate: this.parseDate(input.fields.desiredDate) || undefined,
+      desiredTime: input.fields.desiredTime || undefined,
+      notes: input.fields.notes || undefined,
+      metadata: this.toJson(this.buildMetadata(input.input, input.intent, input.fields)),
     };
 
-    if (existing) {
-      return this.prisma.appointmentRequest.update({
-        where: { id: existing.id },
+    if (input.existingId) {
+      return this.prisma.businessActionRequest.update({
+        where: { id: input.existingId },
         data,
         select: { id: true },
       });
     }
 
-    return this.prisma.appointmentRequest.create({
+    return this.prisma.businessActionRequest.create({
       data: {
-        companyId: input.companyId,
-        conversationId: input.conversationId || '',
-        leadId,
-        channel: input.channel,
-        provider: input.provider,
-        customerExternalId: input.customerExternalId,
-        customerName: fields.customerName || null,
-        phone: fields.phone || null,
-        email: fields.email || null,
-        intent,
-        status,
-        requestedService: fields.requestedService || null,
-        requestedDate: this.parseDate(fields.desiredDate),
-        requestedTime: fields.desiredTime || null,
-        notes: fields.notes || null,
-        sourceMessageId: input.sourceMessageId || null,
+        companyId: input.input.companyId,
+        conversationId: input.input.conversationId || '',
+        channel: input.input.channel,
+        provider: input.input.provider,
+        customerExternalId: input.input.customerExternalId,
+        customerId: input.customerId || null,
+        leadId: input.leadId || null,
+        sourceMessageId: input.input.sourceMessageId || null,
+        type: input.intent,
+        status: input.status,
+        customerName: input.fields.customerName || null,
+        phone: input.fields.phone || null,
+        email: input.fields.email || null,
+        requestedService: input.fields.requestedService || input.fields.objective || null,
+        objective: input.fields.objective || null,
+        desiredDate: this.parseDate(input.fields.desiredDate),
+        desiredTime: input.fields.desiredTime || null,
+        notes: input.fields.notes || null,
         metadata: data.metadata,
       },
       select: { id: true },
@@ -234,19 +322,30 @@ export class AttendantActionService {
     missingFields: string[];
     actionStatus: AttendantActionStatus;
     companyContext: string;
+    shouldCreateCustomer: boolean;
+    shouldCreateActionRequest: boolean;
     actionCreated: boolean;
+    draftSaved: boolean;
+    customerId?: string | null;
     leadId?: string | null;
-    appointmentRequestId?: string | null;
+    businessActionRequestId?: string | null;
   }): AttendantActionAnalysis {
+    const nextAssistantInstruction = this.resolveNextInstruction(input);
     return {
       intent: input.intent,
       extractedFields: input.extractedFields,
       missingFields: input.missingFields,
       actionStatus: input.actionStatus,
-      actionCreated: input.actionCreated,
+      shouldCreateCustomer: input.shouldCreateCustomer,
+      shouldCreateActionRequest: input.shouldCreateActionRequest,
+      customerId: input.customerId || null,
       leadId: input.leadId || null,
-      appointmentRequestId: input.appointmentRequestId || null,
-      promptContext: this.buildPromptContext(input),
+      appointmentRequestId: null,
+      businessActionRequestId: input.businessActionRequestId || null,
+      actionCreated: input.actionCreated,
+      draftSaved: input.draftSaved,
+      nextAssistantInstruction,
+      promptContext: this.buildPromptContext({ ...input, nextAssistantInstruction }),
     };
   }
 
@@ -256,84 +355,186 @@ export class AttendantActionService {
     missingFields: string[];
     actionStatus: AttendantActionStatus;
     companyContext: string;
+    shouldCreateCustomer: boolean;
+    shouldCreateActionRequest: boolean;
     actionCreated: boolean;
-    leadId?: string | null;
-    appointmentRequestId?: string | null;
+    draftSaved: boolean;
+    businessActionRequestId?: string | null;
+    nextAssistantInstruction: string;
   }) {
     return [
-      'Camada de acao do Atendente IA:',
+      'Camada de acao generica do Atendente IA:',
       `Intent detectada: ${input.intent}.`,
-      `Campos extraidos: ${JSON.stringify(input.extractedFields)}.`,
+      `Campos acumulados na conversa: ${JSON.stringify(input.extractedFields)}.`,
       `Campos faltantes: ${input.missingFields.length ? input.missingFields.join(', ') : 'nenhum'}.`,
       `Status da acao: ${input.actionStatus}.`,
-      input.appointmentRequestId
-        ? `AppointmentRequest salvo: ${input.appointmentRequestId}.`
-        : input.actionCreated
-          ? 'Lead/dados do cliente salvos.'
+      `Cliente pode ser salvo agora: ${input.shouldCreateCustomer}.`,
+      `Pedido/acao pode ser salvo agora: ${input.shouldCreateActionRequest}.`,
+      input.actionCreated
+        ? `Cliente/lead e BusinessActionRequest salvos. ID: ${input.businessActionRequestId || 'salvo'}.`
+        : input.draftSaved
+          ? 'Rascunho interno atualizado; ainda nao diga que a solicitacao foi registrada, peca os dados faltantes.'
           : 'Nenhuma acao estruturada salva para esta mensagem.',
+      `Proxima instrucao: ${input.nextAssistantInstruction}.`,
       input.companyContext,
-      'Regras: pergunte dados faltantes; nao invente disponibilidade; confirme apenas quando houver sistema/dado real; se nao houver agenda real, diga que a solicitacao foi registrada para confirmacao da equipe.',
+      'Regra obrigatoria: nao diga que esta confirmado sem disponibilidade real. Se todos os dados foram salvos, diga que foi registrado para confirmacao da equipe.',
     ].join('\n');
+  }
+
+  private resolveEffectiveIntent(detected: AttendantIntent, draftType?: string | null): AttendantIntent {
+    const draftIntent = draftType as AttendantIntent;
+    if (!this.isLeadIntent(draftIntent)) {
+      return detected;
+    }
+    if (
+      ['SCHEDULE_REQUEST', 'MEETING_REQUEST'].includes(draftIntent) &&
+      [
+        'GENERAL_QUESTION',
+        'CUSTOMER_DATA_CAPTURE',
+        'SERVICE_REQUEST',
+        'SERVICE_INFORMATION',
+        'QUOTE_REQUEST',
+        'PRODUCT_INTEREST',
+      ].includes(detected)
+    ) {
+      return draftType as AttendantIntent;
+    }
+    if (['CUSTOMER_DATA_CAPTURE', 'GENERAL_QUESTION'].includes(detected)) {
+      return draftIntent;
+    }
+    return detected;
+  }
+
+  private mergeExtractedFields(
+    existing: ExtractedAttendantFields,
+    current: ExtractedAttendantFields,
+  ): ExtractedAttendantFields {
+    return {
+      customerName: current.customerName || existing.customerName || null,
+      phone: current.phone || existing.phone || null,
+      email: current.email || existing.email || null,
+      desiredDate: current.desiredDate || existing.desiredDate || null,
+      desiredTime: current.desiredTime || existing.desiredTime || null,
+      requestedService: current.requestedService || existing.requestedService || null,
+      objective: current.objective || existing.objective || null,
+      preferredContactMethod:
+        current.preferredContactMethod || existing.preferredContactMethod || null,
+      urgency: current.urgency || existing.urgency || null,
+      budget: current.budget || existing.budget || null,
+      notes: [existing.notes, current.notes].filter(Boolean).join(' | ') || null,
+    };
+  }
+
+  private readDraftFields(metadata: unknown): ExtractedAttendantFields {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return {};
+    }
+    const fields = (metadata as Record<string, unknown>).extractedFields;
+    if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
+      return {};
+    }
+    return fields as ExtractedAttendantFields;
   }
 
   private resolveActionStatus(
     intent: AttendantIntent,
     missingFields: string[],
   ): AttendantActionStatus {
-    if (intent === 'HUMAN_HANDOFF' || intent === 'COMPLAINT_OR_PROBLEM') {
-      return 'needs_human';
+    if (!this.isLeadIntent(intent)) {
+      return 'NEEDS_INFO';
     }
-
-    if (intent === 'SCHEDULE_REQUEST') {
-      return missingFields.length ? 'needs_more_info' : 'pending_confirmation';
-    }
-
-    if (intent === 'CUSTOMER_DATA_CAPTURE') {
-      return 'draft';
-    }
-
-    return 'draft';
-  }
-
-  private toAppointmentStatus(status: AttendantActionStatus): AppointmentRequestStatus {
-    if (status === 'needs_human') {
+    if (intent === 'HUMAN_HANDOFF') {
       return 'NEEDS_HUMAN';
     }
-    if (status === 'pending_confirmation') {
-      return 'PENDING_CONFIRMATION';
-    }
-    if (status === 'confirmed') {
-      return 'CONFIRMED';
-    }
-    return 'NEEDS_INFO';
+    return missingFields.length ? 'NEEDS_INFO' : 'PENDING_CONFIRMATION';
   }
 
-  private shouldPersist(intent: AttendantIntent) {
-    return ['SCHEDULE_REQUEST', 'CUSTOMER_DATA_CAPTURE', 'HUMAN_HANDOFF'].includes(intent);
+  private resolveNextInstruction(input: {
+    actionCreated: boolean;
+    actionStatus: AttendantActionStatus;
+    missingFields: string[];
+    intent: AttendantIntent;
+  }) {
+    if (input.actionCreated) {
+      if (input.intent === 'CUSTOMER_DATA_CAPTURE') {
+        return 'acknowledge_customer_data_saved';
+      }
+      return 'confirm_registered_pending_team_confirmation';
+    }
+    if (input.missingFields.includes('customerName') || input.missingFields.includes('phone')) {
+      return 'ask_for_name_and_phone';
+    }
+    if (input.missingFields.includes('requestedService')) {
+      return 'ask_for_service_or_objective';
+    }
+    if (input.missingFields.includes('desiredDate') || input.missingFields.includes('desiredTime')) {
+      return 'ask_for_date_and_time';
+    }
+    if (input.intent === 'GENERAL_QUESTION') {
+      return 'answer_normally';
+    }
+    return 'continue_conversation';
+  }
+
+  private isLeadIntent(intent?: AttendantIntent | null) {
+    return Boolean(intent && LEAD_INTENTS.includes(intent));
+  }
+
+  private hasCustomerMinimum(fields: ExtractedAttendantFields) {
+    return Boolean(fields.customerName && (fields.phone || fields.email));
+  }
+
+  private hasActionMinimum(intent: AttendantIntent, fields: ExtractedAttendantFields) {
+    if (!this.isLeadIntent(intent)) {
+      return false;
+    }
+    const hasInterest = Boolean(fields.requestedService || fields.objective);
+    if (!hasInterest && intent !== 'CUSTOMER_DATA_CAPTURE' && intent !== 'HUMAN_HANDOFF') {
+      return false;
+    }
+    if (intent === 'CUSTOMER_DATA_CAPTURE') {
+      return false;
+    }
+    if (['SCHEDULE_REQUEST', 'MEETING_REQUEST'].includes(intent)) {
+      return Boolean(fields.desiredDate && fields.desiredTime && hasInterest);
+    }
+    return true;
   }
 
   private scoreIntent(intent: AttendantIntent) {
-    if (intent === 'SCHEDULE_REQUEST') {
-      return 80;
+    if (['SCHEDULE_REQUEST', 'MEETING_REQUEST', 'QUOTE_REQUEST', 'PRODUCT_INTEREST'].includes(intent)) {
+      return 85;
+    }
+    if (intent === 'SERVICE_REQUEST') {
+      return 75;
     }
     if (intent === 'CUSTOMER_DATA_CAPTURE') {
       return 60;
     }
-    if (intent === 'HUMAN_HANDOFF') {
-      return 50;
-    }
-    return 20;
+    return 30;
   }
 
-  private buildLeadExternalId(channel: string, customerExternalId: string) {
-    return `${channel}:${customerExternalId}`;
+  private buildMetadata(
+    input: AttendantActionInput,
+    intent: AttendantIntent,
+    fields: ExtractedAttendantFields,
+  ) {
+    return {
+      source: 'attendant_action_layer',
+      channel: input.channel,
+      provider: input.provider,
+      customerExternalId: input.customerExternalId,
+      businessAccountId: input.businessAccountId || null,
+      sourceMessageId: input.sourceMessageId || null,
+      intent,
+      extractedFields: fields,
+    };
   }
 
   private parseDate(value?: string | null) {
     if (!value) {
       return null;
     }
-
     const date = new Date(`${value}T12:00:00.000Z`);
     return Number.isNaN(date.getTime()) ? null : date;
   }

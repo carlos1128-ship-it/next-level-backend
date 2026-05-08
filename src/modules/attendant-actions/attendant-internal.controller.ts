@@ -26,27 +26,35 @@ export class AttendantInternalController {
     body: {
       companyId?: string;
       channel?: string;
+      conversationId?: string;
       text?: string;
       customerExternalId?: string;
+      dryRun?: boolean;
     },
   ) {
     this.assertInternalToken(authorization);
     const companyId = body.companyId?.trim();
     const channel = body.channel?.trim() || 'instagram';
+    const conversationId = body.conversationId?.trim() || null;
     const text = body.text?.trim();
     const customerExternalId = body.customerExternalId?.trim() || 'test-customer';
+    const dryRun = body.dryRun !== false;
 
     if (!companyId || !text) {
       throw new BadRequestException('companyId e text sao obrigatorios');
     }
+    if (!dryRun && !conversationId) {
+      throw new BadRequestException('conversationId e obrigatorio quando dryRun=false');
+    }
 
-    return this.actionService.preview({
+    return this.actionService.analyzeAndPrepare({
       companyId,
+      conversationId,
       channel,
       provider: channel === 'instagram' ? IntegrationProvider.INSTAGRAM : IntegrationProvider.WHATSAPP,
       customerExternalId,
       text,
-      dryRun: true,
+      dryRun,
     });
   }
 

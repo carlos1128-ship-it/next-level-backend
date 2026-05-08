@@ -248,6 +248,10 @@ export class AttendantService {
           orderBy: { updatedAt: 'desc' },
           take: 1,
         },
+        businessActionRequests: {
+          orderBy: { updatedAt: 'desc' },
+          take: 1,
+        },
       },
     });
 
@@ -255,6 +259,7 @@ export class AttendantService {
       const lastMessage = conversation.messages[0];
       const metadata = this.readMetadataRecord(lastMessage?.metadata);
       const request = conversation.appointmentRequests[0];
+      const action = conversation.businessActionRequests[0];
 
       return {
         id: conversation.id,
@@ -269,12 +274,14 @@ export class AttendantService {
         channel: conversation.channel,
         provider: conversation.provider,
         externalCustomerId: conversation.remoteJid || conversation.externalThreadId,
-        latestIntent: this.readString(metadata.intent),
-        actionStatus: this.readString(metadata.actionStatus) || request?.status || null,
-        requestedService: request?.requestedService || null,
-        requestedDate: request?.requestedDate || null,
-        requestedTime: request?.requestedTime || null,
-        notes: request?.notes || null,
+        latestIntent: this.readString(metadata.intent) || action?.type || null,
+        actionStatus:
+          this.readString(metadata.actionStatus) || action?.status || request?.status || null,
+        requestedService: action?.requestedService || request?.requestedService || null,
+        requestedDate: action?.desiredDate || request?.requestedDate || null,
+        requestedTime: action?.desiredTime || request?.requestedTime || null,
+        notes: action?.notes || request?.notes || null,
+        businessActionRequest: action || null,
         appointmentRequest: request || null,
         createdAt: conversation.createdAt,
         updatedAt: conversation.updatedAt,
@@ -303,6 +310,10 @@ export class AttendantService {
           orderBy: { updatedAt: 'desc' },
           take: 3,
         },
+        businessActionRequests: {
+          orderBy: { updatedAt: 'desc' },
+          take: 3,
+        },
       },
     });
 
@@ -310,6 +321,7 @@ export class AttendantService {
       const lastMessage = conversation.messages[0];
       const metadata = this.readMetadataRecord(lastMessage?.metadata);
       const request = conversation.appointmentRequests[0];
+      const action = conversation.businessActionRequests[0];
       return {
         id: conversation.id,
         companyId: conversation.companyId,
@@ -326,8 +338,11 @@ export class AttendantService {
         lastMessage: lastMessage?.content || conversation.lastMessagePreview || '',
         lastMessageDirection: lastMessage?.direction || null,
         lastMessageStatus: lastMessage?.status || null,
-        intent: this.readString(metadata.intent),
-        actionStatus: this.readString(metadata.actionStatus) || request?.status || null,
+        intent: this.readString(metadata.intent) || action?.type || null,
+        actionStatus:
+          this.readString(metadata.actionStatus) || action?.status || request?.status || null,
+        businessActionRequest: action || null,
+        businessActionRequests: conversation.businessActionRequests,
         appointmentRequest: request || null,
         appointmentRequests: conversation.appointmentRequests,
         lastMessageAt: conversation.lastMessageAt.toISOString(),
@@ -346,6 +361,9 @@ export class AttendantService {
           orderBy: { timestamp: 'asc' },
         },
         appointmentRequests: {
+          orderBy: { updatedAt: 'desc' },
+        },
+        businessActionRequests: {
           orderBy: { updatedAt: 'desc' },
         },
       },

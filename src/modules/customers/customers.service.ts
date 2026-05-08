@@ -43,8 +43,13 @@ export class CustomersService {
     return company.id;
   }
 
-  private map(customer: Customer) {
-    return customer;
+  private map(customer: Customer & { businessActionRequests?: Array<Record<string, unknown>> }) {
+    const latestAction = customer.businessActionRequests?.[0] || null;
+    return {
+      ...customer,
+      latestAction,
+      businessActionRequests: customer.businessActionRequests || [],
+    };
   }
 
   async create(userId: string, dto: CreateCustomerDto, tokenCompanyId?: string | null) {
@@ -91,6 +96,8 @@ export class CustomersService {
               { name: { contains: search, mode: 'insensitive' } },
               { email: { contains: search, mode: 'insensitive' } },
               { phone: { contains: search, mode: 'insensitive' } },
+              { interest: { contains: search, mode: 'insensitive' } },
+              { objective: { contains: search, mode: 'insensitive' } },
             ],
           }
         : {}),
@@ -103,6 +110,12 @@ export class CustomersService {
         skip: (page - 1) * limit,
         take: limit,
         orderBy: { createdAt: 'desc' },
+        include: {
+          businessActionRequests: {
+            orderBy: { updatedAt: 'desc' },
+            take: 1,
+          },
+        },
       }),
     ]);
 
@@ -126,6 +139,12 @@ export class CustomersService {
     const resolvedCompanyId = await this.resolveCompanyId(userId, companyId, tokenCompanyId);
     const customer = await this.prisma.customer.findFirst({
       where: { id, companyId: resolvedCompanyId },
+      include: {
+        businessActionRequests: {
+          orderBy: { updatedAt: 'desc' },
+          take: 10,
+        },
+      },
     });
 
     if (!customer) {

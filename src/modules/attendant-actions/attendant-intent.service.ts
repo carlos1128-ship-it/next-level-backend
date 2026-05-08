@@ -10,6 +10,10 @@ export class AttendantIntentService {
       return 'HUMAN_HANDOFF';
     }
 
+    if (this.matches(normalized, ['reuniao', 'reunir', 'call', 'chamada', 'mentoria'])) {
+      return 'MEETING_REQUEST';
+    }
+
     if (
       this.matches(normalized, [
         'marcar',
@@ -25,24 +29,24 @@ export class AttendantIntentService {
       return 'SCHEDULE_REQUEST';
     }
 
+    if (this.matches(normalized, ['orcamento', 'cotacao', 'proposta', 'valores', 'preco', 'quanto custa'])) {
+      return 'QUOTE_REQUEST';
+    }
+
+    if (this.matches(normalized, ['comprar', 'quero comprar', 'tenho interesse', 'contratar', 'fechar'])) {
+      return 'PRODUCT_INTEREST';
+    }
+
+    if (this.matches(normalized, ['consultoria', 'avaliacao', 'atendimento', 'visita', 'servico', 'serviço'])) {
+      return 'SERVICE_REQUEST';
+    }
+
     if (this.matches(normalized, ['meu nome', 'me chamo', 'telefone', 'whatsapp', 'email'])) {
       return 'CUSTOMER_DATA_CAPTURE';
     }
 
-    if (this.matches(normalized, ['servico', 'servicos', 'fazem', 'atendem', 'funciona'])) {
+    if (this.matches(normalized, ['saber mais', 'informacao', 'informacoes', 'como funciona', 'fazem', 'atendem'])) {
       return 'SERVICE_INFORMATION';
-    }
-
-    if (this.matches(normalized, ['preco', 'valor', 'quanto custa', 'orcamento'])) {
-      return 'PRICE_REQUEST';
-    }
-
-    if (this.matches(normalized, ['problema', 'reclamacao', 'ruim', 'nao gostei'])) {
-      return 'COMPLAINT_OR_PROBLEM';
-    }
-
-    if (this.matches(normalized, ['pedido', 'status', 'entrega', 'minha compra'])) {
-      return 'ORDER_OR_SERVICE_STATUS';
     }
 
     return normalized.trim() ? 'GENERAL_QUESTION' : 'UNKNOWN';

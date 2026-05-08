@@ -3,22 +3,16 @@ import { IntegrationProvider } from '@prisma/client';
 export type AttendantIntent =
   | 'GENERAL_QUESTION'
   | 'SCHEDULE_REQUEST'
-  | 'PRICE_REQUEST'
+  | 'MEETING_REQUEST'
+  | 'SERVICE_REQUEST'
+  | 'QUOTE_REQUEST'
+  | 'PRODUCT_INTEREST'
   | 'SERVICE_INFORMATION'
   | 'CUSTOMER_DATA_CAPTURE'
   | 'HUMAN_HANDOFF'
-  | 'COMPLAINT_OR_PROBLEM'
-  | 'ORDER_OR_SERVICE_STATUS'
   | 'UNKNOWN';
 
 export type AttendantActionStatus =
-  | 'draft'
-  | 'needs_more_info'
-  | 'pending_confirmation'
-  | 'confirmed'
-  | 'needs_human';
-
-export type AppointmentRequestStatus =
   | 'NEEDS_INFO'
   | 'PENDING_CONFIRMATION'
   | 'CONFIRMED'
@@ -32,6 +26,10 @@ export type ExtractedAttendantFields = {
   desiredDate?: string | null;
   desiredTime?: string | null;
   requestedService?: string | null;
+  objective?: string | null;
+  preferredContactMethod?: string | null;
+  urgency?: string | null;
+  budget?: string | null;
   notes?: string | null;
 };
 
@@ -52,8 +50,14 @@ export type AttendantActionAnalysis = {
   extractedFields: ExtractedAttendantFields;
   missingFields: string[];
   actionStatus: AttendantActionStatus;
+  shouldCreateCustomer: boolean;
+  shouldCreateActionRequest: boolean;
+  customerId?: string | null;
   leadId?: string | null;
   appointmentRequestId?: string | null;
+  businessActionRequestId?: string | null;
   actionCreated: boolean;
+  draftSaved: boolean;
+  nextAssistantInstruction: string;
   promptContext: string;
 };

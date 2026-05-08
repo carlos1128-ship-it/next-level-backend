@@ -13,27 +13,47 @@ export class AttendantDataExtractionService {
       desiredDate: this.extractDate(compact, now),
       desiredTime: this.extractTime(compact),
       requestedService: this.extractService(compact),
+      objective: this.extractObjective(compact),
+      preferredContactMethod: this.extractPreferredContact(compact),
+      urgency: this.extractUrgency(compact),
+      budget: this.extractBudget(compact),
       notes: compact || null,
     };
   }
 
-  missingForSchedule(fields: ExtractedAttendantFields) {
+  missingForIntent(intent: string, fields: ExtractedAttendantFields) {
     const missing: string[] = [];
-    if (!fields.desiredDate) {
-      missing.push('desiredDate');
+
+    if (this.isLeadIntent(intent) && !fields.customerName) {
+      missing.push('customerName');
     }
-    if (!fields.desiredTime) {
-      missing.push('desiredTime');
+    if (this.isLeadIntent(intent) && !fields.phone && !fields.email) {
+      missing.push('phone');
     }
-    if (!fields.requestedService) {
+    if (this.requiresInterest(intent) && !fields.requestedService && !fields.objective) {
       missing.push('requestedService');
     }
+
+    if (['SCHEDULE_REQUEST', 'MEETING_REQUEST'].includes(intent)) {
+      if (!fields.desiredDate) {
+        missing.push('desiredDate');
+      }
+      if (!fields.desiredTime) {
+        missing.push('desiredTime');
+      }
+    }
+
     return missing;
   }
 
   private extractName(text: string) {
-    const match = text.match(/\b(?:meu nome e|meu nome é|me chamo|sou)\s+([A-Za-zÀ-ÿ\s]{2,60})(?:[,.;]|$)/i);
-    return match?.[1]?.trim() || null;
+    const match = text.match(/\b(?:meu nome e|meu nome é|me chamo|sou)\s+([A-Za-zÀ-ÿ]+(?:\s+[A-Za-zÀ-ÿ]+){0,4})(?=\s+(?:e\s+)?(?:meu\s+)?(?:telefone|whatsapp|email|e-mail)|[,.;]|$)/i);
+    return (
+      match?.[1]
+        ?.replace(/\s+e\s+meu$/i, '')
+        .replace(/\s+e$/i, '')
+        .trim() || null
+    );
   }
 
   private extractPhone(text: string) {
@@ -96,12 +116,66 @@ export class AttendantDataExtractionService {
   }
 
   private extractService(text: string) {
-    const match = text.match(/\b(?:consulta|reuniao|reunião|avaliacao|avaliação|procedimento|servico|serviço)\b(?:\s+(?:de|para|sobre)\s+([^,.!?]+))?/i);
+    const match = text.match(/\b(?:consulta|reuniao|reunião|avaliacao|avaliação|procedimento|servico|serviço|consultoria|visita|aula|curso|mentoria|corte|barba|tratamento|orcamento|orçamento)\b(?:\s+(?:de|para|sobre)\s+([^,.!?]+))?/i);
     if (!match) {
       return null;
     }
 
     return (match[1] || match[0]).trim();
+  }
+
+  private extractObjective(text: string) {
+    const match = text.match(/\b(?:quero|preciso|tenho interesse em|gostaria de|pode me ajudar com)\s+([^.!?]{3,120})/i);
+    return match?.[1]?.trim() || null;
+  }
+
+  private extractPreferredContact(text: string) {
+    const normalized = this.normalize(text);
+    if (normalized.includes('whatsapp')) return 'whatsapp';
+    if (normalized.includes('email') || normalized.includes('e-mail')) return 'email';
+    if (normalized.includes('ligar') || normalized.includes('telefone')) return 'phone';
+    return null;
+  }
+
+  private extractUrgency(text: string) {
+    const normalized = this.normalize(text);
+    if (normalized.includes('urgente') || normalized.includes('hoje')) return 'alta';
+    if (normalized.includes('sem pressa')) return 'baixa';
+    return null;
+  }
+
+  private extractBudget(text: string) {
+    const currency = text.match(/r\$\s*\d{2,}(?:[.,]\d{2})?/i);
+    if (currency) {
+      return currency[0].trim();
+    }
+
+    const contextual = text.match(/\b(?:orcamento|orçamento|budget|investir|investimento|verba)\D{0,20}(\d{2,}(?:[.,]\d{2})?)/i);
+    return contextual?.[1]?.trim() || null;
+  }
+
+  private isLeadIntent(intent: string) {
+    return [
+      'SCHEDULE_REQUEST',
+      'MEETING_REQUEST',
+      'SERVICE_REQUEST',
+      'QUOTE_REQUEST',
+      'PRODUCT_INTEREST',
+      'CUSTOMER_DATA_CAPTURE',
+      'SERVICE_INFORMATION',
+      'HUMAN_HANDOFF',
+    ].includes(intent);
+  }
+
+  private requiresInterest(intent: string) {
+    return [
+      'SCHEDULE_REQUEST',
+      'MEETING_REQUEST',
+      'SERVICE_REQUEST',
+      'QUOTE_REQUEST',
+      'PRODUCT_INTEREST',
+      'SERVICE_INFORMATION',
+    ].includes(intent);
   }
 
   private addDays(date: Date, days: number) {

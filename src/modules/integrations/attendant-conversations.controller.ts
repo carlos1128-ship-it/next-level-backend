@@ -38,6 +38,10 @@ export class AttendantConversationsController {
           orderBy: { updatedAt: 'desc' },
           take: 3,
         },
+        businessActionRequests: {
+          orderBy: { updatedAt: 'desc' },
+          take: 3,
+        },
       },
     });
 
@@ -45,6 +49,7 @@ export class AttendantConversationsController {
       const lastMessage = conversation.messages[0];
       const metadata = this.readMetadataRecord(lastMessage?.metadata);
       const request = conversation.appointmentRequests[0];
+      const action = conversation.businessActionRequests[0];
       return {
         id: conversation.id,
         companyId: conversation.companyId,
@@ -61,8 +66,11 @@ export class AttendantConversationsController {
         lastMessage: lastMessage?.content || conversation.lastMessagePreview || '',
         lastMessageDirection: lastMessage?.direction || null,
         lastMessageStatus: lastMessage?.status || null,
-        intent: this.readString(metadata.intent),
-        actionStatus: this.readString(metadata.actionStatus) || request?.status || null,
+        intent: this.readString(metadata.intent) || action?.type || null,
+        actionStatus:
+          this.readString(metadata.actionStatus) || action?.status || request?.status || null,
+        businessActionRequest: action || null,
+        businessActionRequests: conversation.businessActionRequests,
         appointmentRequest: request || null,
         appointmentRequests: conversation.appointmentRequests,
         lastMessageAt: conversation.lastMessageAt.toISOString(),
