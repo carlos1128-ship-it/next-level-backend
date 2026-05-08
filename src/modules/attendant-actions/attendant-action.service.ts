@@ -39,6 +39,17 @@ export class AttendantActionService {
   async analyzeAndPrepare(input: AttendantActionInput): Promise<AttendantActionAnalysis> {
     const detectedIntent = this.intentService.detectIntent(input.text);
     const currentFields = this.extractionService.extract(input.text);
+    const userConfirmed = this.isConfirmationOnly(input.text);
+    if (userConfirmed) {
+      this.logger.log(
+        JSON.stringify({
+          event: 'attendant.action.confirmation_detected',
+          companyId: input.companyId,
+          channel: input.channel,
+          provider: input.provider,
+        }),
+      );
+    }
     this.logger.log(
       JSON.stringify({
         event: 'attendant.action.intent_detected',
@@ -90,6 +101,7 @@ export class AttendantActionService {
 
     if (input.dryRun || !leadIntent) {
       return this.buildAnalysis({
+        companyId: input.companyId,
         intent: effectiveIntent,
         extractedFields,
         missingFields,
@@ -235,6 +247,7 @@ export class AttendantActionService {
     );
 
     return this.buildAnalysis({
+      companyId: input.companyId,
       intent: effectiveIntent,
       extractedFields,
       missingFields,
@@ -244,6 +257,11 @@ export class AttendantActionService {
       shouldCreateActionRequest,
       actionCreated,
       draftSaved: Boolean(request?.id),
+      userConfirmed,
+      justSaved: Boolean(
+        actionCreated &&
+          (request?.operation === 'created' || existingDraft?.status !== 'PENDING_CONFIRMATION'),
+      ),
       customerId: customer?.id || null,
       leadId: lead?.id || null,
       businessActionRequestId: request?.id || null,
@@ -269,6 +287,8 @@ export class AttendantActionService {
     if (!input.conversationId) {
       return null;
     }
+
+    const userConfirmed = this.isConfirmationOnly(input.text);
 
     if (this.startsNewActionSession(detectedIntent, input.text)) {
       this.logger.log(
@@ -297,7 +317,7 @@ export class AttendantActionService {
       return needsInfoDraft;
     }
 
-    if (!this.looksLikeCustomerUpdate(input.text, currentFields)) {
+    if (!this.looksLikeCustomerUpdate(input.text, currentFields) && !userConfirmed) {
       return null;
     }
 
@@ -485,6 +505,7 @@ export class AttendantActionService {
   }
 
   private buildAnalysis(input: {
+    companyId: string;
     intent: AttendantIntent;
     extractedFields: ExtractedAttendantFields;
     missingFields: string[];
@@ -494,6 +515,8 @@ export class AttendantActionService {
     shouldCreateActionRequest: boolean;
     actionCreated: boolean;
     draftSaved: boolean;
+    userConfirmed?: boolean;
+    justSaved?: boolean;
     customerId?: string | null;
     leadId?: string | null;
     businessActionRequestId?: string | null;
@@ -507,6 +530,39 @@ export class AttendantActionService {
   }): AttendantActionAnalysis {
     const nextAssistantInstruction = this.resolveNextInstruction(input);
     const registrationClaimAllowed = Boolean(input.actionCreated && input.appearsInCustomers);
+    const isComplete = input.missingFields.length === 0 && input.actionStatus === 'PENDING_CONFIRMATION';
+    const shouldFinalize = Boolean(registrationClaimAllowed && isComplete);
+    const shouldAskConfirmation = this.shouldAskConfirmation(input);
+    if (shouldFinalize) {
+      this.logger.log(
+        JSON.stringify({
+          event: 'attendant.action.completion_ready',
+          companyId: input.companyId,
+          intent: input.intent,
+          actionStatus: input.actionStatus,
+          registrationClaimAllowed,
+          justSaved: Boolean(input.justSaved),
+        }),
+      );
+      this.logger.log(
+        JSON.stringify({
+          event: 'attendant.action.finalized',
+          companyId: input.companyId,
+          intent: input.intent,
+          businessActionRequestId: input.businessActionRequestId || null,
+        }),
+      );
+      if (input.userConfirmed) {
+        this.logger.log(
+          JSON.stringify({
+            event: 'attendant.action.extra_confirmation_skipped',
+            companyId: input.companyId,
+            intent: input.intent,
+            businessActionRequestId: input.businessActionRequestId || null,
+          }),
+        );
+      }
+    }
     return {
       intent: input.intent,
       extractedFields: input.extractedFields,
@@ -530,17 +586,27 @@ export class AttendantActionService {
       businessActionRequestCreated: Boolean(input.businessActionRequestCreated),
       appearsInCustomers: Boolean(input.appearsInCustomers),
       registrationClaimAllowed,
+      isComplete,
+      justSaved: Boolean(input.justSaved),
+      userConfirmed: Boolean(input.userConfirmed),
+      shouldAskConfirmation,
+      shouldFinalize,
       ok: true,
       errorClassification: null,
       shouldContinueAiResponse: true,
       shouldAskMissingFields: input.missingFields.length > 0,
       shouldHumanHandoff: input.intent === 'HUMAN_HANDOFF',
-      assistantInstruction: nextAssistantInstruction,
-      nextAssistantInstruction,
+      assistantInstruction: shouldFinalize ? 'finalize_registered_request' : nextAssistantInstruction,
+      nextAssistantInstruction: shouldFinalize ? 'finalize_registered_request' : nextAssistantInstruction,
       promptContext: this.buildPromptContext({
         ...input,
         registrationClaimAllowed,
-        nextAssistantInstruction,
+        nextAssistantInstruction: shouldFinalize
+          ? 'finalize_registered_request'
+          : nextAssistantInstruction,
+        isComplete,
+        shouldAskConfirmation,
+        shouldFinalize,
       }),
     };
   }
@@ -558,6 +624,9 @@ export class AttendantActionService {
     businessActionRequestId?: string | null;
     registrationClaimAllowed: boolean;
     nextAssistantInstruction: string;
+    isComplete?: boolean;
+    shouldAskConfirmation?: boolean;
+    shouldFinalize?: boolean;
   }) {
     return [
       'Camada de acao generica do Atendente IA:',
@@ -567,6 +636,9 @@ export class AttendantActionService {
       `Status da acao: ${input.actionStatus}.`,
       `Cliente pode ser salvo agora: ${input.shouldCreateCustomer}.`,
       `Pedido/acao pode ser salvo agora: ${input.shouldCreateActionRequest}.`,
+      `Acao completa: ${Boolean(input.isComplete)}.`,
+      `Deve pedir confirmacao extra: ${Boolean(input.shouldAskConfirmation)}.`,
+      `Deve finalizar agora: ${Boolean(input.shouldFinalize)}.`,
       input.registrationClaimAllowed
         ? `Cliente/lead e BusinessActionRequest salvos. ID: ${input.businessActionRequestId || 'salvo'}.`
         : input.draftSaved
@@ -576,6 +648,7 @@ export class AttendantActionService {
       `Proxima instrucao: ${input.nextAssistantInstruction}.`,
       input.companyContext,
       'Regra obrigatoria: nao diga que esta confirmado sem disponibilidade real. So diga que registrou se "Pode afirmar que registrou a solicitacao" for true. Se for false, peca apenas os dados faltantes. Nao diga que vai chamar humano em fluxo normal; diga que a equipe vai confirmar o horario.',
+      'Regra anti-loop: nao peca confirmacao de dados explicitos. Se "Deve finalizar agora" for true, conclua em uma frase curta e nao pergunte de novo.',
     ].join('\n');
   }
 
@@ -672,6 +745,35 @@ export class AttendantActionService {
       return 'answer_normally';
     }
     return 'continue_conversation';
+  }
+
+  private shouldAskConfirmation(input: {
+    actionStatus: AttendantActionStatus;
+    missingFields: string[];
+    actionCreated: boolean;
+  }) {
+    if (input.actionCreated && input.actionStatus === 'PENDING_CONFIRMATION') {
+      return false;
+    }
+    return input.missingFields.includes('desiredDate') || input.missingFields.includes('desiredTime');
+  }
+
+  private isConfirmationOnly(text: string) {
+    const normalized = this.normalize(text).replace(/[.!?]+/g, '').trim();
+    return [
+      'sim',
+      'correto',
+      'isso',
+      'exatamente',
+      'pode ser',
+      'confirmo',
+      'esta certo',
+      'ta certo',
+      'certo',
+      'perfeito',
+      'ok',
+      'okay',
+    ].includes(normalized);
   }
 
   private isLeadIntent(intent?: AttendantIntent | null) {

@@ -380,6 +380,32 @@ export class InstagramMessageProcessorService {
       integrationEventId: options.integrationEventId,
     });
 
+    const deterministicReply = this.buildFinalActionReply(actionAnalysis);
+    if (deterministicReply) {
+      this.logger.log(
+        JSON.stringify({
+          event: 'attendant.action.ai_call_skipped_for_template',
+          companyId,
+          conversationId: conversation.id,
+          integrationEventId: options.integrationEventId || null,
+          intent: actionAnalysis?.intent || null,
+          assistantInstruction: actionAnalysis?.assistantInstruction || null,
+        }),
+      );
+      return this.createAndMaybeSendOutbound({
+        companyId,
+        conversationId: conversation.id,
+        recipientId: message.senderId,
+        businessAccountId: message.recipientId,
+        text: deterministicReply,
+        actionAnalysis,
+        dryRun: options.dryRun,
+        source: options.source,
+        statusAfterSend: options.dryRun ? 'IA preview' : 'IA respondeu',
+        integrationEventId: options.integrationEventId,
+      });
+    }
+
     let reply: string;
     try {
       this.logPipelineStage('instagram.pipeline.ai_generation_started', {
@@ -708,6 +734,9 @@ export class InstagramMessageProcessorService {
         input.actionAnalysis?.shouldCreateActionRequest,
       ),
       nextAssistantInstruction: input.actionAnalysis?.nextAssistantInstruction || null,
+      shouldFinalize: Boolean(input.actionAnalysis?.shouldFinalize),
+      registrationClaimAllowed: Boolean(input.actionAnalysis?.registrationClaimAllowed),
+      userConfirmed: Boolean(input.actionAnalysis?.userConfirmed),
     };
   }
 
@@ -921,6 +950,7 @@ export class InstagramMessageProcessorService {
       `Contexto de negocio:\n${input.rag || 'Sem contexto adicional.'}`,
       `Contexto de intent/action:\n${input.actionContext}`,
       'Regras de agendamento: se faltar dia, horario ou servico, pergunte objetivamente. Se houver pedido salvo sem agenda real, diga que a solicitacao foi registrada para confirmacao da equipe. Nao diga que esta confirmado sem disponibilidade real.',
+      'Regra anti-confirmacao repetida: nao peca para confirmar informacoes que ja estao explicitas. Se o sistema disser que a solicitacao foi salva, conclua em uma frase curta. Se o cliente ja disse sim, correto, isso, exatamente, pode ser ou confirmo, nao pergunte novamente.',
       'Regras de dados do cliente: se o cliente informar nome, telefone ou email, reconheca naturalmente e continue o atendimento.',
       `Historico recente do Instagram:\n${historyText}`,
       `Mensagem atual do cliente: ${input.customerMessage}`,
@@ -1006,6 +1036,37 @@ export class InstagramMessageProcessorService {
       return 'Perfeito. Para qual dia e horario voce prefere?';
     }
     return 'Claro, posso te ajudar. Me diga um pouco mais sobre o que voce precisa.';
+  }
+
+  private buildFinalActionReply(actionAnalysis?: AttendantActionAnalysis | null) {
+    if (!actionAnalysis?.shouldFinalize || !actionAnalysis.registrationClaimAllowed) {
+      return null;
+    }
+
+    const fields = actionAnalysis.extractedFields || {};
+    if (actionAnalysis.userConfirmed && !actionAnalysis.justSaved) {
+      return 'Perfeito, sua solicitacao ja esta registrada. A equipe vai confirmar com voce.';
+    }
+
+    const firstName = fields.customerName?.split(/\s+/)[0] || null;
+    const service = fields.requestedService || fields.objective || 'solicitacao';
+    const desiredDate = fields.desiredDate ? this.formatDateOnly(fields.desiredDate) : null;
+    const desiredTime = fields.desiredTime || null;
+    const target = [desiredDate, desiredTime ? `${desiredTime}` : null]
+      .filter(Boolean)
+      .join(' as ');
+    const greeting = firstName ? `Perfeito, ${firstName}.` : 'Perfeito.';
+
+    if (target) {
+      return `${greeting} Registrei sua solicitacao de ${service} para ${target}. A equipe vai confirmar com voce.`;
+    }
+
+    return `${greeting} Registrei sua solicitacao de ${service}. A equipe vai confirmar com voce.`;
+  }
+
+  private formatDateOnly(value: string) {
+    const [year, month, day] = value.split('-');
+    return year && month && day ? `${day}/${month}/${year}` : value;
   }
 
   private isExplicitHumanHandoff(text: string) {

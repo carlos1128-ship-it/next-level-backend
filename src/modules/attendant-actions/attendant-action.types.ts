@@ -66,6 +66,11 @@ export type AttendantActionAnalysis = {
   businessActionRequestCreated?: boolean;
   appearsInCustomers?: boolean;
   registrationClaimAllowed?: boolean;
+  isComplete?: boolean;
+  justSaved?: boolean;
+  userConfirmed?: boolean;
+  shouldAskConfirmation?: boolean;
+  shouldFinalize?: boolean;
   ok?: boolean;
   errorClassification?: string | null;
   shouldContinueAiResponse?: boolean;

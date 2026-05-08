@@ -102,21 +102,38 @@ export class AttendantDataExtractionService {
 
   private extractTime(text: string) {
     const normalized = this.normalize(text);
-    const match = text.match(/\b(?:as|a)?\s*(\d{1,2})(?::|h)?(\d{2})?\s*(?:h|horas)?\b/i);
-    if (!match) {
+    if (this.hasAmbiguousTime(normalized)) {
       return null;
     }
 
-    let hour = Number(match[1]);
-    const minutes = match[2] ? Number(match[2]) : 0;
+    const match = text.match(/\b(?:as|a)?\s*(\d{1,2})(?::|h)?(\d{2})?\s*(?:h|horas)?\b/i);
+    if (match) {
+      let hour = Number(match[1]);
+      const minutes = match[2] ? Number(match[2]) : 0;
+      if (hour >= 1 && hour <= 11 && /(da tarde|a tarde|pela tarde|da noite|a noite)/.test(normalized)) {
+        hour += 12;
+      }
+      if (hour < 0 || hour > 23 || minutes < 0 || minutes > 59) {
+        return null;
+      }
+
+      return `${String(hour).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+    }
+
+    const wordHour = this.extractWrittenHour(normalized);
+    if (wordHour === null) {
+      return null;
+    }
+
+    let hour = wordHour;
     if (hour >= 1 && hour <= 11 && /(da tarde|a tarde|pela tarde|da noite|a noite)/.test(normalized)) {
       hour += 12;
     }
-    if (hour < 0 || hour > 23 || minutes < 0 || minutes > 59) {
+    if (hour < 0 || hour > 23) {
       return null;
     }
 
-    return `${String(hour).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+    return `${String(hour).padStart(2, '0')}:00`;
   }
 
   private extractService(text: string) {
@@ -164,6 +181,33 @@ export class AttendantDataExtractionService {
 
     const contextual = text.match(/\b(?:orcamento|budget|investir|investimento|verba)\D{0,20}(\d{2,}(?:[.,]\d{2})?)/i);
     return contextual?.[1]?.trim() || null;
+  }
+
+  private hasAmbiguousTime(normalized: string) {
+    if (/(qualquer horario|mais tarde|de tarde|pela tarde|a tarde|de manha|pela manha|a noite)/.test(normalized)) {
+      return !/(as|a)\s+\d{1,2}|(?:uma|duas|tres|quatro|cinco|seis|sete|oito|nove|dez|onze|doze)\s+(?:da|de|a)?\s*(?:tarde|manha|noite)/.test(normalized);
+    }
+    return /\b\d{1,2}\s*(?:ou|\/)\s*\d{1,2}\b/.test(normalized);
+  }
+
+  private extractWrittenHour(normalized: string) {
+    const hours: Record<string, number> = {
+      uma: 1,
+      duas: 2,
+      dois: 2,
+      tres: 3,
+      quatro: 4,
+      cinco: 5,
+      seis: 6,
+      sete: 7,
+      oito: 8,
+      nove: 9,
+      dez: 10,
+      onze: 11,
+      doze: 12,
+    };
+    const match = normalized.match(/\b(uma|duas|dois|tres|quatro|cinco|seis|sete|oito|nove|dez|onze|doze)\b(?:\s+horas?)?/);
+    return match ? hours[match[1]] : null;
   }
 
   private extractLooseName(text: string) {
