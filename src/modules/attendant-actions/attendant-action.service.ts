@@ -23,6 +23,8 @@ const LEAD_INTENTS: AttendantIntent[] = [
   'HUMAN_HANDOFF',
 ];
 
+const ACTIVE_ACTION_TTL_MS = 6 * 60 * 60 * 1000;
+
 @Injectable()
 export class AttendantActionService {
   private readonly logger = new Logger(AttendantActionService.name);
@@ -38,7 +40,7 @@ export class AttendantActionService {
     const detectedIntent = this.intentService.detectIntent(input.text);
     const currentFields = this.extractionService.extract(input.text);
     const existingDraft = input.conversationId
-      ? await this.findOpenActionDraft(input.companyId, input.conversationId)
+      ? await this.findActiveActionDraft(input, detectedIntent, currentFields)
       : null;
     const effectiveIntent = this.resolveEffectiveIntent(detectedIntent, existingDraft?.type);
     const extractedFields = this.mergeExtractedFields(
@@ -230,15 +232,56 @@ export class AttendantActionService {
     return this.analyzeAndPrepare({ ...input, dryRun: true });
   }
 
-  private async findOpenActionDraft(companyId: string, conversationId: string) {
-    return this.prisma.businessActionRequest.findFirst({
+  private async findActiveActionDraft(
+    input: AttendantActionInput,
+    detectedIntent: AttendantIntent,
+    currentFields: ExtractedAttendantFields,
+  ) {
+    if (!input.conversationId) {
+      return null;
+    }
+
+    if (this.startsNewActionSession(detectedIntent, input.text)) {
+      this.logger.log(
+        JSON.stringify({
+          event: 'attendant.action.session.started',
+          companyId: input.companyId,
+          conversationId: input.conversationId,
+          intent: detectedIntent,
+        }),
+      );
+      return null;
+    }
+
+    const updatedAfter = new Date(Date.now() - ACTIVE_ACTION_TTL_MS);
+    const needsInfoDraft = await this.prisma.businessActionRequest.findFirst({
       where: {
-        companyId,
-        conversationId,
-        status: { in: ['NEEDS_INFO', 'PENDING_CONFIRMATION'] },
+        companyId: input.companyId,
+        conversationId: input.conversationId,
+        status: { in: ['NEEDS_INFO', 'PENDING_DATA'] },
+        updatedAt: { gte: updatedAfter },
       },
       orderBy: { updatedAt: 'desc' },
-      select: { id: true, type: true, metadata: true },
+      select: { id: true, type: true, status: true, metadata: true, updatedAt: true },
+    });
+    if (needsInfoDraft) {
+      return needsInfoDraft;
+    }
+
+    if (!this.looksLikeCustomerUpdate(input.text, currentFields)) {
+      return null;
+    }
+
+    return this.prisma.businessActionRequest.findFirst({
+      where: {
+        companyId: input.companyId,
+        conversationId: input.conversationId,
+        customerExternalId: input.customerExternalId,
+        status: 'PENDING_CONFIRMATION',
+        updatedAt: { gte: updatedAfter },
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true, type: true, status: true, metadata: true, updatedAt: true },
     });
   }
 
@@ -248,21 +291,7 @@ export class AttendantActionService {
     actionStatus: AttendantActionStatus,
     fields: ExtractedAttendantFields,
   ) {
-    const existing = await this.prisma.customer.findFirst({
-      where: {
-        companyId: input.companyId,
-        OR: [
-          fields.phone ? { phone: fields.phone } : undefined,
-          fields.email ? { email: fields.email } : undefined,
-          {
-            externalCustomerId: input.customerExternalId,
-            channel: input.channel,
-            provider: input.provider,
-          },
-        ].filter(Boolean) as Prisma.CustomerWhereInput[],
-      },
-      select: { id: true },
-    });
+    const existing = await this.findExistingCustomer(input, fields);
     const ownerNote = this.buildOwnerNote(input, fields);
     const data = {
       name: fields.customerName || 'Cliente IA',
@@ -511,7 +540,7 @@ export class AttendantActionService {
       `Pode afirmar que registrou a solicitacao: ${input.registrationClaimAllowed}.`,
       `Proxima instrucao: ${input.nextAssistantInstruction}.`,
       input.companyContext,
-      'Regra obrigatoria: nao diga que esta confirmado sem disponibilidade real. So diga que registrou se "Pode afirmar que registrou a solicitacao" for true. Se for false, peca os dados faltantes ou diga que vai continuar ajudando.',
+      'Regra obrigatoria: nao diga que esta confirmado sem disponibilidade real. So diga que registrou se "Pode afirmar que registrou a solicitacao" for true. Se for false, peca apenas os dados faltantes. Nao diga que vai chamar humano em fluxo normal; diga que a equipe vai confirmar o horario.',
     ].join('\n');
   }
 
@@ -544,7 +573,7 @@ export class AttendantActionService {
     current: ExtractedAttendantFields,
   ): ExtractedAttendantFields {
     return {
-      customerName: current.customerName || existing.customerName || null,
+      customerName: this.pickBestName(existing.customerName, current.customerName),
       phone: current.phone || existing.phone || null,
       email: current.email || existing.email || null,
       desiredDate: current.desiredDate || existing.desiredDate || null,
@@ -635,6 +664,78 @@ export class AttendantActionService {
     return true;
   }
 
+  private async findExistingCustomer(
+    input: AttendantActionInput,
+    fields: ExtractedAttendantFields,
+  ) {
+    if (fields.phone) {
+      return this.prisma.customer.findFirst({
+        where: { companyId: input.companyId, phone: fields.phone },
+        select: { id: true },
+      });
+    }
+
+    if (fields.email) {
+      return this.prisma.customer.findFirst({
+        where: { companyId: input.companyId, email: fields.email },
+        select: { id: true },
+      });
+    }
+
+    return this.prisma.customer.findFirst({
+      where: {
+        companyId: input.companyId,
+        externalCustomerId: input.customerExternalId,
+        channel: input.channel,
+        provider: input.provider,
+      },
+      select: { id: true },
+    });
+  }
+
+  private startsNewActionSession(intent: AttendantIntent, text: string) {
+    if (!['SCHEDULE_REQUEST', 'MEETING_REQUEST', 'SERVICE_REQUEST', 'QUOTE_REQUEST', 'PRODUCT_INTEREST'].includes(intent)) {
+      return false;
+    }
+    const normalized = this.normalize(text);
+    return [
+      'quero marcar',
+      'gostaria de marcar',
+      'preciso marcar',
+      'quero agendar',
+      'gostaria de agendar',
+      'quero uma consulta',
+      'quero consulta',
+      'quero uma avaliacao',
+      'quero avaliacao',
+      'quero orcamento',
+      'gostaria de um orcamento',
+      'quero uma reuniao',
+      'quero atendimento',
+      'tenho interesse',
+      'quero reservar',
+    ].some((term) => normalized.includes(term));
+  }
+
+  private looksLikeCustomerUpdate(text: string, fields: ExtractedAttendantFields) {
+    if (fields.customerName || fields.phone || fields.email) {
+      return true;
+    }
+    return Boolean(this.extractStandaloneName(text));
+  }
+
+  private pickBestName(existing?: string | null, current?: string | null) {
+    if (!current) {
+      return existing || null;
+    }
+    if (!existing) {
+      return current;
+    }
+    return current.trim().split(/\s+/).length >= existing.trim().split(/\s+/).length
+      ? current
+      : existing;
+  }
+
   private scoreIntent(intent: AttendantIntent) {
     if (['SCHEDULE_REQUEST', 'MEETING_REQUEST', 'QUOTE_REQUEST', 'PRODUCT_INTEREST'].includes(intent)) {
       return 85;
@@ -694,16 +795,33 @@ export class AttendantActionService {
       minute: '2-digit',
     });
     const interest = fields.requestedService || fields.objective || 'nao informado';
-    const dateTime = [fields.desiredDate, fields.desiredTime].filter(Boolean).join(' as ');
+    const desiredDate = fields.desiredDate ? this.formatDateOnly(fields.desiredDate) : null;
+    const dateTime = [desiredDate, fields.desiredTime].filter(Boolean).join(' as ');
+    const origin = input.channel === 'instagram' ? 'Instagram' : input.channel === 'whatsapp' ? 'WhatsApp' : input.channel;
     return [
       `Atendimento realizado em ${timestamp}.`,
+      `Origem: ${origin}.`,
       `Interesse: ${interest}.`,
-      `Cliente capturado via ${input.channel} pelo Atendente IA.`,
-      dateTime ? `Data/hora solicitada: ${dateTime}.` : null,
-      'Confirmar com cliente. Repassado para humano.',
+      dateTime ? `Data/hora desejada: ${dateTime}.` : null,
+      'Status: Aguardando confirmacao.',
+      'Confirmar com o cliente e assumir o atendimento.',
     ]
       .filter(Boolean)
       .join(' ');
+  }
+
+  private extractStandaloneName(text: string) {
+    const compact = text.replace(/\s+/g, ' ').trim();
+    const withoutPhone = compact.replace(/(?:\+?55\s?)?(?:\(?\d{2}\)?\s?)?\d{4,5}[-\s]?\d{4}/g, '').trim();
+    if (!withoutPhone || /[0-9@]/.test(withoutPhone)) {
+      return null;
+    }
+    const normalized = this.normalize(withoutPhone);
+    if (/(quero|consulta|avaliacao|amanha|hoje|horario|marcar|agendar|telefone|email)/.test(normalized)) {
+      return null;
+    }
+    const words = withoutPhone.split(/\s+/).filter(Boolean);
+    return words.length >= 2 && words.length <= 6 ? withoutPhone : null;
   }
 
   private parseDate(value?: string | null) {
@@ -712,6 +830,18 @@ export class AttendantActionService {
     }
     const date = new Date(`${value}T12:00:00.000Z`);
     return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  private formatDateOnly(value: string) {
+    const [year, month, day] = value.split('-');
+    return year && month && day ? `${day}/${month}/${year}` : value;
+  }
+
+  private normalize(text: string) {
+    return text
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
   }
 
   private toJson(value: unknown): Prisma.InputJsonValue {

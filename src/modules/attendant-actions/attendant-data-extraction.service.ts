@@ -47,13 +47,13 @@ export class AttendantDataExtractionService {
   }
 
   private extractName(text: string) {
-    const match = text.match(/\b(?:meu nome e|meu nome é|me chamo|sou)\s+([A-Za-zÀ-ÿ]+(?:\s+[A-Za-zÀ-ÿ]+){0,4})(?=\s+(?:e\s+)?(?:meu\s+)?(?:telefone|whatsapp|email|e-mail)|[,.;]|$)/i);
-    return (
-      match?.[1]
+    const explicitMatch = text.match(/\b(?:meu nome e|me chamo|sou)\s+([\p{L}]+(?:\s+[\p{L}]+){0,5})(?=\s+(?:e\s+)?(?:meu\s+)?(?:telefone|whatsapp|email|e-mail)|[,.;]|$)/iu);
+    const explicit =
+      explicitMatch?.[1]
         ?.replace(/\s+e\s+meu$/i, '')
         .replace(/\s+e$/i, '')
-        .trim() || null
-    );
+        .trim() || null;
+    return explicit || this.extractLooseName(text);
   }
 
   private extractPhone(text: string) {
@@ -69,16 +69,16 @@ export class AttendantDataExtractionService {
   private extractDate(text: string, now: Date) {
     const normalized = this.normalize(text);
 
+    if (normalized.includes('depois de amanha')) {
+      return this.toDateOnly(this.addDays(now, 2));
+    }
+
     if (normalized.includes('amanha')) {
       return this.toDateOnly(this.addDays(now, 1));
     }
 
     if (normalized.includes('hoje')) {
       return this.toDateOnly(now);
-    }
-
-    if (normalized.includes('depois de amanha')) {
-      return this.toDateOnly(this.addDays(now, 2));
     }
 
     const dateMatch = text.match(/\b(\d{1,2})[\/.-](\d{1,2})(?:[\/.-](\d{2,4}))?\b/);
@@ -101,13 +101,17 @@ export class AttendantDataExtractionService {
   }
 
   private extractTime(text: string) {
-    const match = text.match(/\b(?:as|às|a)?\s*(\d{1,2})(?::|h)?(\d{2})?\s*(?:h|horas)?\b/i);
+    const normalized = this.normalize(text);
+    const match = text.match(/\b(?:as|a)?\s*(\d{1,2})(?::|h)?(\d{2})?\s*(?:h|horas)?\b/i);
     if (!match) {
       return null;
     }
 
-    const hour = Number(match[1]);
+    let hour = Number(match[1]);
     const minutes = match[2] ? Number(match[2]) : 0;
+    if (hour >= 1 && hour <= 11 && /(da tarde|a tarde|pela tarde|da noite|a noite)/.test(normalized)) {
+      hour += 12;
+    }
     if (hour < 0 || hour > 23 || minutes < 0 || minutes > 59) {
       return null;
     }
@@ -116,7 +120,7 @@ export class AttendantDataExtractionService {
   }
 
   private extractService(text: string) {
-    const match = text.match(/\b(?:consulta|reuniao|reunião|avaliacao|avaliação|procedimento|servico|serviço|consultoria|visita|aula|curso|mentoria|corte|barba|tratamento|orcamento|orçamento)\b(?:\s+(?:de|para|sobre)\s+([^,.!?]+))?/i);
+    const match = text.match(/\b(?:consulta|reuniao|avaliacao|procedimento|servico|consultoria|visita|aula|curso|mentoria|corte|barba|tratamento|orcamento)\b(?:\s+(?:de|para|sobre)\s+([^,.!?]+))?/i);
     if (!match) {
       return null;
     }
@@ -126,7 +130,15 @@ export class AttendantDataExtractionService {
 
   private extractObjective(text: string) {
     const match = text.match(/\b(?:quero|preciso|tenho interesse em|gostaria de|pode me ajudar com)\s+([^.!?]{3,120})/i);
-    return match?.[1]?.trim() || null;
+    const objective = match?.[1]?.trim() || null;
+    if (!objective) {
+      return null;
+    }
+    const normalized = this.normalize(objective);
+    if (/^(marcar|agendar|reservar)\s+(um\s+|uma\s+)?(horario|consulta|atendimento)$/.test(normalized)) {
+      return null;
+    }
+    return objective;
   }
 
   private extractPreferredContact(text: string) {
@@ -150,8 +162,25 @@ export class AttendantDataExtractionService {
       return currency[0].trim();
     }
 
-    const contextual = text.match(/\b(?:orcamento|orçamento|budget|investir|investimento|verba)\D{0,20}(\d{2,}(?:[.,]\d{2})?)/i);
+    const contextual = text.match(/\b(?:orcamento|budget|investir|investimento|verba)\D{0,20}(\d{2,}(?:[.,]\d{2})?)/i);
     return contextual?.[1]?.trim() || null;
+  }
+
+  private extractLooseName(text: string) {
+    const withoutPhone = text
+      .replace(/(?:\+?55\s?)?(?:\(?\d{2}\)?\s?)?\d{4,5}[-\s]?\d{4}/g, '')
+      .replace(/[,.]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!withoutPhone || /[0-9@]/.test(withoutPhone)) {
+      return null;
+    }
+    const normalized = this.normalize(withoutPhone);
+    if (/(quero|consulta|avaliacao|amanha|hoje|horario|marcar|agendar|telefone|email|tarde|manha|noite|para)/.test(normalized)) {
+      return null;
+    }
+    const words = withoutPhone.split(/\s+/).filter(Boolean);
+    return words.length >= 2 && words.length <= 6 ? withoutPhone : null;
   }
 
   private isLeadIntent(intent: string) {
