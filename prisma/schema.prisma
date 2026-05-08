@@ -264,6 +264,7 @@ model Company {
   botConfig             BotConfig?
   agentConfig           AgentConfig?
   leads                 Lead[]
+  appointmentRequests   AppointmentRequest[]
   conversations         Conversation[]
   messages              Message[]
   usageQuota            UsageQuota?
@@ -753,6 +754,7 @@ model Conversation {
   createdAt            DateTime               @default(now())
   updatedAt            DateTime               @updatedAt
   messages             Message[]
+  appointmentRequests  AppointmentRequest[]
   saleAIAttributions   SaleAIAttribution[]
   analyses             ConversationAnalysis[]
   company              Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
@@ -809,6 +811,19 @@ model Lead {
   companyId       String
   externalId      String
   name            String?
+  email           String?
+  phone           String?
+  channel         String?
+  provider        IntegrationProvider?
+  externalCustomerId String?
+  sourceConversationId String?
+  latestIntent    String?
+  actionStatus    String?
+  requestedService String?
+  requestedDate   DateTime?
+  requestedTime   String?
+  notes           String?    @db.Text
+  metadata        Json?
   status          LeadStatus @default(NEW)
   score           Int        @default(0)
   lastInteraction DateTime?
@@ -819,10 +834,46 @@ model Lead {
 
   company            Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
   conversations      ChatConversation[]
+  appointmentRequests AppointmentRequest[]
   saleAIAttributions SaleAIAttribution[]
 
   @@unique([companyId, externalId])
   @@index([companyId, status])
+  @@index([companyId, channel, updatedAt])
+  @@index([companyId, latestIntent, updatedAt])
+}
+
+model AppointmentRequest {
+  id                 String              @id @default(cuid())
+  companyId          String
+  conversationId     String
+  leadId             String?
+  channel            String
+  provider           IntegrationProvider
+  customerExternalId String
+  customerName       String?
+  phone              String?
+  email              String?
+  intent             String
+  status             String              @default("NEEDS_INFO")
+  requestedService   String?
+  requestedDate      DateTime?
+  requestedTime      String?
+  notes              String?             @db.Text
+  sourceMessageId    String?
+  metadata           Json?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  company      Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  lead         Lead?        @relation(fields: [leadId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, status, updatedAt])
+  @@index([companyId, channel, updatedAt])
+  @@index([conversationId, updatedAt])
+  @@index([leadId])
+  @@index([sourceMessageId])
 }
 
 model ChatConversation {

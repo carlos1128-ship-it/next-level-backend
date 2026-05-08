@@ -10,6 +10,8 @@ import { AiService } from '../ai/ai.service';
 import { RagService } from '../ai/rag.service';
 import { AlertsService } from '../alerts/alerts.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { AttendantActionService } from '../attendant-actions/attendant-action.service';
+import { AttendantActionAnalysis } from '../attendant-actions/attendant-action.types';
 import { InstagramIntegrationService } from './instagram-integration.service';
 import { InstagramSendService } from './instagram-send.service';
 
@@ -43,6 +45,7 @@ export class InstagramMessageProcessorService {
     private readonly alertsService: AlertsService,
     private readonly instagramIntegrationService: InstagramIntegrationService,
     private readonly instagramSendService: InstagramSendService,
+    private readonly attendantActionService: AttendantActionService,
   ) {}
 
   async processIntegrationEvent(eventId: string, options: ProcessOptions = {}) {
@@ -325,7 +328,21 @@ export class InstagramMessageProcessorService {
       };
     }
 
-    const reply = await this.generateAiReply(companyId, conversation.id, message, config);
+    const actionAnalysis = await this.runActionLayer({
+      companyId,
+      conversationId: conversation.id,
+      inboundMessageId: inbound.messageId,
+      message,
+      dryRun: options.dryRun,
+    });
+
+    const reply = await this.generateAiReply(
+      companyId,
+      conversation.id,
+      message,
+      config,
+      actionAnalysis,
+    );
 
     if (reply.toUpperCase().includes('PAUSAR_BOT')) {
       const transferMessage = 'Um momento. Vou chamar um atendente humano.';
@@ -336,6 +353,7 @@ export class InstagramMessageProcessorService {
         recipientId: message.senderId,
         businessAccountId: message.recipientId,
         text: transferMessage,
+        actionAnalysis,
         dryRun: options.dryRun,
         source: options.source,
         statusAfterSend: 'Humano acionado',
@@ -348,6 +366,7 @@ export class InstagramMessageProcessorService {
       recipientId: message.senderId,
       businessAccountId: message.recipientId,
       text: reply,
+      actionAnalysis,
       dryRun: options.dryRun,
       source: options.source,
       statusAfterSend: options.dryRun ? 'IA preview' : 'IA respondeu',
@@ -451,6 +470,7 @@ export class InstagramMessageProcessorService {
     recipientId: string;
     businessAccountId: string;
     text: string;
+    actionAnalysis?: AttendantActionAnalysis | null;
     dryRun?: boolean;
     source?: string;
     statusAfterSend: string;
@@ -476,6 +496,10 @@ export class InstagramMessageProcessorService {
           source: input.source || 'webhook',
           outboundRecipientId: input.recipientId,
           businessAccountId: input.businessAccountId,
+          intent: input.actionAnalysis?.intent || null,
+          actionStatus: input.actionAnalysis?.actionStatus || null,
+          appointmentRequestId: input.actionAnalysis?.appointmentRequestId || null,
+          leadId: input.actionAnalysis?.leadId || null,
         }),
       },
     });
@@ -504,7 +528,79 @@ export class InstagramMessageProcessorService {
       conversationId: input.conversationId,
       outboundMessageId: outbound.id,
       aiResponse: input.text,
+      intent: input.actionAnalysis?.intent || null,
+      extractedFields: input.actionAnalysis?.extractedFields || null,
+      missingFields: input.actionAnalysis?.missingFields || [],
+      actionStatus: input.actionAnalysis?.actionStatus || null,
+      actionCreated: Boolean(input.actionAnalysis?.actionCreated),
+      leadId: input.actionAnalysis?.leadId || null,
+      appointmentRequestId: input.actionAnalysis?.appointmentRequestId || null,
     };
+  }
+
+  private async runActionLayer(input: {
+    companyId: string;
+    conversationId: string;
+    inboundMessageId: string;
+    message: NormalizedInstagramMessage;
+    dryRun?: boolean;
+  }) {
+    try {
+      const analysis = await this.attendantActionService.analyzeAndPrepare({
+        companyId: input.companyId,
+        conversationId: input.conversationId,
+        sourceMessageId: input.inboundMessageId,
+        channel: 'instagram',
+        provider: IntegrationProvider.INSTAGRAM,
+        customerExternalId: input.message.senderId,
+        businessAccountId: input.message.recipientId,
+        text: input.message.text,
+        dryRun: input.dryRun,
+      });
+
+      await this.prisma.message.update({
+        where: { id: input.inboundMessageId },
+        data: {
+          metadata: this.toJson({
+            provider: 'instagram',
+            channel: 'instagram',
+            senderId: input.message.senderId,
+            recipientId: input.message.recipientId,
+            customerExternalId: input.message.senderId,
+            businessAccountId: input.message.recipientId,
+            instagramAccountId: input.message.instagramAccountId,
+            entryId: input.message.entryId,
+            intent: analysis.intent,
+            extractedFields: analysis.extractedFields,
+            missingFields: analysis.missingFields,
+            actionStatus: analysis.actionStatus,
+            leadId: analysis.leadId || null,
+            appointmentRequestId: analysis.appointmentRequestId || null,
+          }),
+        },
+      });
+
+      return analysis;
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Falha na camada de acao';
+      this.logger.warn(
+        JSON.stringify({
+          event: 'instagram.action_layer.failed',
+          companyId: input.companyId,
+          conversationId: input.conversationId,
+          inboundMessageId: input.inboundMessageId,
+          message,
+        }),
+      );
+      await this.prisma.conversation
+        .update({
+          where: { id: input.conversationId },
+          data: { status: 'Acao pendente' },
+        })
+        .catch(() => null);
+      return null;
+    }
   }
 
   private async generateAiReply(
@@ -512,6 +608,7 @@ export class InstagramMessageProcessorService {
     conversationId: string,
     currentMessage: NormalizedInstagramMessage,
     config: AgentConfig,
+    actionAnalysis?: AttendantActionAnalysis | null,
   ) {
     const historyLimit = Math.max(1, config.maxContextMessages || 20);
     const [company, history, rag] = await Promise.all([
@@ -545,6 +642,9 @@ export class InstagramMessageProcessorService {
         content: item.content,
       })),
       rag,
+      actionContext:
+        actionAnalysis?.promptContext ||
+        'Camada de acao: nenhuma acao estruturada detectada nesta mensagem.',
     });
 
     const result = await this.aiService.generateText(prompt, companyId, 'simple', {
@@ -588,6 +688,7 @@ export class InstagramMessageProcessorService {
     customerMessage: string;
     history: Array<{ role: string; content: string }>;
     rag: string;
+    actionContext: string;
   }) {
     const historyText = input.history.length
       ? input.history.map((item) => `${item.role}: ${item.content}`).join('\n')
@@ -606,6 +707,9 @@ export class InstagramMessageProcessorService {
       `System prompt configurado: ${input.systemPrompt}`,
       `Instrucoes da empresa: ${input.instructions}`,
       `Contexto de negocio:\n${input.rag || 'Sem contexto adicional.'}`,
+      `Contexto de intent/action:\n${input.actionContext}`,
+      'Regras de agendamento: se faltar dia, horario ou servico, pergunte objetivamente. Se houver pedido salvo sem agenda real, diga que a solicitacao foi registrada para confirmacao da equipe. Nao diga que esta confirmado sem disponibilidade real.',
+      'Regras de dados do cliente: se o cliente informar nome, telefone ou email, reconheca naturalmente e continue o atendimento.',
       `Historico recente do Instagram:\n${historyText}`,
       `Mensagem atual do cliente: ${input.customerMessage}`,
     ].join('\n\n');

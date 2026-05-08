@@ -19,10 +19,17 @@ import { EvolutionService } from './evolution.service';
 import { DashboardModule } from '../dashboard/dashboard.module';
 import { AiModule } from '../ai/ai.module';
 import { AlertsModule } from '../alerts/alerts.module';
+import { AttendantActionsModule } from '../attendant-actions/attendant-actions.module';
 
 @Global()
 @Module({
-  imports: [DashboardModule, AiModule, AlertsModule, MetaIntegrationModule],
+  imports: [
+    DashboardModule,
+    AiModule,
+    AlertsModule,
+    MetaIntegrationModule,
+    AttendantActionsModule,
+  ],
   controllers: [
     IntegrationsController,
     IntegrationsOAuthController,

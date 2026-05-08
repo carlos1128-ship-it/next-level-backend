@@ -34,11 +34,17 @@ export class AttendantConversationsController {
           orderBy: { timestamp: 'desc' },
           take: HISTORY_LIMIT,
         },
+        appointmentRequests: {
+          orderBy: { updatedAt: 'desc' },
+          take: 3,
+        },
       },
     });
 
     return conversations.map((conversation) => {
       const lastMessage = conversation.messages[0];
+      const metadata = this.readMetadataRecord(lastMessage?.metadata);
+      const request = conversation.appointmentRequests[0];
       return {
         id: conversation.id,
         companyId: conversation.companyId,
@@ -55,11 +61,27 @@ export class AttendantConversationsController {
         lastMessage: lastMessage?.content || conversation.lastMessagePreview || '',
         lastMessageDirection: lastMessage?.direction || null,
         lastMessageStatus: lastMessage?.status || null,
+        intent: this.readString(metadata.intent),
+        actionStatus: this.readString(metadata.actionStatus) || request?.status || null,
+        appointmentRequest: request || null,
+        appointmentRequests: conversation.appointmentRequests,
         lastMessageAt: conversation.lastMessageAt.toISOString(),
         createdAt: conversation.createdAt,
         updatedAt: conversation.updatedAt,
         messages: conversation.messages.reverse(),
       };
     });
+  }
+
+  private readMetadataRecord(value: unknown) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {};
+    }
+
+    return value as Record<string, unknown>;
+  }
+
+  private readString(value: unknown) {
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
   }
 }

@@ -244,29 +244,49 @@ export class AttendantService {
           orderBy: { timestamp: 'desc' },
           take: 1,
         },
+        appointmentRequests: {
+          orderBy: { updatedAt: 'desc' },
+          take: 1,
+        },
       },
     });
 
-    return conversations.map((conversation) => ({
-      id: conversation.id,
-      companyId: conversation.companyId,
-      externalId: conversation.contactNumber,
-      name: conversation.contactName,
-      status: this.mapConversationStatus(conversation.status),
-      score: conversation.status === 'IA respondeu' ? 85 : conversation.isPaused ? 40 : 60,
-      lastInteraction: conversation.lastMessageAt,
-      botPausedUntil: conversation.pausedUntil,
-      lastQuotedValue: null,
-      createdAt: conversation.createdAt,
-      updatedAt: conversation.updatedAt,
-      conversations: conversation.messages.map((message) => ({
-        id: message.id,
-        leadId: conversation.id,
-        role: this.mapMessageRole(message.role),
-        content: message.content,
-        createdAt: message.timestamp,
-      })),
-    }));
+    return conversations.map((conversation) => {
+      const lastMessage = conversation.messages[0];
+      const metadata = this.readMetadataRecord(lastMessage?.metadata);
+      const request = conversation.appointmentRequests[0];
+
+      return {
+        id: conversation.id,
+        companyId: conversation.companyId,
+        externalId: conversation.contactNumber,
+        name: conversation.contactName,
+        status: this.mapConversationStatus(conversation.status),
+        score: request ? 80 : conversation.status === 'IA respondeu' ? 85 : conversation.isPaused ? 40 : 60,
+        lastInteraction: conversation.lastMessageAt,
+        botPausedUntil: conversation.pausedUntil,
+        lastQuotedValue: null,
+        channel: conversation.channel,
+        provider: conversation.provider,
+        externalCustomerId: conversation.remoteJid || conversation.externalThreadId,
+        latestIntent: this.readString(metadata.intent),
+        actionStatus: this.readString(metadata.actionStatus) || request?.status || null,
+        requestedService: request?.requestedService || null,
+        requestedDate: request?.requestedDate || null,
+        requestedTime: request?.requestedTime || null,
+        notes: request?.notes || null,
+        appointmentRequest: request || null,
+        createdAt: conversation.createdAt,
+        updatedAt: conversation.updatedAt,
+        conversations: conversation.messages.map((message) => ({
+          id: message.id,
+          leadId: conversation.id,
+          role: this.mapMessageRole(message.role),
+          content: message.content,
+          createdAt: message.timestamp,
+        })),
+      };
+    });
   }
 
   async listConversationFeed(companyId: string, limit = 20) {
@@ -279,11 +299,17 @@ export class AttendantService {
           orderBy: { timestamp: 'desc' },
           take: HISTORY_LIMIT,
         },
+        appointmentRequests: {
+          orderBy: { updatedAt: 'desc' },
+          take: 3,
+        },
       },
     });
 
     return conversations.map((conversation) => {
       const lastMessage = conversation.messages[0];
+      const metadata = this.readMetadataRecord(lastMessage?.metadata);
+      const request = conversation.appointmentRequests[0];
       return {
         id: conversation.id,
         companyId: conversation.companyId,
@@ -300,6 +326,10 @@ export class AttendantService {
         lastMessage: lastMessage?.content || conversation.lastMessagePreview || '',
         lastMessageDirection: lastMessage?.direction || null,
         lastMessageStatus: lastMessage?.status || null,
+        intent: this.readString(metadata.intent),
+        actionStatus: this.readString(metadata.actionStatus) || request?.status || null,
+        appointmentRequest: request || null,
+        appointmentRequests: conversation.appointmentRequests,
         lastMessageAt: conversation.lastMessageAt.toISOString(),
         createdAt: conversation.createdAt,
         updatedAt: conversation.updatedAt,
@@ -314,6 +344,9 @@ export class AttendantService {
       include: {
         messages: {
           orderBy: { timestamp: 'asc' },
+        },
+        appointmentRequests: {
+          orderBy: { updatedAt: 'desc' },
         },
       },
     });
@@ -973,6 +1006,18 @@ export class AttendantService {
   private mapMessageRole(role: string) {
     if (role === 'assistant') return 'ASSISTANT';
     return 'USER';
+  }
+
+  private readMetadataRecord(value: unknown) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {};
+    }
+
+    return value as Record<string, unknown>;
+  }
+
+  private readString(value: unknown) {
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
   }
 
   private extractWhatsappMessages(payload: Record<string, unknown>) {
