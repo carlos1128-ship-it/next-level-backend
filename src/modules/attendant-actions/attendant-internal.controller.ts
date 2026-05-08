@@ -31,6 +31,8 @@ export class AttendantInternalController {
       conversationId?: string;
       text?: string;
       customerExternalId?: string;
+      phone?: string;
+      customerName?: string;
       provider?: string;
       dryRun?: boolean;
     },
@@ -42,6 +44,8 @@ export class AttendantInternalController {
     const conversationId = body.conversationId?.trim() || null;
     const text = body.text?.trim();
     const customerExternalId = body.customerExternalId?.trim() || 'test-customer';
+    const customerPhone = body.phone?.trim() || null;
+    const customerName = body.customerName?.trim() || null;
     const dryRun = body.dryRun !== false;
 
     if (!companyId || !text) {
@@ -58,6 +62,8 @@ export class AttendantInternalController {
         channel,
         provider,
         customerExternalId,
+        customerPhone,
+        customerName,
       });
     }
 
@@ -67,6 +73,8 @@ export class AttendantInternalController {
       channel,
       provider,
       customerExternalId,
+      customerPhone,
+      customerName,
       text,
       dryRun,
     });
@@ -89,6 +97,8 @@ export class AttendantInternalController {
     channel: string;
     provider: IntegrationProvider;
     customerExternalId: string;
+    customerPhone?: string | null;
+    customerName?: string | null;
   }) {
     const existing = await this.prisma.conversation.findUnique({
       where: { id: input.id },
@@ -105,6 +115,7 @@ export class AttendantInternalController {
         channel: input.channel,
         provider: input.provider,
         contactNumber: input.customerExternalId,
+        contactName: input.customerName || undefined,
         lastMessagePreview: 'Teste interno de intencao IA',
         lastMessageAt: new Date(),
       },
@@ -115,7 +126,7 @@ export class AttendantInternalController {
         provider: input.provider,
         contactNumber: input.customerExternalId,
         externalThreadId: input.id,
-        contactName: 'Teste IA',
+        contactName: input.customerName || 'Teste IA',
         status: 'Teste interno',
         lastMessagePreview: 'Teste interno de intencao IA',
         lastMessageAt: new Date(),

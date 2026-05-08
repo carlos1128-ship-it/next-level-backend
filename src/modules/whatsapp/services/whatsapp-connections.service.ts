@@ -10,6 +10,7 @@ import {
   AIUsageFeature,
   AIUsageProvider,
   AIUsageStatus,
+  IntegrationProvider,
   type Prisma,
 } from '@prisma/client';
 import axios from 'axios';
@@ -25,6 +26,8 @@ import {
 } from '../../../common/utils/ai-memory-keys.util';
 import { AIUsageLimitExceededException } from '../../usage/ai-usage-limit.exception';
 import { AIUsageService } from '../../usage/ai-usage.service';
+import { AttendantActionService } from '../../attendant-actions/attendant-action.service';
+import type { AttendantActionAnalysis } from '../../attendant-actions/attendant-action.types';
 import { WhatsappAgentConfigService } from './whatsapp-agent-config.service';
 import { WhatsappConversationsService } from './whatsapp-conversations.service';
 import { WhatsappProviderEvolutionService } from './whatsapp-provider-evolution.service';
@@ -125,6 +128,7 @@ export class WhatsappConnectionsService {
     private readonly agentConfigService: WhatsappAgentConfigService,
     private readonly conversationsService: WhatsappConversationsService,
     private readonly aiUsageService: AIUsageService,
+    private readonly attendantActionService: AttendantActionService,
   ) {}
 
   async getCurrent(companyId: string) {
@@ -1430,6 +1434,11 @@ export class WhatsappConnectionsService {
         instanceName: connection.instanceName,
         messageId: normalized.messageId,
       });
+      this.logWhatsappEvent('whatsapp.action.skipped_duplicate', {
+        companyId: connection.companyId,
+        instanceName: connection.instanceName,
+        messageId: normalized.messageId,
+      });
       return;
     }
 
@@ -1473,6 +1482,11 @@ export class WhatsappConnectionsService {
       return;
     }
 
+    const actionAnalysis = await this.processWhatsappActionLayer(
+      connection,
+      normalized,
+    );
+
     try {
       await this.aiUsageService.enforceLimit(
         connection.companyId,
@@ -1490,6 +1504,7 @@ export class WhatsappConnectionsService {
         payload,
         normalized,
         agentConfig,
+        actionAnalysis,
       );
       await this.aiUsageService.logUsage(
         connection.companyId,
@@ -1538,6 +1553,154 @@ export class WhatsappConnectionsService {
     }
   }
 
+  private async processWhatsappActionLayer(
+    connection: {
+      id: string;
+      companyId: string;
+      instanceName: string;
+    },
+    message: {
+      remoteJid: string | null;
+      messageId: string | null;
+      pushName: string | null;
+      messageType: string;
+      text: string | null;
+    },
+  ): Promise<AttendantActionAnalysis | null> {
+    if (!message.remoteJid || !message.messageId || !message.text?.trim()) {
+      return null;
+    }
+
+    const remoteNumber = this.normalizePhone(message.remoteJid) || message.remoteJid;
+    this.logWhatsappEvent('whatsapp.action.processing_started', {
+      companyId: connection.companyId,
+      instanceName: connection.instanceName,
+      messageId: message.messageId,
+      remoteJid: message.remoteJid,
+    });
+
+    try {
+      const conversation = await this.ensureWhatsappActionConversation({
+        connection,
+        remoteJid: message.remoteJid,
+        remoteNumber,
+        pushName: message.pushName,
+        preview: message.text,
+      });
+
+      const analysis = await this.attendantActionService.analyzeAndPrepare({
+        companyId: connection.companyId,
+        conversationId: conversation.id,
+        sourceMessageId: message.messageId,
+        channel: 'whatsapp',
+        provider: IntegrationProvider.WHATSAPP,
+        customerExternalId: message.remoteJid,
+        customerPhone: remoteNumber,
+        customerName: message.pushName,
+        text: message.text,
+        businessAccountId: connection.instanceName,
+      });
+
+      this.logWhatsappEvent('whatsapp.action.intent_detected', {
+        companyId: connection.companyId,
+        conversationId: conversation.id,
+        messageId: message.messageId,
+        intent: analysis.intent,
+        actionStatus: analysis.actionStatus,
+      });
+      this.logWhatsappEvent('whatsapp.action.fields_extracted', {
+        companyId: connection.companyId,
+        conversationId: conversation.id,
+        messageId: message.messageId,
+        hasCustomerName: Boolean(analysis.extractedFields.customerName),
+        hasPhone: Boolean(analysis.extractedFields.phone),
+        hasEmail: Boolean(analysis.extractedFields.email),
+        hasRequestedService: Boolean(analysis.extractedFields.requestedService),
+        hasDesiredDate: Boolean(analysis.extractedFields.desiredDate),
+        hasDesiredTime: Boolean(analysis.extractedFields.desiredTime),
+      });
+      this.logWhatsappEvent('whatsapp.action.missing_fields', {
+        companyId: connection.companyId,
+        conversationId: conversation.id,
+        messageId: message.messageId,
+        missingFields: analysis.missingFields,
+      });
+
+      if (analysis.customerCreatedOrUpdated) {
+        this.logWhatsappEvent('whatsapp.action.customer_save.succeeded', {
+          companyId: connection.companyId,
+          conversationId: conversation.id,
+          customerId: analysis.customerId || null,
+          appearsInCustomers: Boolean(analysis.appearsInCustomers),
+        });
+      }
+
+      if (analysis.businessActionRequestCreatedOrUpdated) {
+        this.logWhatsappEvent('whatsapp.action.business_request_save.succeeded', {
+          companyId: connection.companyId,
+          conversationId: conversation.id,
+          businessActionRequestId: analysis.businessActionRequestId || null,
+          actionStatus: analysis.actionStatus,
+        });
+      }
+
+      return analysis;
+    } catch (error) {
+      this.logWhatsappEvent('whatsapp.action.processing_failed', {
+        companyId: connection.companyId,
+        instanceName: connection.instanceName,
+        messageId: message.messageId,
+        message: this.extractErrorMessage(error),
+      });
+      return null;
+    }
+  }
+
+  private async ensureWhatsappActionConversation(input: {
+    connection: {
+      id: string;
+      companyId: string;
+    };
+    remoteJid: string;
+    remoteNumber: string;
+    pushName?: string | null;
+    preview?: string | null;
+  }) {
+    const now = new Date();
+    return this.prisma.conversation.upsert({
+      where: {
+        companyId_contactNumber: {
+          companyId: input.connection.companyId,
+          contactNumber: input.remoteNumber,
+        },
+      },
+      update: {
+        whatsappConnectionId: input.connection.id,
+        provider: IntegrationProvider.WHATSAPP,
+        channel: 'whatsapp',
+        remoteJid: input.remoteJid,
+        externalThreadId: input.remoteJid,
+        contactName: input.pushName || undefined,
+        lastMessagePreview: input.preview || undefined,
+        lastMessageAt: now,
+      },
+      create: {
+        companyId: input.connection.companyId,
+        whatsappConnectionId: input.connection.id,
+        provider: IntegrationProvider.WHATSAPP,
+        channel: 'whatsapp',
+        contactNumber: input.remoteNumber,
+        remoteJid: input.remoteJid,
+        externalThreadId: input.remoteJid,
+        contactName: input.pushName || null,
+        status: 'Aguardando',
+        lastMessagePreview: input.preview || null,
+        lastMessageAt: now,
+      },
+      select: { id: true },
+    });
+  }
+
   private async forwardIncomingWhatsappMessageToN8n(
     connection: {
       id: string;
@@ -1574,6 +1737,7 @@ export class WhatsappConnectionsService {
       modelProvider: string;
       modelName: string;
     },
+    actionAnalysis?: AttendantActionAnalysis | null,
   ) {
     const webhookUrl = this.resolveN8nAgentWebhookUrl();
     const headers = this.getAutomationHeaders();
@@ -1600,7 +1764,7 @@ export class WhatsappConnectionsService {
 
     const response = await axios.post(
       webhookUrl,
-      this.buildAutomationPayload(connection, payload, message, agentConfig),
+      this.buildAutomationPayload(connection, payload, message, agentConfig, actionAnalysis),
       {
         timeout: 10000,
         headers,
@@ -1652,6 +1816,7 @@ export class WhatsappConnectionsService {
       modelProvider: string;
       modelName: string;
     },
+    actionAnalysis?: AttendantActionAnalysis | null,
   ) {
     const remoteJid = message.remoteJid || '';
     const memoryKey = buildWhatsappMemoryKey(connection.companyId, remoteJid);
@@ -1680,6 +1845,10 @@ export class WhatsappConnectionsService {
       agentKey,
       raw: payload,
       rawEvolutionPayload: payload,
+      attendantAction: actionAnalysis
+        ? this.buildSafeActionMetadata(actionAnalysis)
+        : null,
+      actionPromptContext: actionAnalysis?.promptContext || null,
       agentConfig: {
         id: agentConfig.id,
         name: agentConfig.agentName,
@@ -1689,8 +1858,14 @@ export class WhatsappConnectionsService {
         companyDescription: agentConfig.companyDescription,
         initialMessage: agentConfig.welcomeMessage,
         welcomeMessage: agentConfig.welcomeMessage,
-        instructions: agentConfig.instructions,
-        systemPrompt: agentConfig.systemPrompt || agentConfig.instructions,
+        instructions: this.mergeActionPrompt(
+          agentConfig.instructions,
+          actionAnalysis,
+        ),
+        systemPrompt: this.mergeActionPrompt(
+          agentConfig.systemPrompt || agentConfig.instructions,
+          actionAnalysis,
+        ),
         model: agentConfig.modelName,
         modelProvider: agentConfig.modelProvider,
         modelName: agentConfig.modelName,
@@ -1725,6 +1900,49 @@ export class WhatsappConnectionsService {
         humanPauseKey,
       },
     };
+  }
+
+  private buildSafeActionMetadata(action: AttendantActionAnalysis) {
+    return {
+      ok: action.ok !== false,
+      intent: action.intent,
+      actionStatus: action.actionStatus,
+      missingFields: action.missingFields,
+      extractedFields: action.extractedFields,
+      customerSaved: Boolean(action.customerCreatedOrUpdated),
+      leadSaved: Boolean(action.leadCreatedOrUpdated),
+      businessActionSaved: Boolean(action.businessActionRequestCreatedOrUpdated),
+      appearsInCustomers: Boolean(action.appearsInCustomers),
+      registrationClaimAllowed: Boolean(action.registrationClaimAllowed),
+      shouldAskMissingFields: Boolean(action.shouldAskMissingFields),
+      shouldAskConfirmation: Boolean(action.shouldAskConfirmation),
+      shouldFinalize: Boolean(action.shouldFinalize),
+      userConfirmed: Boolean(action.userConfirmed),
+      nextAssistantInstruction: action.nextAssistantInstruction,
+      assistantInstruction: action.assistantInstruction || action.nextAssistantInstruction,
+      customerId: action.customerId || null,
+      leadId: action.leadId || null,
+      businessActionRequestId: action.businessActionRequestId || null,
+    };
+  }
+
+  private mergeActionPrompt(
+    basePrompt: string | null | undefined,
+    action: AttendantActionAnalysis | null | undefined,
+  ) {
+    const base = basePrompt?.trim() || '';
+    if (!action?.promptContext) {
+      return base;
+    }
+
+    return [
+      base,
+      'Contexto estruturado do Atendente IA para esta mensagem WhatsApp:',
+      action.promptContext,
+      'Use esse contexto sem repetir perguntas ja respondidas. Se a solicitacao foi salva, diga apenas que ficou registrada e pendente de confirmacao da equipe.',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
   }
 
   private normalizeAutomationEventName(event: string | null) {

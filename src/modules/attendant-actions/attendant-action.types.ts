@@ -40,6 +40,8 @@ export type AttendantActionInput = {
   channel: string;
   provider: IntegrationProvider;
   customerExternalId: string;
+  customerPhone?: string | null;
+  customerName?: string | null;
   text: string;
   businessAccountId?: string | null;
   dryRun?: boolean;

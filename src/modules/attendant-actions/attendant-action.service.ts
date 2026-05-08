@@ -38,7 +38,10 @@ export class AttendantActionService {
 
   async analyzeAndPrepare(input: AttendantActionInput): Promise<AttendantActionAnalysis> {
     const detectedIntent = this.intentService.detectIntent(input.text);
-    const currentFields = this.extractionService.extract(input.text);
+    const currentFields = this.applyIdentityFallback(
+      this.extractionService.extract(input.text),
+      input,
+    );
     const userConfirmed = this.isConfirmationOnly(input.text);
     if (userConfirmed) {
       this.logger.log(
@@ -696,6 +699,17 @@ export class AttendantActionService {
     };
   }
 
+  private applyIdentityFallback(
+    fields: ExtractedAttendantFields,
+    input: AttendantActionInput,
+  ): ExtractedAttendantFields {
+    return {
+      ...fields,
+      customerName: fields.customerName || input.customerName || null,
+      phone: fields.phone || input.customerPhone || null,
+    };
+  }
+
   private readDraftFields(metadata: unknown): ExtractedAttendantFields {
     if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
       return {};
@@ -808,6 +822,18 @@ export class AttendantActionService {
     if (fields.phone) {
       return this.prisma.customer.findFirst({
         where: { companyId: input.companyId, phone: fields.phone },
+        select: { id: true },
+      });
+    }
+
+    if (input.channel === 'whatsapp' && input.customerExternalId) {
+      return this.prisma.customer.findFirst({
+        where: {
+          companyId: input.companyId,
+          externalCustomerId: input.customerExternalId,
+          channel: input.channel,
+          provider: input.provider,
+        },
         select: { id: true },
       });
     }

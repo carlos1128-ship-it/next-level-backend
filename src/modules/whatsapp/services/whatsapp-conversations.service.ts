@@ -1,6 +1,8 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
-import { Prisma, WhatsappConnection } from '@prisma/client';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { IntegrationProvider, Prisma, WhatsappConnection } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
+import { AttendantActionService } from '../../attendant-actions/attendant-action.service';
+import type { AttendantActionAnalysis } from '../../attendant-actions/attendant-action.types';
 import { ListConversationsDto } from '../dto/list-conversations.dto';
 import { WhatsappProviderEvolutionService } from './whatsapp-provider-evolution.service';
 
@@ -17,9 +19,12 @@ type EvolutionMessage = {
 
 @Injectable()
 export class WhatsappConversationsService {
+  private readonly logger = new Logger(WhatsappConversationsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly providerService: WhatsappProviderEvolutionService,
+    private readonly attendantActionService: AttendantActionService,
   ) {}
 
   async list(companyId: string, query: ListConversationsDto) {
@@ -173,8 +178,9 @@ export class WhatsappConversationsService {
       },
     });
 
+    let createdMessage: { id: string; externalMessageId: string | null } | null = null;
     try {
-      await this.prisma.message.create({
+      createdMessage = await this.prisma.message.create({
         data: {
           companyId,
           conversationId: conversation.id,
@@ -192,6 +198,7 @@ export class WhatsappConversationsService {
           metadata: this.toJson(payload.metadata || payload),
           rawPayload: this.toJson(payload.rawPayload || payload),
         },
+        select: { id: true, externalMessageId: true },
       });
     } catch (error) {
       if (
@@ -219,7 +226,26 @@ export class WhatsappConversationsService {
       });
     }
 
-    return { conversationId: conversation.id, logged: true };
+    const actionAnalysis =
+      direction === 'inbound'
+        ? await this.processAutomationActionLayer({
+            companyId,
+            conversationId: conversation.id,
+            remoteJid,
+            remoteNumber,
+            text,
+            contactName: this.readString(payload.contactName),
+            sourceMessageId: createdMessage?.externalMessageId || createdMessage?.id || null,
+          })
+        : null;
+
+    return {
+      conversationId: conversation.id,
+      logged: true,
+      attendantAction: actionAnalysis
+        ? this.buildSafeActionMetadata(actionAnalysis)
+        : undefined,
+    };
   }
 
   async logConversationState(payload: Record<string, unknown>) {
@@ -261,6 +287,129 @@ export class WhatsappConversationsService {
     });
 
     return { conversationId: conversation.id, botPaused: conversation.botPaused };
+  }
+
+  private async processAutomationActionLayer(input: {
+    companyId: string;
+    conversationId: string;
+    remoteJid: string;
+    remoteNumber: string;
+    text: string;
+    contactName?: string | null;
+    sourceMessageId?: string | null;
+  }): Promise<AttendantActionAnalysis | null> {
+    if (!input.text.trim()) {
+      return null;
+    }
+
+    if (input.sourceMessageId) {
+      const existing = await this.prisma.businessActionRequest.findFirst({
+        where: {
+          companyId: input.companyId,
+          channel: 'whatsapp',
+          sourceMessageId: input.sourceMessageId,
+        },
+        select: { id: true },
+      });
+      if (existing) {
+        this.logWhatsappAction('whatsapp.action.skipped_duplicate', {
+          companyId: input.companyId,
+          conversationId: input.conversationId,
+          sourceMessageId: input.sourceMessageId,
+        });
+        return null;
+      }
+    }
+
+    this.logWhatsappAction('whatsapp.action.processing_started', {
+      companyId: input.companyId,
+      conversationId: input.conversationId,
+      source: 'internal_automation_log',
+    });
+
+    try {
+      const analysis = await this.attendantActionService.analyzeAndPrepare({
+        companyId: input.companyId,
+        conversationId: input.conversationId,
+        sourceMessageId: input.sourceMessageId,
+        channel: 'whatsapp',
+        provider: IntegrationProvider.WHATSAPP,
+        customerExternalId: input.remoteJid,
+        customerPhone: input.remoteNumber,
+        customerName: input.contactName,
+        text: input.text,
+      });
+
+      this.logWhatsappAction('whatsapp.action.intent_detected', {
+        companyId: input.companyId,
+        conversationId: input.conversationId,
+        intent: analysis.intent,
+        actionStatus: analysis.actionStatus,
+      });
+      this.logWhatsappAction('whatsapp.action.fields_extracted', {
+        companyId: input.companyId,
+        conversationId: input.conversationId,
+        hasCustomerName: Boolean(analysis.extractedFields.customerName),
+        hasPhone: Boolean(analysis.extractedFields.phone),
+        hasEmail: Boolean(analysis.extractedFields.email),
+        hasRequestedService: Boolean(analysis.extractedFields.requestedService),
+        hasDesiredDate: Boolean(analysis.extractedFields.desiredDate),
+        hasDesiredTime: Boolean(analysis.extractedFields.desiredTime),
+      });
+      this.logWhatsappAction('whatsapp.action.missing_fields', {
+        companyId: input.companyId,
+        conversationId: input.conversationId,
+        missingFields: analysis.missingFields,
+      });
+
+      if (analysis.customerCreatedOrUpdated) {
+        this.logWhatsappAction('whatsapp.action.customer_save.succeeded', {
+          companyId: input.companyId,
+          conversationId: input.conversationId,
+          customerId: analysis.customerId || null,
+          appearsInCustomers: Boolean(analysis.appearsInCustomers),
+        });
+      }
+
+      if (analysis.businessActionRequestCreatedOrUpdated) {
+        this.logWhatsappAction('whatsapp.action.business_request_save.succeeded', {
+          companyId: input.companyId,
+          conversationId: input.conversationId,
+          businessActionRequestId: analysis.businessActionRequestId || null,
+          actionStatus: analysis.actionStatus,
+        });
+      }
+
+      return analysis;
+    } catch (error) {
+      this.logWhatsappAction('whatsapp.action.processing_failed', {
+        companyId: input.companyId,
+        conversationId: input.conversationId,
+        message: error instanceof Error ? error.message : 'Falha na camada de acao WhatsApp',
+      });
+      return null;
+    }
+  }
+
+  private buildSafeActionMetadata(action: AttendantActionAnalysis) {
+    return {
+      ok: action.ok !== false,
+      intent: action.intent,
+      actionStatus: action.actionStatus,
+      missingFields: action.missingFields,
+      customerSaved: Boolean(action.customerCreatedOrUpdated),
+      businessActionSaved: Boolean(action.businessActionRequestCreatedOrUpdated),
+      appearsInCustomers: Boolean(action.appearsInCustomers),
+      registrationClaimAllowed: Boolean(action.registrationClaimAllowed),
+      shouldFinalize: Boolean(action.shouldFinalize),
+      nextAssistantInstruction: action.nextAssistantInstruction,
+      customerId: action.customerId || null,
+      businessActionRequestId: action.businessActionRequestId || null,
+    };
+  }
+
+  private logWhatsappAction(event: string, data: Record<string, unknown>) {
+    this.logger.log(JSON.stringify({ event, channel: 'whatsapp', ...data }));
   }
 
   async ingestEvolutionMessages(

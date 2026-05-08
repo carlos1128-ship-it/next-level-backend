@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from '../../prisma/prisma.module';
+import { AttendantActionsModule } from '../attendant-actions/attendant-actions.module';
 import { UsageModule } from '../usage/usage.module';
 import { AgentConfigController } from './controllers/agent-config.controller';
 import { WhatsappAutomationInternalController } from './controllers/whatsapp-automation-internal.controller';
@@ -13,7 +14,7 @@ import { WhatsappProviderEvolutionService } from './services/whatsapp-provider-e
 import { EvolutionApiService } from './services/evolution-api.service';
 
 @Module({
-  imports: [ConfigModule, PrismaModule, UsageModule],
+  imports: [ConfigModule, PrismaModule, UsageModule, AttendantActionsModule],
   controllers: [
     WhatsappConnectionsController,
     WhatsappConversationsController,
