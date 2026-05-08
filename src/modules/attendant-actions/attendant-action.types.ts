@@ -58,6 +58,14 @@ export type AttendantActionAnalysis = {
   businessActionRequestId?: string | null;
   actionCreated: boolean;
   draftSaved: boolean;
+  customerCreatedOrUpdated?: boolean;
+  customerCreated?: boolean;
+  customerUpdated?: boolean;
+  leadCreatedOrUpdated?: boolean;
+  businessActionRequestCreatedOrUpdated?: boolean;
+  businessActionRequestCreated?: boolean;
+  appearsInCustomers?: boolean;
+  registrationClaimAllowed?: boolean;
   nextAssistantInstruction: string;
   promptContext: string;
 };

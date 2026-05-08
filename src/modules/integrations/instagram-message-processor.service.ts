@@ -586,6 +586,11 @@ export class InstagramMessageProcessorService {
             actionStatus: analysis.actionStatus,
             shouldCreateCustomer: analysis.shouldCreateCustomer,
             shouldCreateActionRequest: analysis.shouldCreateActionRequest,
+            customerCreatedOrUpdated: analysis.customerCreatedOrUpdated,
+            businessActionRequestCreatedOrUpdated:
+              analysis.businessActionRequestCreatedOrUpdated,
+            appearsInCustomers: analysis.appearsInCustomers,
+            registrationClaimAllowed: analysis.registrationClaimAllowed,
             nextAssistantInstruction: analysis.nextAssistantInstruction,
             customerId: analysis.customerId || null,
             leadId: analysis.leadId || null,

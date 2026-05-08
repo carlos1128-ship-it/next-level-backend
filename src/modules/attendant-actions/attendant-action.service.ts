@@ -55,6 +55,7 @@ export class AttendantActionService {
     const shouldCreateCustomer = leadIntent && this.hasCustomerMinimum(extractedFields);
     const shouldCreateActionRequest =
       shouldCreateCustomer && this.hasActionMinimum(effectiveIntent, extractedFields);
+    let appearsInCustomers = false;
 
     if (input.dryRun || !leadIntent) {
       return this.buildAnalysis({
@@ -67,22 +68,77 @@ export class AttendantActionService {
         shouldCreateActionRequest,
         actionCreated: false,
         draftSaved: false,
+        appearsInCustomers,
       });
     }
 
     const shouldSaveActionDraft =
       Boolean(input.conversationId) &&
       (effectiveIntent !== 'CUSTOMER_DATA_CAPTURE' || Boolean(existingDraft));
-    let customer: { id: string } | null = null;
+    let customer: { id: string; operation: 'created' | 'updated' } | null = null;
     let lead: { id: string } | null = null;
 
     if (shouldCreateCustomer) {
-      customer = await this.upsertCustomer(input, effectiveIntent, actionStatus, extractedFields);
+      this.logger.log(
+        JSON.stringify({
+          event: 'attendant.action.customer_save.started',
+          companyId: input.companyId,
+          channel: input.channel,
+          provider: input.provider,
+          intent: effectiveIntent,
+          hasPhone: Boolean(extractedFields.phone),
+          hasEmail: Boolean(extractedFields.email),
+          hasInterest: Boolean(extractedFields.requestedService || extractedFields.objective),
+        }),
+      );
+
+      try {
+        customer = await this.upsertCustomer(input, effectiveIntent, actionStatus, extractedFields);
+        appearsInCustomers = customer?.id
+          ? await this.customerAppearsInCustomers(input.companyId, customer.id)
+          : false;
+        this.logger.log(
+          JSON.stringify({
+            event: 'attendant.action.customer_save.succeeded',
+            companyId: input.companyId,
+            channel: input.channel,
+            provider: input.provider,
+            customerId: customer?.id || null,
+            appearsInCustomers,
+          }),
+        );
+      } catch (error) {
+        this.logger.error(
+          JSON.stringify({
+            event: 'attendant.action.customer_save.failed',
+            companyId: input.companyId,
+            channel: input.channel,
+            provider: input.provider,
+            message: error instanceof Error ? error.message : 'Falha ao salvar cliente IA',
+          }),
+        );
+        throw error;
+      }
+
       lead = await this.upsertLead(input, effectiveIntent, actionStatus, extractedFields);
     }
 
-    const request = shouldSaveActionDraft
-      ? await this.upsertBusinessActionRequest({
+    let request: { id: string; operation: 'created' | 'updated' } | null = null;
+    if (shouldSaveActionDraft) {
+      this.logger.log(
+        JSON.stringify({
+          event: 'attendant.action.business_request_save.started',
+          companyId: input.companyId,
+          channel: input.channel,
+          provider: input.provider,
+          intent: effectiveIntent,
+          status: actionStatus,
+          customerLinked: Boolean(customer?.id),
+          leadLinked: Boolean(lead?.id),
+        }),
+      );
+      try {
+        request = await this.upsertBusinessActionRequest({
           input,
           existingId: existingDraft?.id || null,
           intent: effectiveIntent,
@@ -90,8 +146,35 @@ export class AttendantActionService {
           fields: extractedFields,
           customerId: customer?.id || null,
           leadId: lead?.id || null,
-        })
-      : null;
+        });
+        this.logger.log(
+          JSON.stringify({
+            event: 'attendant.action.business_request_save.succeeded',
+            companyId: input.companyId,
+            businessActionRequestId: request?.id || null,
+            status: actionStatus,
+          }),
+        );
+      } catch (error) {
+        this.logger.error(
+          JSON.stringify({
+            event: 'attendant.action.business_request_save.failed',
+            companyId: input.companyId,
+            channel: input.channel,
+            provider: input.provider,
+            message:
+              error instanceof Error ? error.message : 'Falha ao salvar pedido de acao IA',
+          }),
+        );
+        throw error;
+      }
+    }
+
+    const actionCreated = Boolean(
+      customer?.id &&
+        appearsInCustomers &&
+        (shouldCreateActionRequest || effectiveIntent === 'CUSTOMER_DATA_CAPTURE'),
+    );
 
     this.logger.log(
       JSON.stringify({
@@ -104,7 +187,19 @@ export class AttendantActionService {
         customerCreatedOrUpdated: Boolean(customer?.id),
         leadCreatedOrUpdated: Boolean(lead?.id),
         businessActionRequestId: request?.id || null,
+        appearsInCustomers,
+        registrationClaimAllowed: actionCreated,
         missingFields,
+      }),
+    );
+    this.logger.log(
+      JSON.stringify({
+        event: 'attendant.action.registration_claim_allowed',
+        companyId: input.companyId,
+        allowed: actionCreated,
+        appearsInCustomers,
+        customerId: customer?.id || null,
+        businessActionRequestId: request?.id || null,
       }),
     );
 
@@ -116,14 +211,18 @@ export class AttendantActionService {
       companyContext,
       shouldCreateCustomer,
       shouldCreateActionRequest,
-      actionCreated: Boolean(
-        customer?.id &&
-          (shouldCreateActionRequest || effectiveIntent === 'CUSTOMER_DATA_CAPTURE'),
-      ),
+      actionCreated,
       draftSaved: Boolean(request?.id),
       customerId: customer?.id || null,
       leadId: lead?.id || null,
       businessActionRequestId: request?.id || null,
+      customerCreatedOrUpdated: Boolean(customer?.id),
+      customerCreated: customer?.operation === 'created',
+      customerUpdated: customer?.operation === 'updated',
+      leadCreatedOrUpdated: Boolean(lead?.id),
+      businessActionRequestCreatedOrUpdated: Boolean(request?.id),
+      businessActionRequestCreated: request?.operation === 'created',
+      appearsInCustomers,
     });
   }
 
@@ -155,11 +254,16 @@ export class AttendantActionService {
         OR: [
           fields.phone ? { phone: fields.phone } : undefined,
           fields.email ? { email: fields.email } : undefined,
-          { externalCustomerId: input.customerExternalId },
+          {
+            externalCustomerId: input.customerExternalId,
+            channel: input.channel,
+            provider: input.provider,
+          },
         ].filter(Boolean) as Prisma.CustomerWhereInput[],
       },
       select: { id: true },
     });
+    const ownerNote = this.buildOwnerNote(input, fields);
     const data = {
       name: fields.customerName || 'Cliente IA',
       email: fields.email || undefined,
@@ -171,22 +275,23 @@ export class AttendantActionService {
       sourceMessageId: input.sourceMessageId || undefined,
       source: `ia_${input.channel}`,
       interest: fields.requestedService || fields.objective || undefined,
-      objective: fields.objective || fields.notes || undefined,
+      objective: fields.objective || ownerNote,
       desiredDate: this.parseDate(fields.desiredDate) || undefined,
       desiredTime: fields.desiredTime || undefined,
       status: actionStatus,
-      metadata: this.toJson(this.buildMetadata(input, intent, fields)),
+      metadata: this.toJson(this.buildMetadata(input, intent, fields, ownerNote)),
     };
 
     if (existing) {
-      return this.prisma.customer.update({
+      const updated = await this.prisma.customer.update({
         where: { id: existing.id },
         data,
         select: { id: true },
       });
+      return { id: updated.id, operation: 'updated' as const };
     }
 
-    return this.prisma.customer.create({
+    const created = await this.prisma.customer.create({
       data: {
         companyId: input.companyId,
         ...data,
@@ -197,6 +302,7 @@ export class AttendantActionService {
       },
       select: { id: true },
     });
+    return { id: created.id, operation: 'created' as const };
   }
 
   private async upsertLead(
@@ -206,6 +312,7 @@ export class AttendantActionService {
     fields: ExtractedAttendantFields,
   ) {
     const externalId = `${input.channel}:${input.customerExternalId}`;
+    const ownerNote = this.buildOwnerNote(input, fields);
     return this.prisma.lead.upsert({
       where: {
         companyId_externalId: {
@@ -226,8 +333,8 @@ export class AttendantActionService {
         requestedService: fields.requestedService || fields.objective || undefined,
         requestedDate: this.parseDate(fields.desiredDate) || undefined,
         requestedTime: fields.desiredTime || undefined,
-        notes: fields.notes || undefined,
-        metadata: this.toJson(this.buildMetadata(input, intent, fields)),
+        notes: ownerNote,
+        metadata: this.toJson(this.buildMetadata(input, intent, fields, ownerNote)),
         lastInteraction: new Date(),
         score: this.scoreIntent(intent),
       },
@@ -246,8 +353,8 @@ export class AttendantActionService {
         requestedService: fields.requestedService || fields.objective || null,
         requestedDate: this.parseDate(fields.desiredDate),
         requestedTime: fields.desiredTime || null,
-        notes: fields.notes || null,
-        metadata: this.toJson(this.buildMetadata(input, intent, fields)),
+        notes: ownerNote,
+        metadata: this.toJson(this.buildMetadata(input, intent, fields, ownerNote)),
         lastInteraction: new Date(),
         score: this.scoreIntent(intent),
         status: 'NEW',
@@ -265,6 +372,7 @@ export class AttendantActionService {
     customerId?: string | null;
     leadId?: string | null;
   }) {
+    const ownerNote = this.buildOwnerNote(input.input, input.fields);
     const data = {
       customerId: input.customerId || undefined,
       leadId: input.leadId || undefined,
@@ -278,19 +386,20 @@ export class AttendantActionService {
       objective: input.fields.objective || undefined,
       desiredDate: this.parseDate(input.fields.desiredDate) || undefined,
       desiredTime: input.fields.desiredTime || undefined,
-      notes: input.fields.notes || undefined,
-      metadata: this.toJson(this.buildMetadata(input.input, input.intent, input.fields)),
+      notes: ownerNote,
+      metadata: this.toJson(this.buildMetadata(input.input, input.intent, input.fields, ownerNote)),
     };
 
     if (input.existingId) {
-      return this.prisma.businessActionRequest.update({
+      const updated = await this.prisma.businessActionRequest.update({
         where: { id: input.existingId },
         data,
         select: { id: true },
       });
+      return { id: updated.id, operation: 'updated' as const };
     }
 
-    return this.prisma.businessActionRequest.create({
+    const created = await this.prisma.businessActionRequest.create({
       data: {
         companyId: input.input.companyId,
         conversationId: input.input.conversationId || '',
@@ -309,11 +418,12 @@ export class AttendantActionService {
         objective: input.fields.objective || null,
         desiredDate: this.parseDate(input.fields.desiredDate),
         desiredTime: input.fields.desiredTime || null,
-        notes: input.fields.notes || null,
+        notes: ownerNote,
         metadata: data.metadata,
       },
       select: { id: true },
     });
+    return { id: created.id, operation: 'created' as const };
   }
 
   private buildAnalysis(input: {
@@ -329,8 +439,16 @@ export class AttendantActionService {
     customerId?: string | null;
     leadId?: string | null;
     businessActionRequestId?: string | null;
+    customerCreatedOrUpdated?: boolean;
+    customerCreated?: boolean;
+    customerUpdated?: boolean;
+    leadCreatedOrUpdated?: boolean;
+    businessActionRequestCreatedOrUpdated?: boolean;
+    businessActionRequestCreated?: boolean;
+    appearsInCustomers?: boolean;
   }): AttendantActionAnalysis {
     const nextAssistantInstruction = this.resolveNextInstruction(input);
+    const registrationClaimAllowed = Boolean(input.actionCreated && input.appearsInCustomers);
     return {
       intent: input.intent,
       extractedFields: input.extractedFields,
@@ -344,8 +462,22 @@ export class AttendantActionService {
       businessActionRequestId: input.businessActionRequestId || null,
       actionCreated: input.actionCreated,
       draftSaved: input.draftSaved,
+      customerCreatedOrUpdated: Boolean(input.customerCreatedOrUpdated),
+      customerCreated: Boolean(input.customerCreated),
+      customerUpdated: Boolean(input.customerUpdated),
+      leadCreatedOrUpdated: Boolean(input.leadCreatedOrUpdated),
+      businessActionRequestCreatedOrUpdated: Boolean(
+        input.businessActionRequestCreatedOrUpdated,
+      ),
+      businessActionRequestCreated: Boolean(input.businessActionRequestCreated),
+      appearsInCustomers: Boolean(input.appearsInCustomers),
+      registrationClaimAllowed,
       nextAssistantInstruction,
-      promptContext: this.buildPromptContext({ ...input, nextAssistantInstruction }),
+      promptContext: this.buildPromptContext({
+        ...input,
+        registrationClaimAllowed,
+        nextAssistantInstruction,
+      }),
     };
   }
 
@@ -360,6 +492,7 @@ export class AttendantActionService {
     actionCreated: boolean;
     draftSaved: boolean;
     businessActionRequestId?: string | null;
+    registrationClaimAllowed: boolean;
     nextAssistantInstruction: string;
   }) {
     return [
@@ -370,14 +503,15 @@ export class AttendantActionService {
       `Status da acao: ${input.actionStatus}.`,
       `Cliente pode ser salvo agora: ${input.shouldCreateCustomer}.`,
       `Pedido/acao pode ser salvo agora: ${input.shouldCreateActionRequest}.`,
-      input.actionCreated
+      input.registrationClaimAllowed
         ? `Cliente/lead e BusinessActionRequest salvos. ID: ${input.businessActionRequestId || 'salvo'}.`
         : input.draftSaved
           ? 'Rascunho interno atualizado; ainda nao diga que a solicitacao foi registrada, peca os dados faltantes.'
           : 'Nenhuma acao estruturada salva para esta mensagem.',
+      `Pode afirmar que registrou a solicitacao: ${input.registrationClaimAllowed}.`,
       `Proxima instrucao: ${input.nextAssistantInstruction}.`,
       input.companyContext,
-      'Regra obrigatoria: nao diga que esta confirmado sem disponibilidade real. Se todos os dados foram salvos, diga que foi registrado para confirmacao da equipe.',
+      'Regra obrigatoria: nao diga que esta confirmado sem disponibilidade real. So diga que registrou se "Pode afirmar que registrou a solicitacao" for true. Se for false, peca os dados faltantes ou diga que vai continuar ajudando.',
     ].join('\n');
   }
 
@@ -518,6 +652,7 @@ export class AttendantActionService {
     input: AttendantActionInput,
     intent: AttendantIntent,
     fields: ExtractedAttendantFields,
+    ownerNote?: string | null,
   ) {
     return {
       source: 'attendant_action_layer',
@@ -528,7 +663,47 @@ export class AttendantActionService {
       sourceMessageId: input.sourceMessageId || null,
       intent,
       extractedFields: fields,
+      ownerNote: ownerNote || null,
     };
+  }
+
+  private async customerAppearsInCustomers(companyId: string, customerId: string) {
+    const customer = await this.prisma.customer.findFirst({
+      where: { id: customerId, companyId },
+      select: { id: true },
+    });
+    const visible = Boolean(customer?.id);
+    this.logger.log(
+      JSON.stringify({
+        event: 'customers.visibility.check',
+        companyId,
+        customerId,
+        visible,
+      }),
+    );
+    return visible;
+  }
+
+  private buildOwnerNote(input: AttendantActionInput, fields: ExtractedAttendantFields) {
+    const timestamp = new Date().toLocaleString('pt-BR', {
+      timeZone: 'America/Sao_Paulo',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const interest = fields.requestedService || fields.objective || 'nao informado';
+    const dateTime = [fields.desiredDate, fields.desiredTime].filter(Boolean).join(' as ');
+    return [
+      `Atendimento realizado em ${timestamp}.`,
+      `Interesse: ${interest}.`,
+      `Cliente capturado via ${input.channel} pelo Atendente IA.`,
+      dateTime ? `Data/hora solicitada: ${dateTime}.` : null,
+      'Confirmar com cliente. Repassado para humano.',
+    ]
+      .filter(Boolean)
+      .join(' ');
   }
 
   private parseDate(value?: string | null) {
