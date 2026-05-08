@@ -66,6 +66,12 @@ export type AttendantActionAnalysis = {
   businessActionRequestCreated?: boolean;
   appearsInCustomers?: boolean;
   registrationClaimAllowed?: boolean;
+  ok?: boolean;
+  errorClassification?: string | null;
+  shouldContinueAiResponse?: boolean;
+  shouldAskMissingFields?: boolean;
+  shouldHumanHandoff?: boolean;
+  assistantInstruction?: string;
   nextAssistantInstruction: string;
   promptContext: string;
 };

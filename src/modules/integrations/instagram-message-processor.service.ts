@@ -32,6 +32,7 @@ type ProcessOptions = {
   dryRun?: boolean;
   source?: 'webhook' | 'internal_test';
   retryExistingInbound?: boolean;
+  integrationEventId?: string;
 };
 
 @Injectable()
@@ -80,6 +81,7 @@ export class InstagramMessageProcessorService {
       const result = await this.processNormalizedMessage(normalized, {
         source: 'webhook',
         retryExistingInbound: options.retryExistingInbound,
+        integrationEventId: eventId,
       });
       await this.finishEvent(eventId, result.status, this.readResultError(result));
       return result;
@@ -310,6 +312,38 @@ export class InstagramMessageProcessorService {
         fallbackUsed: false,
       }),
     );
+    this.logPipelineStage('instagram.pipeline.after_agent_config', {
+      companyId,
+      conversationId: conversation.id,
+      messageId: inbound.messageId,
+      integrationEventId: options.integrationEventId,
+      stage: 'after_agent_config',
+      success: true,
+    });
+
+    if (conversation.isPaused && conversation.botPaused && !this.isExplicitHumanHandoff(message.text)) {
+      await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: {
+          isPaused: false,
+          botPaused: false,
+          pausedUntil: null,
+          status: 'Aguardando',
+        },
+      });
+      conversation.isPaused = false;
+      conversation.botPaused = false;
+      conversation.pausedUntil = null;
+      this.logPipelineStage('instagram.pipeline.bot_pause_cleared', {
+        companyId,
+        conversationId: conversation.id,
+        messageId: inbound.messageId,
+        integrationEventId: options.integrationEventId,
+        stage: 'bot_pause_cleared',
+        success: true,
+      });
+    }
+
     const pauseState = this.resolvePauseState(conversation, config);
 
     if (pauseState.paused) {
@@ -319,6 +353,15 @@ export class InstagramMessageProcessorService {
           status: pauseState.status,
           lastMessageAt: new Date(message.timestamp),
         },
+      });
+      this.logPipelineStage('instagram.dm.send_skipped', {
+        companyId,
+        conversationId: conversation.id,
+        messageId: inbound.messageId,
+        integrationEventId: options.integrationEventId,
+        stage: 'send_skipped',
+        success: false,
+        reason: pauseState.reason === 'agent_inactive' ? 'attendant_inactive' : 'pause_for_human',
       });
       return {
         processed: true,
@@ -334,17 +377,107 @@ export class InstagramMessageProcessorService {
       inboundMessageId: inbound.messageId,
       message,
       dryRun: options.dryRun,
+      integrationEventId: options.integrationEventId,
     });
 
-    const reply = await this.generateAiReply(
-      companyId,
-      conversation.id,
-      message,
-      config,
-      actionAnalysis,
-    );
+    let reply: string;
+    try {
+      this.logPipelineStage('instagram.pipeline.ai_generation_started', {
+        companyId,
+        conversationId: conversation.id,
+        messageId: inbound.messageId,
+        integrationEventId: options.integrationEventId,
+        stage: 'ai_generation_started',
+        success: true,
+      });
+      reply = await this.generateAiReply(
+        companyId,
+        conversation.id,
+        message,
+        config,
+        actionAnalysis,
+        options.integrationEventId,
+      );
+      this.logPipelineStage('instagram.pipeline.ai_generation_finished', {
+        companyId,
+        conversationId: conversation.id,
+        messageId: inbound.messageId,
+        integrationEventId: options.integrationEventId,
+        stage: 'ai_generation_finished',
+        success: true,
+      });
+    } catch (error) {
+      const safeMessage = error instanceof Error ? error.message : 'Falha ao gerar resposta IA';
+      this.logger.error(
+        JSON.stringify({
+          event: 'instagram.ai.generation_failed',
+          companyId,
+          conversationId: conversation.id,
+          integrationEventId: options.integrationEventId || null,
+          errorName: error instanceof Error ? error.name : 'UnknownError',
+          message: safeMessage,
+        }),
+      );
+      this.logPipelineStage('instagram.dm.send_skipped', {
+        companyId,
+        conversationId: conversation.id,
+        messageId: inbound.messageId,
+        integrationEventId: options.integrationEventId,
+        stage: 'send_skipped',
+        success: false,
+        reason: 'ai_generation_failed',
+      });
+      await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { status: 'IA precisa de atencao', lastMessageAt: new Date(message.timestamp) },
+      });
+      return {
+        processed: true,
+        status: 'ai_failed',
+        conversationId: conversation.id,
+        errorMessage: safeMessage,
+      };
+    }
+
+    if (!reply.trim()) {
+      this.logger.warn(
+        JSON.stringify({
+          event: 'instagram.ai.empty_response',
+          companyId,
+          conversationId: conversation.id,
+          integrationEventId: options.integrationEventId || null,
+        }),
+      );
+      this.logPipelineStage('instagram.dm.send_skipped', {
+        companyId,
+        conversationId: conversation.id,
+        messageId: inbound.messageId,
+        integrationEventId: options.integrationEventId,
+        stage: 'send_skipped',
+        success: false,
+        reason: 'ai_response_empty',
+      });
+      return {
+        processed: true,
+        status: 'ai_empty',
+        conversationId: conversation.id,
+        errorMessage: 'IA retornou resposta vazia',
+      };
+    }
 
     if (reply.toUpperCase().includes('PAUSAR_BOT')) {
+      if (!this.isExplicitHumanHandoff(message.text) && actionAnalysis?.intent !== 'HUMAN_HANDOFF') {
+        this.logger.warn(
+          JSON.stringify({
+            event: 'instagram.ai.unexpected_handoff_suppressed',
+            companyId,
+            conversationId: conversation.id,
+            integrationEventId: options.integrationEventId || null,
+            intent: actionAnalysis?.intent || null,
+          }),
+        );
+        reply = this.buildActionFallbackReply(actionAnalysis);
+      } else {
       const transferMessage = 'Um momento. Vou chamar um atendente humano.';
       await this.pauseConversation(conversation, message.senderId);
       return this.createAndMaybeSendOutbound({
@@ -357,7 +490,9 @@ export class InstagramMessageProcessorService {
         dryRun: options.dryRun,
         source: options.source,
         statusAfterSend: 'Humano acionado',
+        integrationEventId: options.integrationEventId,
       });
+      }
     }
 
     return this.createAndMaybeSendOutbound({
@@ -370,6 +505,7 @@ export class InstagramMessageProcessorService {
       dryRun: options.dryRun,
       source: options.source,
       statusAfterSend: options.dryRun ? 'IA preview' : 'IA respondeu',
+      integrationEventId: options.integrationEventId,
     });
   }
 
@@ -474,6 +610,7 @@ export class InstagramMessageProcessorService {
     dryRun?: boolean;
     source?: string;
     statusAfterSend: string;
+    integrationEventId?: string;
   }) {
     const outbound = await this.prisma.message.create({
       data: {
@@ -508,12 +645,38 @@ export class InstagramMessageProcessorService {
     });
 
     if (!input.dryRun) {
+      this.logPipelineStage('instagram.pipeline.send_started', {
+        companyId: input.companyId,
+        conversationId: input.conversationId,
+        messageId: outbound.id,
+        integrationEventId: input.integrationEventId,
+        stage: 'send_started',
+        success: true,
+      });
       await this.instagramSendService.sendInstagramMessage(
         input.companyId,
         input.recipientId,
         input.text,
         { messageId: outbound.id, businessAccountId: input.businessAccountId },
       );
+      this.logPipelineStage('instagram.pipeline.send_finished', {
+        companyId: input.companyId,
+        conversationId: input.conversationId,
+        messageId: outbound.id,
+        integrationEventId: input.integrationEventId,
+        stage: 'send_finished',
+        success: true,
+      });
+    } else {
+      this.logPipelineStage('instagram.dm.send_skipped', {
+        companyId: input.companyId,
+        conversationId: input.conversationId,
+        messageId: outbound.id,
+        integrationEventId: input.integrationEventId,
+        stage: 'send_skipped',
+        success: true,
+        reason: 'dry_run',
+      });
     }
 
     await this.prisma.conversation.update({
@@ -554,7 +717,16 @@ export class InstagramMessageProcessorService {
     inboundMessageId: string;
     message: NormalizedInstagramMessage;
     dryRun?: boolean;
+    integrationEventId?: string;
   }) {
+    this.logPipelineStage('instagram.pipeline.action_processing_started', {
+      companyId: input.companyId,
+      conversationId: input.conversationId,
+      messageId: input.inboundMessageId,
+      integrationEventId: input.integrationEventId,
+      stage: 'action_processing_started',
+      success: true,
+    });
     try {
       const analysis = await this.attendantActionService.analyzeAndPrepare({
         companyId: input.companyId,
@@ -600,6 +772,14 @@ export class InstagramMessageProcessorService {
         },
       });
 
+      this.logPipelineStage('instagram.pipeline.action_processing_finished', {
+        companyId: input.companyId,
+        conversationId: input.conversationId,
+        messageId: input.inboundMessageId,
+        integrationEventId: input.integrationEventId,
+        stage: 'action_processing_finished',
+        success: true,
+      });
       return analysis;
     } catch (error) {
       const message =
@@ -607,12 +787,22 @@ export class InstagramMessageProcessorService {
       this.logger.warn(
         JSON.stringify({
           event: 'instagram.action_layer.failed',
+          alias: 'attendant.action.processing_failed',
           companyId: input.companyId,
           conversationId: input.conversationId,
           inboundMessageId: input.inboundMessageId,
+          integrationEventId: input.integrationEventId || null,
           message,
         }),
       );
+      this.logPipelineStage('instagram.pipeline.action_processing_finished', {
+        companyId: input.companyId,
+        conversationId: input.conversationId,
+        messageId: input.inboundMessageId,
+        integrationEventId: input.integrationEventId,
+        stage: 'action_processing_finished',
+        success: false,
+      });
       await this.prisma.conversation
         .update({
           where: { id: input.conversationId },
@@ -629,6 +819,7 @@ export class InstagramMessageProcessorService {
     currentMessage: NormalizedInstagramMessage,
     config: AgentConfig,
     actionAnalysis?: AttendantActionAnalysis | null,
+    integrationEventId?: string,
   ) {
     const historyLimit = Math.max(1, config.maxContextMessages || 20);
     const [company, history, rag] = await Promise.all([
@@ -683,6 +874,7 @@ export class InstagramMessageProcessorService {
         event: 'instagram.ai.response.generated',
         companyId,
         conversationId,
+        integrationEventId: integrationEventId || null,
         model: config.modelName || null,
         promptSource: 'AgentConfig',
         fallbackUsed: false,
@@ -721,8 +913,8 @@ export class InstagramMessageProcessorService {
       `Tom de voz: ${input.toneOfVoice}.`,
       'Fale sempre em portugues do Brasil.',
       'Responda como a atendente configurada do negocio, de forma curta e clara para DM.',
-      'Nao invente preco, estoque, prazo ou politica. Se faltar dado, diga que vai confirmar com um humano.',
-      'Se o cliente pedir humano ou a conversa exigir humano, responda somente com PAUSAR_BOT.',
+      'Nao invente preco, estoque, prazo ou politica. Se faltar dado, pergunte objetivamente ou diga que a equipe vai confirmar.',
+      'Responda PAUSAR_BOT somente se o cliente pedir explicitamente atendimento humano.',
       `Mensagem inicial/regras: ${input.welcomeMessage}`,
       `System prompt configurado: ${input.systemPrompt}`,
       `Instrucoes da empresa: ${input.instructions}`,
@@ -791,6 +983,72 @@ export class InstagramMessageProcessorService {
         message: `Cliente Instagram ${senderId} precisa de atendimento humano.`,
       })
       .catch(() => null);
+  }
+
+  private buildActionFallbackReply(actionAnalysis?: AttendantActionAnalysis | null) {
+    if (actionAnalysis?.registrationClaimAllowed) {
+      const fields = actionAnalysis.extractedFields || {};
+      const service = fields.requestedService || fields.objective || 'solicitacao';
+      const dateText = [fields.desiredDate, fields.desiredTime].filter(Boolean).join(' as ');
+      return dateText
+        ? `Perfeito, registrei sua solicitacao de ${service} para ${dateText}. A equipe vai confirmar o horario com voce.`
+        : `Perfeito, registrei sua solicitacao de ${service}. A equipe vai confirmar com voce.`;
+    }
+
+    const missing = actionAnalysis?.missingFields || [];
+    if (missing.includes('customerName') || missing.includes('phone')) {
+      return 'Claro, posso te ajudar. Para registrar sua solicitacao, me informe seu nome e telefone para contato.';
+    }
+    if (missing.includes('requestedService')) {
+      return 'Claro. Qual servico ou assunto voce deseja agendar?';
+    }
+    if (missing.includes('desiredDate') || missing.includes('desiredTime')) {
+      return 'Perfeito. Para qual dia e horario voce prefere?';
+    }
+    return 'Claro, posso te ajudar. Me diga um pouco mais sobre o que voce precisa.';
+  }
+
+  private isExplicitHumanHandoff(text: string) {
+    const normalized = text
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+    return [
+      'falar com humano',
+      'falar com atendente',
+      'pessoa real',
+      'atendente humano',
+      'chamar atendente',
+      'quero humano',
+      'quero atendente',
+    ].some((term) => normalized.includes(term));
+  }
+
+  private logPipelineStage(
+    event: string,
+    input: {
+      companyId: string;
+      conversationId?: string | null;
+      messageId?: string | null;
+      integrationEventId?: string | null;
+      stage: string;
+      success: boolean;
+      reason?: string | null;
+    },
+  ) {
+    this.logger.log(
+      JSON.stringify({
+        event,
+        companyId: input.companyId,
+        conversationId: input.conversationId || null,
+        messageId: input.messageId || null,
+        integrationEventId: input.integrationEventId || null,
+        channel: 'instagram',
+        stage: input.stage,
+        success: input.success,
+        reason: input.reason || null,
+      }),
+    );
   }
 
   private readStoredNormalizedMessage(payload: Prisma.JsonValue | undefined) {

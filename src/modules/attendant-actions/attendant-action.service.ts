@@ -39,6 +39,27 @@ export class AttendantActionService {
   async analyzeAndPrepare(input: AttendantActionInput): Promise<AttendantActionAnalysis> {
     const detectedIntent = this.intentService.detectIntent(input.text);
     const currentFields = this.extractionService.extract(input.text);
+    this.logger.log(
+      JSON.stringify({
+        event: 'attendant.action.intent_detected',
+        companyId: input.companyId,
+        channel: input.channel,
+        provider: input.provider,
+        intent: detectedIntent,
+      }),
+    );
+    this.logger.log(
+      JSON.stringify({
+        event: 'attendant.action.fields_extracted',
+        companyId: input.companyId,
+        hasCustomerName: Boolean(currentFields.customerName),
+        hasPhone: Boolean(currentFields.phone),
+        hasEmail: Boolean(currentFields.email),
+        hasRequestedService: Boolean(currentFields.requestedService),
+        hasDesiredDate: Boolean(currentFields.desiredDate),
+        hasDesiredTime: Boolean(currentFields.desiredTime),
+      }),
+    );
     const existingDraft = input.conversationId
       ? await this.findActiveActionDraft(input, detectedIntent, currentFields)
       : null;
@@ -50,6 +71,14 @@ export class AttendantActionService {
     const missingFields = this.extractionService.missingForIntent(
       effectiveIntent,
       extractedFields,
+    );
+    this.logger.log(
+      JSON.stringify({
+        event: 'attendant.action.missing_fields',
+        companyId: input.companyId,
+        intent: effectiveIntent,
+        missingFields,
+      }),
     );
     const actionStatus = this.resolveActionStatus(effectiveIntent, missingFields);
     const companyContext = await this.contextService.buildCompanyActionContext(input.companyId);
@@ -501,6 +530,12 @@ export class AttendantActionService {
       businessActionRequestCreated: Boolean(input.businessActionRequestCreated),
       appearsInCustomers: Boolean(input.appearsInCustomers),
       registrationClaimAllowed,
+      ok: true,
+      errorClassification: null,
+      shouldContinueAiResponse: true,
+      shouldAskMissingFields: input.missingFields.length > 0,
+      shouldHumanHandoff: input.intent === 'HUMAN_HANDOFF',
+      assistantInstruction: nextAssistantInstruction,
       nextAssistantInstruction,
       promptContext: this.buildPromptContext({
         ...input,
