@@ -13,6 +13,24 @@ enum Plan {
   ENTERPRISE
 }
 
+enum BillingCycle {
+  MONTHLY
+  ANNUAL
+}
+
+enum SubscriptionStatus {
+  PENDING
+  ACTIVE
+  PAID
+  CANCELLED
+  EXPIRED
+  REFUNDED
+  FAILED
+  DISPUTED
+  LOST
+  TRIAL
+}
+
 enum UserNiche {
   ECOMMERCE
   MEDICINA
@@ -290,6 +308,7 @@ model Company {
   customerSignals       CustomerSignal[]
   conversationAnalyses  ConversationAnalysis[]
   aiRecommendations     AiRecommendation[]
+  subscriptions          Subscription[]
 }
 
 model AdSpend {
@@ -329,6 +348,97 @@ model User {
   refreshTokens         RefreshToken[]
   intelligentImports    IntelligentImport[]
   aiUsageLogs           AIUsageLog[]
+  subscriptions         Subscription[]
+}
+
+model BillingPlan {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  name        String
+  description String?  @db.Text
+  level       Int
+  isActive    Boolean  @default(true)
+  features    Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  prices        BillingPlanPrice[]
+  subscriptions Subscription[]
+}
+
+model BillingPlanPrice {
+  id                  String       @id @default(cuid())
+  planId              String
+  billingCycle        BillingCycle
+  amountInCents       Int
+  currency            String       @default("BRL")
+  abacatepayProductId String?
+  isActive            Boolean      @default(true)
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  plan BillingPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, billingCycle])
+  @@index([abacatepayProductId])
+}
+
+model Subscription {
+  id                       String             @id @default(cuid())
+  userId                   String
+  companyId                String?
+  billingPlanId            String
+  planKey                  String
+  billingCycle             BillingCycle
+  status                   SubscriptionStatus @default(PENDING)
+  abacatepayCheckoutId     String?
+  abacatepaySubscriptionId String?
+  abacatepayCustomerId     String?
+  abacatepayExternalId     String?            @unique
+  checkoutUrl              String?            @db.Text
+  amountInCents            Int
+  currency                 String             @default("BRL")
+  currentPeriodStart       DateTime?
+  currentPeriodEnd         DateTime?
+  paidAt                   DateTime?
+  canceledAt               DateTime?
+  expiresAt                DateTime?
+  metadata                 Json?
+  createdAt                DateTime           @default(now())
+  updatedAt                DateTime           @updatedAt
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company     Company?    @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  billingPlan BillingPlan @relation(fields: [billingPlanId], references: [id], onDelete: Restrict)
+
+  @@index([userId])
+  @@index([companyId])
+  @@index([status])
+  @@index([planKey])
+  @@index([abacatepayCheckoutId])
+  @@index([abacatepaySubscriptionId])
+}
+
+model PaymentEvent {
+  id                       String   @id @default(cuid())
+  eventId                  String?  @unique
+  eventType                String
+  apiVersion               Int?
+  devMode                  Boolean  @default(false)
+  rawPayload               Json
+  processed                Boolean  @default(false)
+  processingError          String?  @db.Text
+  subscriptionId           String?
+  abacatepayCheckoutId     String?
+  abacatepaySubscriptionId String?
+  createdAt                DateTime @default(now())
+  processedAt              DateTime?
+
+  @@index([eventType])
+  @@index([processed])
+  @@index([subscriptionId])
+  @@index([abacatepayCheckoutId])
+  @@index([abacatepaySubscriptionId])
 }
 
 model RefreshToken {

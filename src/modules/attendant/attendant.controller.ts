@@ -2,9 +2,11 @@ import { Body, Controller, Get, Param, Post, Put, Query, Req, UseGuards } from '
 import { ActiveCompanyGuard } from '../../common/guards/active-company.guard';
 import { AttendantService } from './attendant.service';
 import { UpdateBotConfigDto } from './dto/update-bot-config.dto';
+import { RequirePlan } from '../billing/decorators/require-plan.decorator';
 
 @Controller('attendant')
 @UseGuards(ActiveCompanyGuard)
+@RequirePlan('PREMIUM')
 export class AttendantController {
   constructor(private readonly attendantService: AttendantService) {}
 

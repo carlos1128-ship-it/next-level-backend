@@ -2,9 +2,11 @@ import { Controller, Post, Body, Res, UseGuards } from '@nestjs/common';
 import { Response } from 'express';
 import { ReportService } from './report.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { RequirePlan } from '../modules/billing/decorators/require-plan.decorator';
 
 @Controller('report')
 @UseGuards(JwtAuthGuard)
+@RequirePlan('PREMIUM')
 export class ReportController {
   constructor(private readonly reportService: ReportService) {}
 

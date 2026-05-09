@@ -1,10 +1,113 @@
-import { PrismaClient } from '@prisma/client';
+import { BillingCycle, PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient();
 const BCRYPT_ROUNDS = Number(process.env.BCRYPT_ROUNDS || 12);
 
+const billingPlans = [
+  {
+    key: 'COMMON',
+    name: 'Comum',
+    description: 'Plano inicial para organizar dados e acompanhar indicadores basicos.',
+    level: 1,
+    features: [
+      'Dashboard essencial',
+      'Cadastro manual de dados',
+      'Visao basica de vendas e financas',
+      'Relatorios simples',
+      'Insights limitados de IA',
+      'Suporte padrao',
+    ],
+  },
+  {
+    key: 'PREMIUM',
+    name: 'Premium',
+    description: 'Plano para usar IA de verdade na gestao e enxergar oportunidades.',
+    level: 2,
+    features: [
+      'Tudo do Comum',
+      'Chat IA com contexto do negocio',
+      'Analises financeiras avancadas',
+      'Alertas inteligentes',
+      'Relatorios completos',
+      'Integracoes principais',
+      'Atendente IA, se disponivel',
+    ],
+  },
+  {
+    key: 'PRO_BUSINESS',
+    name: 'Pro Business',
+    description: 'Plano completo para automacao, inteligencia de mercado e previsoes.',
+    level: 3,
+    features: [
+      'Tudo do Premium',
+      'IA estrategica avancada',
+      'Automacoes inteligentes',
+      'Market intelligence',
+      'Maior limite de dados',
+      'Previsoes avancadas',
+      'Prioridade em novas funcionalidades',
+    ],
+  },
+];
+
+const priceEnv = {
+  COMMON: {
+    MONTHLY: ['ABACATEPAY_COMMON_MONTHLY_PRODUCT_ID', 'PLAN_COMMON_MONTHLY_CENTS', 4990],
+    ANNUAL: ['ABACATEPAY_COMMON_ANNUAL_PRODUCT_ID', 'PLAN_COMMON_ANNUAL_CENTS', 49900],
+  },
+  PREMIUM: {
+    MONTHLY: ['ABACATEPAY_PREMIUM_MONTHLY_PRODUCT_ID', 'PLAN_PREMIUM_MONTHLY_CENTS', 9700],
+    ANNUAL: ['ABACATEPAY_PREMIUM_ANNUAL_PRODUCT_ID', 'PLAN_PREMIUM_ANNUAL_CENTS', 97000],
+  },
+  PRO_BUSINESS: {
+    MONTHLY: ['ABACATEPAY_PRO_BUSINESS_MONTHLY_PRODUCT_ID', 'PLAN_PRO_BUSINESS_MONTHLY_CENTS', 19700],
+    ANNUAL: ['ABACATEPAY_PRO_BUSINESS_ANNUAL_PRODUCT_ID', 'PLAN_PRO_BUSINESS_ANNUAL_CENTS', 197000],
+  },
+} as const;
+
+function intEnv(key: string, fallback: number) {
+  const parsed = Number(process.env[key]);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+async function seedBillingPlans() {
+  for (const definition of billingPlans) {
+    const plan = await prisma.billingPlan.upsert({
+      where: { key: definition.key },
+      create: definition,
+      update: {
+        name: definition.name,
+        description: definition.description,
+        level: definition.level,
+        features: definition.features,
+        isActive: true,
+      },
+    });
+
+    for (const cycle of [BillingCycle.MONTHLY, BillingCycle.ANNUAL]) {
+      const [productEnv, amountEnv, fallback] = priceEnv[definition.key as keyof typeof priceEnv][cycle];
+      await prisma.billingPlanPrice.upsert({
+        where: { planId_billingCycle: { planId: plan.id, billingCycle: cycle } },
+        create: {
+          planId: plan.id,
+          billingCycle: cycle,
+          amountInCents: intEnv(amountEnv, fallback),
+          abacatepayProductId: process.env[productEnv] || null,
+        },
+        update: {
+          amountInCents: intEnv(amountEnv, fallback),
+          abacatepayProductId: process.env[productEnv] || null,
+          isActive: true,
+        },
+      });
+    }
+  }
+}
+
 async function main() {
+  await seedBillingPlans();
+
   const company = await prisma.company.upsert({
     where: { slug: 'empresa-demo' },
     update: {},
@@ -21,7 +124,7 @@ async function main() {
     update: {},
     create: {
       companyId: company.id,
-      currentTier: 'FREE',
+      currentTier: 'COMUM',
       llmTokensUsed: 0,
       whatsappMessagesSent: 0,
       billingCycleEnd: new Date(new Date().setMonth(new Date().getMonth() + 1)),

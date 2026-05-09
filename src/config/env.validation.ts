@@ -117,6 +117,17 @@ export function validateEnvironment(config: RawEnv): RawEnv {
     normalized.PUBLIC_API_URL,
     { allowHttpLocalhost: true },
   );
+  normalized.FRONTEND_URL = normalizeUrl(
+    'FRONTEND_URL',
+    normalized.FRONTEND_URL || normalized.FRONTEND_APP_URL,
+    { allowHttpLocalhost: true },
+  );
+  normalized.FRONTEND_APP_URL = normalized.FRONTEND_URL;
+  normalized.ABACATEPAY_API_BASE_URL = normalizeUrl(
+    'ABACATEPAY_API_BASE_URL',
+    normalized.ABACATEPAY_API_BASE_URL || 'https://api.abacatepay.com/v2',
+    { allowHttpLocalhost: true },
+  );
 
   normalized.EVOLUTION_API_TIMEOUT_MS = normalizePositiveInteger(
     'EVOLUTION_API_TIMEOUT_MS',

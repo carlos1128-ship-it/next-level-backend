@@ -2,9 +2,11 @@ import { Body, Controller, Get, Post, Query, Req, UseGuards } from '@nestjs/comm
 import { ActiveCompanyGuard } from '../../common/guards/active-company.guard';
 import { MarketIntelligenceService } from './market-intelligence.service';
 import { TrackMarketDto } from './dto/track-market.dto';
+import { RequirePlan } from '../billing/decorators/require-plan.decorator';
 
 @Controller('market-intel')
 @UseGuards(ActiveCompanyGuard)
+@RequirePlan('PRO_BUSINESS')
 export class MarketIntelligenceController {
   constructor(private readonly marketIntel: MarketIntelligenceService) {}
 

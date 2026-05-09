@@ -5,9 +5,11 @@ import { AiBrainService } from './ai-brain.service';
 import { AiAlertService } from './ai-alert.service';
 import { AiRecommendationService } from './ai-recommendation.service';
 import { AiWhatsAppAnalysisService } from './ai-whatsapp-analysis.service';
+import { RequirePlan } from '../billing/decorators/require-plan.decorator';
 
 @Controller('ai')
 @UseGuards(ActiveCompanyGuard)
+@RequirePlan('PREMIUM')
 export class AiBusinessController {
   constructor(
     private readonly aiBrainService: AiBrainService,

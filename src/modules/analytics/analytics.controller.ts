@@ -3,6 +3,7 @@ import { AnalyticsService, ProfitRow } from './analytics.service';
 import { ActiveCompanyGuard } from '../../common/guards/active-company.guard';
 import { ForecastService } from './forecast.service';
 import { ForecastType } from '@prisma/client';
+import { RequirePlan } from '../billing/decorators/require-plan.decorator';
 
 @Controller('analytics')
 @UseGuards(ActiveCompanyGuard)
@@ -49,6 +50,7 @@ export class AnalyticsController {
   }
 
   @Get('forecast/:type')
+  @RequirePlan('PRO_BUSINESS')
   forecast(
     @Param('type') type: string,
     @Req() req: { user: { id: string; companyId?: string | null } },

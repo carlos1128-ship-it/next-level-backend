@@ -15,9 +15,11 @@ import { IntegrationsService } from './integrations.service';
 import { ShopeeScraperService } from './shopee-scraper.service';
 import { MetaIntegrationService } from '../meta/meta.service';
 import { SaveMetaConfigDto } from '../meta/dto/save-meta-config.dto';
+import { RequirePlan } from '../billing/decorators/require-plan.decorator';
 
 @Controller('integrations')
 @UseGuards(ActiveCompanyGuard)
+@RequirePlan('PREMIUM')
 export class IntegrationsController {
   constructor(
     private readonly integrationsService: IntegrationsService,

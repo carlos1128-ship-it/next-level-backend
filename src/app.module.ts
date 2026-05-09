@@ -18,6 +18,8 @@ import { AlertsModule } from './modules/alerts/alerts.module';
 import { AnalysisModule } from './modules/analysis/analysis.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { BillingModule } from './modules/billing/billing.module';
+import { SubscriptionGuard } from './modules/billing/guards/subscription.guard';
 import { CompaniesModule } from './modules/companies/companies.module';
 import { CompanyPersonalizationModule } from './modules/company-personalization/company-personalization.module';
 import { CostsModule } from './modules/costs/costs.module';
@@ -47,6 +49,7 @@ import { WhatsappModule } from './modules/whatsapp/whatsapp.module';
     ScheduleModule.forRoot(),
     PrismaModule,
     AuthModule,
+    BillingModule,
     CompaniesModule,
     CompanyPersonalizationModule,
     SalesModule,
@@ -75,6 +78,7 @@ import { WhatsappModule } from './modules/whatsapp/whatsapp.module';
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
+    { provide: APP_GUARD, useClass: SubscriptionGuard },
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
     LoggingMiddleware,

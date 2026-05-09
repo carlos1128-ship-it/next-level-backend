@@ -13,6 +13,7 @@ import { Request, Response } from 'express';
 interface ErrorBody {
   statusCode: number;
   error: string;
+  code?: string;
   message: string;
   timestamp: string;
   path: string;
@@ -96,6 +97,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
           : this.extractMessage(response);
       return {
         statusCode,
+        code: this.extractCode(response),
         error:
           statusCode === HttpStatus.NOT_FOUND
             ? 'RouteNotFound'
@@ -193,6 +195,19 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     }
 
     return 'Nao foi possivel concluir a solicitacao.';
+  }
+
+  private extractCode(response: string | object): string | undefined {
+    if (
+      response &&
+      typeof response === 'object' &&
+      'code' in response &&
+      typeof response.code === 'string' &&
+      response.code.trim()
+    ) {
+      return response.code;
+    }
+    return undefined;
   }
 
   private mapPrismaKnownError(error: Prisma.PrismaClientKnownRequestError) {

@@ -2,8 +2,10 @@ import { Body, Controller, Post } from '@nestjs/common';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AiService } from './ai.service';
 import { ChatDto } from './dto/chat.dto';
+import { RequirePlan } from '../billing/decorators/require-plan.decorator';
 
 @Controller('ai')
+@RequirePlan('PREMIUM')
 export class AiController {
   constructor(private readonly aiService: AiService) {}
 

@@ -3,9 +3,11 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ChatRequestDto } from './dto/chat-request.dto';
 import { ChatService } from './chat.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RequirePlan } from '../billing/decorators/require-plan.decorator';
 
 @Controller('chat')
 @UseGuards(JwtAuthGuard)
+@RequirePlan('PREMIUM')
 export class ChatController {
   constructor(private readonly chatService: ChatService) {}
 
