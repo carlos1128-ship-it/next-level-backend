@@ -12,7 +12,6 @@ type RequestUser = {
   id?: string;
   userId?: string;
   sub?: string;
-  admin?: boolean;
 };
 
 @Injectable()
@@ -39,7 +38,6 @@ export class SubscriptionGuard implements CanActivate {
     const user = request.user;
     const userId = user?.id || user?.userId || user?.sub;
     if (!userId) return true;
-    if (user?.admin) return true;
 
     const subscription = await this.billingService.findActiveSubscriptionForGuard(userId);
     if (!subscription) {

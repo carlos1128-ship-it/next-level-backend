@@ -28,16 +28,28 @@ Endpoint de producao:
 
 Configure o segredo com `ABACATEPAY_WEBHOOK_SECRET`.
 
-Eventos suportados:
+Eventos para configurar no painel da AbacatePay:
 
 - `checkout.completed`
 - `checkout.refunded`
 - `checkout.disputed`
 - `checkout.lost`
 - `subscription.completed`
-- `subscription.trial_started`
 - `subscription.renewed`
 - `subscription.cancelled`
+- `subscription.payment_failed`
+- `subscription.trial_started`
+
+Aliases em portugues aceitos apenas por compatibilidade:
+
+- `assinatura.concluida` -> `subscription.completed`
+- `assinatura.renovada` -> `subscription.renewed`
+- `assinatura.cancelada` -> `subscription.cancelled`
+- `assinatura.pagamento_falha` -> `subscription.payment_failed`
+- `checkout.concluido` -> `checkout.completed`
+- `checkout.reembolsado` -> `checkout.refunded`
+- `checkout.disputado` -> `checkout.disputed`
+- `checkout.perdido` -> `checkout.lost`
 
 O backend valida `X-Webhook-Signature` quando enviado pela AbacatePay usando HMAC-SHA256 e tambem aceita os fallbacks seguros `x-abacatepay-secret`, `x-webhook-secret`, `webhookSecret` ou `secret`. O payload bruto e salvo em `PaymentEvent` antes do processamento e eventos duplicados com `eventId` ja processado retornam `duplicated: true`.
 
@@ -50,9 +62,22 @@ Obrigatorias:
 - `ABACATEPAY_WEBHOOK_PUBLIC_KEY` quando a assinatura HMAC estiver habilitada na conta
 - `ABACATEPAY_API_BASE_URL=https://api.abacatepay.com/v2`
 - `ABACATEPAY_SUBSCRIPTION_METHODS=CARD`
+- `ABACATEPAY_ENABLE_PIX_SUBSCRIPTIONS=false`
 - `FRONTEND_URL=https://next-level-front.vercel.app`
 - `BACKEND_URL=https://<BACKEND_DOMAIN>`
 - os 6 IDs de produto AbacatePay
+
+Concessoes internas opcionais:
+
+- `BILLING_ADMIN_EMAILS=seuemail@gmail.com,outro@email.com`
+- `BILLING_LEGACY_GRACE_ENABLED=true`
+
+Quando `BILLING_ADMIN_EMAILS` contem o e-mail do usuario, o backend cria uma assinatura interna `ADMIN_GRANT` com plano `PRO_BUSINESS`. Quando `BILLING_LEGACY_GRACE_ENABLED=true`, usuarios antigos `ENTERPRISE` recebem `INTERNAL_LEGACY` em `PRO_BUSINESS` e usuarios antigos `PRO` recebem `INTERNAL_LEGACY` em `PREMIUM`. Usuarios `COMUM` continuam bloqueados se nao tiverem assinatura ativa.
+
+Metodo de pagamento:
+
+- Com `ABACATEPAY_ENABLE_PIX_SUBSCRIPTIONS=false`, o backend sempre envia `["CARD"]`.
+- Com `ABACATEPAY_ENABLE_PIX_SUBSCRIPTIONS=true`, o backend aceita `CARD`, `PIX`, `PIX,CARD` ou `["PIX","CARD"]` e nunca envia `["PIX,CARD"]`.
 
 Precos opcionais em centavos:
 
@@ -93,6 +118,9 @@ Nao adicione `ABACATEPAY_API_KEY` ou segredo de webhook no frontend.
 20. Confirmar que a chave AbacatePay nao aparece no bundle frontend.
 21. Confirmar webhook sem segredo retorna 403.
 22. Confirmar webhook duplicado nao processa duas vezes.
+23. Configurar `BILLING_ADMIN_EMAILS`, logar com a conta dev e confirmar `source=ADMIN_GRANT`.
+24. Configurar `BILLING_LEGACY_GRACE_ENABLED=true`, logar com usuario `ENTERPRISE` legado e confirmar `source=INTERNAL_LEGACY`.
+25. Confirmar que usuario novo sem assinatura continua recebendo `SUBSCRIPTION_REQUIRED`.
 
 ## Checklist de producao
 

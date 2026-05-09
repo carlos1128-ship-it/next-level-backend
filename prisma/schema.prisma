@@ -403,6 +403,8 @@ model Subscription {
   paidAt                   DateTime?
   canceledAt               DateTime?
   expiresAt                DateTime?
+  source                   String             @default("ABACATEPAY")
+  notes                    String?            @db.Text
   metadata                 Json?
   createdAt                DateTime           @default(now())
   updatedAt                DateTime           @updatedAt
@@ -415,6 +417,7 @@ model Subscription {
   @@index([companyId])
   @@index([status])
   @@index([planKey])
+  @@index([source])
   @@index([abacatepayCheckoutId])
   @@index([abacatepaySubscriptionId])
 }

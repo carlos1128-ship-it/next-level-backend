@@ -7,7 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { BillingCycle, Prisma, SubscriptionStatus } from '@prisma/client';
+import { BillingCycle, Plan, Prisma, SubscriptionStatus } from '@prisma/client';
 import { Request } from 'express';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -16,6 +16,7 @@ import {
   ACTIVE_SUBSCRIPTION_STATUSES,
   BillingPlanKey,
   LEGACY_PLAN_BY_BILLING_KEY,
+  PLAN_LEVELS,
   normalizeBillingPlanKey,
 } from './constants/billing.constants';
 
@@ -26,6 +27,8 @@ type AuthUser = {
   companyId?: string | null;
   admin?: boolean;
 };
+
+type InternalGrantSource = 'INTERNAL_LEGACY' | 'MANUAL_GRANT' | 'ADMIN_GRANT';
 
 @Injectable()
 export class BillingService {
@@ -38,7 +41,7 @@ export class BillingService {
   ) {}
 
   async getBillingForUser(userId: string) {
-    const subscription = await this.findCurrentSubscription(userId);
+    const subscription = await this.ensureEntitledSubscriptionForUser(userId);
     const hasActiveSubscription = this.isSubscriptionActive(subscription);
     return {
       hasActiveSubscription,
@@ -48,6 +51,7 @@ export class BillingService {
             planKey: subscription.planKey,
             billingCycle: subscription.billingCycle,
             status: subscription.status,
+            source: subscription.source,
             currentPeriodEnd: subscription.currentPeriodEnd,
             expiresAt: subscription.expiresAt,
           }
@@ -62,7 +66,7 @@ export class BillingService {
       throw new BadRequestException({ code: 'INVALID_PLAN', message: 'Plano invalido.' });
     }
 
-    const current = await this.findCurrentSubscription(userId);
+    const current = await this.ensureEntitledSubscriptionForUser(userId);
     if (this.isSubscriptionActive(current)) {
       throw new ConflictException({
         code: 'ACTIVE_SUBSCRIPTION_EXISTS',
@@ -94,6 +98,7 @@ export class BillingService {
         planKey,
         billingCycle: input.billingCycle,
         status: SubscriptionStatus.PENDING,
+        source: 'ABACATEPAY',
         abacatepayExternalId: externalId,
         amountInCents: price.amountInCents,
         currency: price.currency,
@@ -105,9 +110,22 @@ export class BillingService {
       },
     });
 
+    const methods = this.subscriptionMethods();
+    this.logger.log(
+      JSON.stringify({
+        event: 'billing.checkout.create',
+        endpoint: '/subscriptions/create',
+        productId: price.abacatepayProductId,
+        planKey,
+        billingCycle: input.billingCycle,
+        methods,
+        externalId,
+      }),
+    );
+
     const checkout = await this.abacatePayService.createSubscriptionCheckout({
       productId: price.abacatepayProductId,
-      methods: this.subscriptionMethods(),
+      methods,
       externalId,
       returnUrl: `${this.frontendUrl}/planos`,
       completionUrl: `${this.frontendUrl}/billing/success`,
@@ -222,8 +240,135 @@ export class BillingService {
   }
 
   async findActiveSubscriptionForGuard(userId: string) {
-    const subscription = await this.findCurrentSubscription(userId);
+    const subscription = await this.ensureEntitledSubscriptionForUser(userId);
     return this.isSubscriptionActive(subscription) ? subscription : null;
+  }
+
+  private async ensureEntitledSubscriptionForUser(userId: string) {
+    const active = await this.findActiveSubscription(userId);
+    if (active) return active;
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, plan: true, companyId: true },
+    });
+    if (!user) return this.findLatestSubscription(userId);
+
+    if (this.isBillingAdminEmail(user.email)) {
+      return this.grantInternalSubscription(
+        user,
+        'PRO_BUSINESS',
+        'ADMIN_GRANT',
+        'Admin/dev account granted Pro Business access',
+      );
+    }
+
+    if (this.legacyGraceEnabled) {
+      if (user.plan === Plan.ENTERPRISE) {
+        return this.grantInternalSubscription(
+          user,
+          'PRO_BUSINESS',
+          'INTERNAL_LEGACY',
+          'Legacy ENTERPRISE user migrated to Pro Business entitlement',
+        );
+      }
+      if (user.plan === Plan.PRO) {
+        return this.grantInternalSubscription(
+          user,
+          'PREMIUM',
+          'INTERNAL_LEGACY',
+          'Legacy PRO user migrated to Premium entitlement',
+        );
+      }
+    }
+
+    return this.findLatestSubscription(userId);
+  }
+
+  private async grantInternalSubscription(
+    user: { id: string; email: string; plan: Plan; companyId: string | null },
+    planKey: BillingPlanKey,
+    source: InternalGrantSource,
+    notes: string,
+  ) {
+    const existing = await this.prisma.subscription.findFirst({
+      where: { userId: user.id, source, status: { in: ACTIVE_SUBSCRIPTION_STATUSES } },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (existing) return existing;
+
+    const billingPlan = await this.ensureBillingPlan(planKey);
+    const reusableGrant = await this.prisma.subscription.findFirst({
+      where: { userId: user.id, source },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const data = {
+      companyId: user.companyId,
+      billingPlanId: billingPlan.id,
+      planKey,
+      billingCycle: BillingCycle.MONTHLY,
+      status: SubscriptionStatus.ACTIVE,
+      source,
+      notes,
+      amountInCents: 0,
+      currency: 'BRL',
+      paidAt: new Date(),
+      currentPeriodStart: new Date(),
+      currentPeriodEnd: null,
+      expiresAt: null,
+      metadata: {
+        source,
+        legacyUserPlan: user.plan,
+        grantedBy: 'billing_entitlement',
+      } as Prisma.InputJsonValue,
+    };
+
+    const subscription = reusableGrant
+      ? await this.prisma.subscription.update({ where: { id: reusableGrant.id }, data })
+      : await this.prisma.subscription.create({ data: { ...data, userId: user.id } });
+
+    await this.syncLegacyPlan(user.id, user.companyId, planKey);
+    this.logger.log(
+      JSON.stringify({
+        event: 'billing.internal_grant.created',
+        userId: user.id,
+        source,
+        planKey,
+      }),
+    );
+    return subscription;
+  }
+
+  private async ensureBillingPlan(planKey: BillingPlanKey) {
+    const labels: Record<BillingPlanKey, { name: string; description: string }> = {
+      COMMON: {
+        name: 'Comum',
+        description: 'Plano inicial para organizar dados e acompanhar indicadores basicos.',
+      },
+      PREMIUM: {
+        name: 'Premium',
+        description: 'Plano para empresas que querem usar IA de verdade na gestao.',
+      },
+      PRO_BUSINESS: {
+        name: 'Pro Business',
+        description: 'Plano completo para automacao, market intelligence e recursos avancados.',
+      },
+    };
+    return this.prisma.billingPlan.upsert({
+      where: { key: planKey },
+      create: {
+        key: planKey,
+        name: labels[planKey].name,
+        description: labels[planKey].description,
+        level: PLAN_LEVELS[planKey],
+        features: [] as Prisma.InputJsonValue,
+      },
+      update: {
+        level: PLAN_LEVELS[planKey],
+        isActive: true,
+      },
+    });
   }
 
   private async applyWebhookEvent(
@@ -259,6 +404,8 @@ export class BillingService {
       status = SubscriptionStatus.DISPUTED;
     } else if (eventType === 'checkout.lost') {
       status = SubscriptionStatus.LOST;
+    } else if (eventType === 'subscription.payment_failed') {
+      status = SubscriptionStatus.FAILED;
     } else if (eventType === 'subscription.trial_started') {
       status = SubscriptionStatus.TRIAL;
     }
@@ -337,7 +484,14 @@ export class BillingService {
     });
   }
 
-  private async findCurrentSubscription(userId: string) {
+  private async findActiveSubscription(userId: string) {
+    return this.prisma.subscription.findFirst({
+      where: { userId, status: { in: ACTIVE_SUBSCRIPTION_STATUSES } },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  private async findLatestSubscription(userId: string) {
     return this.prisma.subscription.findFirst({
       where: { userId },
       orderBy: { createdAt: 'desc' },
@@ -386,8 +540,56 @@ export class BillingService {
   }
 
   private subscriptionMethods() {
+    if (!this.isTrue(this.configService.get<string>('ABACATEPAY_ENABLE_PIX_SUBSCRIPTIONS'))) {
+      return ['CARD'];
+    }
+
     const raw = this.configService.get<string>('ABACATEPAY_SUBSCRIPTION_METHODS') || 'CARD';
-    return raw.split(',').map((item) => item.trim()).filter(Boolean);
+    const parsed = this.parsePaymentMethods(raw);
+    return parsed.length ? parsed : ['CARD'];
+  }
+
+  private parsePaymentMethods(raw: string) {
+    const allowed = new Set(['PIX', 'CARD']);
+    let values: unknown[] = [];
+    const trimmed = raw.trim();
+
+    if (trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        values = Array.isArray(parsed) ? parsed : [parsed];
+      } catch {
+        values = [trimmed];
+      }
+    } else {
+      values = trimmed.split(',');
+    }
+
+    return Array.from(
+      new Set(
+        values
+          .flatMap((value) => String(value || '').split(','))
+          .map((value) => value.trim().toUpperCase())
+          .filter((value) => allowed.has(value)),
+      ),
+    );
+  }
+
+  private isBillingAdminEmail(email: string) {
+    const configured = this.configService.get<string>('BILLING_ADMIN_EMAILS') || '';
+    const allowed = configured
+      .split(',')
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean);
+    return allowed.includes(email.trim().toLowerCase());
+  }
+
+  private get legacyGraceEnabled() {
+    return this.isTrue(this.configService.get<string>('BILLING_LEGACY_GRACE_ENABLED'));
+  }
+
+  private isTrue(value: unknown) {
+    return String(value || '').trim().toLowerCase() === 'true';
   }
 
   private get frontendUrl() {
@@ -407,7 +609,22 @@ export class BillingService {
   }
 
   private extractEventType(payload: Record<string, unknown>) {
-    return this.extractString(payload, ['event', 'type', 'eventType', 'event_type']) || 'unknown';
+    const raw = this.extractString(payload, ['event', 'type', 'eventType', 'event_type']) || 'unknown';
+    return this.normalizeAbacatePayEvent(raw);
+  }
+
+  private normalizeAbacatePayEvent(eventType: string) {
+    const eventMap: Record<string, string> = {
+      'assinatura.concluida': 'subscription.completed',
+      'assinatura.renovada': 'subscription.renewed',
+      'assinatura.cancelada': 'subscription.cancelled',
+      'assinatura.pagamento_falha': 'subscription.payment_failed',
+      'checkout.concluido': 'checkout.completed',
+      'checkout.reembolsado': 'checkout.refunded',
+      'checkout.disputado': 'checkout.disputed',
+      'checkout.perdido': 'checkout.lost',
+    };
+    return eventMap[eventType] || eventType;
   }
 
   private extractData(payload: Record<string, unknown>) {

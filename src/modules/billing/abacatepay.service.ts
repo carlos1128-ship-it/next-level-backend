@@ -27,6 +27,18 @@ export class AbacatePayService {
   }
 
   async createSubscriptionCheckout(params: CreateAbacatePaySubscriptionParams) {
+    this.logger.log(
+      JSON.stringify({
+        event: 'abacatepay.subscription_checkout.request',
+        endpoint: '/subscriptions/create',
+        productId: params.productId,
+        planKey: params.metadata.planKey,
+        billingCycle: params.metadata.billingCycle,
+        methods: params.methods,
+        externalId: params.externalId,
+      }),
+    );
+
     return this.request<AbacatePaySubscriptionCheckout>('POST', '/subscriptions/create', {
       items: [{ id: params.productId, quantity: 1 }],
       methods: params.methods,
@@ -99,6 +111,8 @@ export class AbacatePayService {
             method,
             path,
             status: error.response?.status || null,
+            response: error.response?.data || null,
+            ...this.safeRequestContext(body),
           }),
         );
       }
@@ -109,5 +123,25 @@ export class AbacatePayService {
             message: 'Nao foi possivel iniciar o pagamento agora.',
           });
     }
+  }
+
+  private safeRequestContext(body: unknown) {
+    if (!body || typeof body !== 'object') return {};
+    const payload = body as {
+      items?: Array<{ id?: string }>;
+      methods?: string[];
+      externalId?: string;
+      metadata?: {
+        planKey?: string;
+        billingCycle?: string;
+      };
+    };
+    return {
+      productId: payload.items?.[0]?.id || null,
+      methods: payload.methods || null,
+      externalId: payload.externalId || null,
+      planKey: payload.metadata?.planKey || null,
+      billingCycle: payload.metadata?.billingCycle || null,
+    };
   }
 }
