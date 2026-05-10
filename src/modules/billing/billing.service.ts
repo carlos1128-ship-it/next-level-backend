@@ -55,6 +55,7 @@ export class BillingService {
             planKey: subscription.planKey,
             billingCycle: subscription.billingCycle,
             status: subscription.status,
+            provider: subscription.provider,
             source: subscription.source,
             currentPeriodEnd: subscription.currentPeriodEnd,
             expiresAt: subscription.expiresAt,
@@ -264,7 +265,13 @@ export class BillingService {
 
     const payload = request.body as Record<string, unknown>;
     const mapped = await adapter.mapWebhookEvent(payload);
-    const eventId = mapped.eventId ? `${mapped.provider}:${mapped.eventId}` : null;
+    const providerObjectKey =
+      mapped.orderId || mapped.objectId || mapped.checkoutId || mapped.refId || mapped.sck || null;
+    const eventId = mapped.eventId
+      ? `${mapped.provider}:${mapped.eventId}`
+      : providerObjectKey
+        ? `${mapped.provider}:${mapped.rawEventType}:${providerObjectKey}`
+        : null;
 
     if (eventId) {
       const existing = await this.prisma.paymentEvent.findUnique({ where: { eventId } });
@@ -356,11 +363,11 @@ export class BillingService {
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, email: true, plan: true, companyId: true },
+      select: { id: true, email: true, plan: true, companyId: true, admin: true },
     });
     if (!user) return this.findLatestSubscription(userId);
 
-    if (this.isBillingAdminEmail(user.email)) {
+    if (user.admin || this.isBillingAdminEmail(user.email)) {
       return this.grantInternalSubscription(
         user,
         'PRO_BUSINESS',
@@ -392,7 +399,7 @@ export class BillingService {
   }
 
   private async grantInternalSubscription(
-    user: { id: string; email: string; plan: Plan; companyId: string | null },
+    user: { id: string; email: string; plan: Plan; companyId: string | null; admin?: boolean },
     planKey: BillingPlanKey,
     source: InternalGrantSource,
     notes: string,
@@ -415,6 +422,7 @@ export class BillingService {
       planKey,
       billingCycle: BillingCycle.MONTHLY,
       status: SubscriptionStatus.ACTIVE,
+      provider: 'MANUAL',
       source,
       notes,
       amountInCents: 0,

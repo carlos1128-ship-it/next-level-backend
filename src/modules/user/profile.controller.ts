@@ -1,9 +1,11 @@
 import { Body, Controller, Delete, Get, Patch } from '@nestjs/common';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { SkipSubscriptionCheck } from '../billing/decorators/require-plan.decorator';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UserService } from './user.service';
 
+@SkipSubscriptionCheck()
 @Controller('profile')
 export class ProfileController {
   constructor(private readonly userService: UserService) {}

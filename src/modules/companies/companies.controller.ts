@@ -1,9 +1,11 @@
 import { Body, Controller, Delete, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { SkipSubscriptionCheck } from '../billing/decorators/require-plan.decorator';
 import { CompaniesService } from './companies.service';
 import { CreateCompanyDto } from './dto/create-company.dto';
 
 @UseGuards(JwtAuthGuard)
+@SkipSubscriptionCheck()
 @Controller('company')
 export class CompaniesController {
   constructor(private readonly companiesService: CompaniesService) {}
