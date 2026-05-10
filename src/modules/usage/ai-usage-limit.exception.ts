@@ -1,7 +1,12 @@
 import { HttpException, HttpStatus } from '@nestjs/common';
 
 export class AIUsageLimitExceededException extends HttpException {
-  constructor() {
-    super('Limite de IA atingido para este mês.', HttpStatus.TOO_MANY_REQUESTS);
+  constructor(
+    response:
+      | string
+      | Record<string, unknown> = 'Limite de IA atingido para este mes.',
+    status: HttpStatus = HttpStatus.TOO_MANY_REQUESTS,
+  ) {
+    super(response, status);
   }
 }

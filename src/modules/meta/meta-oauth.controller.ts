@@ -1,5 +1,7 @@
-import { Controller, Get, Query, Res } from '@nestjs/common';
+import { Controller, Get, Query, Res, UseGuards } from '@nestjs/common';
 import { Response } from 'express';
+import { ActiveCompanyGuard } from '../../common/guards/active-company.guard';
+import { RequirePlan } from '../billing/decorators/require-plan.decorator';
 import { MetaOAuthService } from './meta-oauth.service';
 
 @Controller('meta/oauth')
@@ -8,6 +10,8 @@ export class MetaOAuthController {
 
   // Endpoint called by frontend to get the Facebook OAuth URL
   @Get('url')
+  @UseGuards(ActiveCompanyGuard)
+  @RequirePlan('PREMIUM')
   getOAuthUrl(@Query('companyId') companyId: string) {
     const url = this.metaOAuthService.getOAuthUrl(companyId);
     console.log('[MetaOAuthController] Sending URL to frontend:', url);

@@ -19,7 +19,6 @@ import { RequirePlan } from '../billing/decorators/require-plan.decorator';
 
 @Controller('integrations')
 @UseGuards(ActiveCompanyGuard)
-@RequirePlan('PREMIUM')
 export class IntegrationsController {
   constructor(
     private readonly integrationsService: IntegrationsService,
@@ -36,6 +35,7 @@ export class IntegrationsController {
   }
 
   @Post('whatsapp/bulk-send')
+  @RequirePlan('PREMIUM')
   async whatsappBulkSend(
     @Query('companyId') companyId: string,
     @Body() body: { numbers: string[]; message: string }
@@ -50,6 +50,7 @@ export class IntegrationsController {
   // saveMetaConfig moved to WhatsappConfigController in MetaIntegrationModule
 
   @Get('shopee/orders')
+  @RequirePlan('PRO_BUSINESS')
   async shopeeOrders(
     @Query('companyId') companyId: string,
   ) {
@@ -58,6 +59,7 @@ export class IntegrationsController {
   }
 
   @Post('shopee/initialize-login')
+  @RequirePlan('PRO_BUSINESS')
   async shopeeInitLogin(
     @Query('companyId') _companyId: string,
     @Body() _credentials: { user?: string; pass?: string }
@@ -70,6 +72,7 @@ export class IntegrationsController {
   }
 
   @Post('shopee/verify-otp')
+  @RequirePlan('PRO_BUSINESS')
   async shopeeVerifyOtp(
     @Query('companyId') companyId: string,
     @Body('code') code: string,

@@ -7,7 +7,7 @@ import { RequirePlan } from '../billing/decorators/require-plan.decorator';
 
 @Controller('chat')
 @UseGuards(JwtAuthGuard)
-@RequirePlan('PREMIUM')
+@RequirePlan('COMMON')
 export class ChatController {
   constructor(private readonly chatService: ChatService) {}
 

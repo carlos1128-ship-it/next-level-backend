@@ -10,6 +10,7 @@ import { CaktoProvider } from './providers/cakto/cakto.provider';
 import { CaktoWebhookService } from './providers/cakto/cakto-webhook.service';
 import { ManualProvider } from './providers/manual/manual.provider';
 import { PaymentProviderResolver } from './providers/payment-provider.resolver';
+import { PlanEntitlementsService } from './plan-entitlements.service';
 
 @Module({
   imports: [PrismaModule],
@@ -22,9 +23,10 @@ import { PaymentProviderResolver } from './providers/payment-provider.resolver';
     CaktoWebhookService,
     ManualProvider,
     PaymentProviderResolver,
+    PlanEntitlementsService,
     BillingPlansService,
     BillingService,
   ],
-  exports: [BillingService, BillingPlansService],
+  exports: [BillingService, BillingPlansService, PlanEntitlementsService],
 })
 export class BillingModule {}

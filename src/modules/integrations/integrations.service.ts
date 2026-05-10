@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Integration, IntegrationProvider, WebhookLogStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PlanEntitlementsService } from '../billing/plan-entitlements.service';
 import { MetaGraphService } from './meta-graph.service';
 
 export interface IntegrationStatus {
@@ -29,6 +30,7 @@ export class IntegrationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly metaGraphService: MetaGraphService,
+    private readonly planEntitlements: PlanEntitlementsService,
   ) {}
 
   async upsertIntegration(
@@ -37,6 +39,7 @@ export class IntegrationsService {
     companyId?: string | null,
   ): Promise<Integration> {
     const company = await this.resolveCompany(userId, companyId || data.companyId);
+    await this.planEntitlements.assertIntegrationAccessForCompany(company.id, data.provider);
     const normalizedStatus = (data.status || 'connected').trim().toLowerCase();
     const trimmedToken = data.accessToken.trim();
     let externalId = data.externalId?.trim();

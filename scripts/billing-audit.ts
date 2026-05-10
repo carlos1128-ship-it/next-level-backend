@@ -87,7 +87,7 @@ async function main() {
   const shouldFix = process.argv.includes('--fix');
   const emails = adminEmails();
 
-  const [planCount, priceCount, subscriptionsByStatus, subscriptionsByProvider, recentCaktoEvents, failedProcessingCount, unmatchedWebhookCount] = await Promise.all([
+  const [planCount, priceCount, subscriptionsByStatus, subscriptionsByProvider, recentCaktoEvents, failedProcessingCount, unmatchedWebhookCount, aiUsageLimits] = await Promise.all([
     prisma.billingPlan.count(),
     prisma.billingPlanPrice.count(),
     prisma.subscription.groupBy({ by: ['status'], _count: { _all: true } }),
@@ -112,6 +112,16 @@ async function main() {
       where: {
         provider: 'CAKTO',
         processingError: { contains: 'Could not safely match Cakto webhook to local subscription' },
+      },
+    }),
+    prisma.aIUsageLimit.findMany({
+      where: { planKey: { in: ['common', 'premium', 'pro_business'] } },
+      orderBy: [{ planKey: 'asc' }, { feature: 'asc' }],
+      select: {
+        planKey: true,
+        feature: true,
+        monthlyRequestLimit: true,
+        enabled: true,
       },
     }),
   ]);
@@ -200,6 +210,7 @@ async function main() {
         recentCaktoEvents,
         failedProcessingCount,
         unmatchedWebhookCount,
+        aiUsageLimits,
       },
       null,
       2,

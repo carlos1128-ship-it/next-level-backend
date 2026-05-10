@@ -5,7 +5,7 @@ import { ChatDto } from './dto/chat.dto';
 import { RequirePlan } from '../billing/decorators/require-plan.decorator';
 
 @Controller('ai')
-@RequirePlan('PREMIUM')
+@RequirePlan('COMMON')
 export class AiController {
   constructor(private readonly aiService: AiService) {}
 

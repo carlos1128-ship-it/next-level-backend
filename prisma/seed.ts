@@ -1,4 +1,4 @@
-import { BillingCycle, PrismaClient } from '@prisma/client';
+import { AIUsageFeature, BillingCycle, PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient();
@@ -8,30 +8,34 @@ const billingPlans = [
   {
     key: 'COMMON',
     name: 'Comum',
-    description: 'Plano inicial para organizar dados e acompanhar indicadores basicos.',
+    description: 'Plano inicial para organizar dados, acompanhar indicadores e usar IA basica sem integracoes automaticas.',
     level: 1,
     features: [
       'Dashboard essencial',
       'Cadastro manual de dados',
       'Visao basica de vendas e financas',
       'Relatorios simples',
-      'Insights limitados de IA',
-      'Suporte padrao',
+      'Chat IA basico: 400 mensagens/mes',
+      '30 importacoes inteligentes/mes',
+      'Sem integracoes automaticas',
+      'Suporte via e-mail',
     ],
   },
   {
     key: 'PREMIUM',
     name: 'Premium',
-    description: 'Plano para usar IA de verdade na gestao e enxergar oportunidades.',
+    description: 'Plano para empresas que querem usar IA, atendimento automatico e integracoes principais para crescer com mais clareza.',
     level: 2,
     features: [
       'Tudo do Comum',
-      'Chat IA com contexto do negocio',
-      'Analises financeiras avancadas',
-      'Alertas inteligentes',
-      'Relatorios completos',
-      'Integracoes principais',
-      'Atendente IA, se disponivel',
+      'Ate 10 empresas vinculadas',
+      'Chat IA: 1.000 mensagens/mes',
+      'WhatsApp + Instagram integrados',
+      'Atendente IA: 3.000 mensagens/mes por canal',
+      '200 importacoes inteligentes/mes',
+      'Relatorios automaticos semanais',
+      'Suporte prioritario',
+      'Sem Mercado Livre e Utmify',
     ],
   },
   {
@@ -41,11 +45,13 @@ const billingPlans = [
     level: 3,
     features: [
       'Tudo do Premium',
-      'IA estrategica avancada',
-      'Automacoes inteligentes',
+      'Empresas ilimitadas',
+      'Chat IA: 5.000 mensagens/mes',
+      'WhatsApp/Instagram: 10.000 mensagens/mes por canal',
+      'Mercado Livre + Utmify + marketplaces',
+      'Importacoes inteligentes ilimitadas',
       'Market intelligence',
-      'Maior limite de dados',
-      'Previsoes avancadas',
+      'Previsoes e alertas avancados',
       'Prioridade em novas funcionalidades',
     ],
   },
@@ -53,8 +59,8 @@ const billingPlans = [
 
 const priceEnv = {
   COMMON: {
-    MONTHLY: ['ABACATEPAY_COMMON_MONTHLY_PRODUCT_ID', 'PLAN_COMMON_MONTHLY_CENTS', 4990],
-    ANNUAL: ['ABACATEPAY_COMMON_ANNUAL_PRODUCT_ID', 'PLAN_COMMON_ANNUAL_CENTS', 49900],
+    MONTHLY: ['ABACATEPAY_COMMON_MONTHLY_PRODUCT_ID', 'PLAN_COMMON_MONTHLY_CENTS', 5700],
+    ANNUAL: ['ABACATEPAY_COMMON_ANNUAL_PRODUCT_ID', 'PLAN_COMMON_ANNUAL_CENTS', 57000],
   },
   PREMIUM: {
     MONTHLY: ['ABACATEPAY_PREMIUM_MONTHLY_PRODUCT_ID', 'PLAN_PREMIUM_MONTHLY_CENTS', 9700],
@@ -65,6 +71,29 @@ const priceEnv = {
     ANNUAL: ['ABACATEPAY_PRO_BUSINESS_ANNUAL_PRODUCT_ID', 'PLAN_PRO_BUSINESS_ANNUAL_CENTS', 197000],
   },
 } as const;
+
+const aiUsageLimits = [
+  { planKey: 'common', feature: AIUsageFeature.CHAT_IA, monthlyRequestLimit: 400, enabled: true },
+  { planKey: 'common', feature: AIUsageFeature.WHATSAPP_AGENT, monthlyRequestLimit: 0, enabled: false },
+  { planKey: 'common', feature: AIUsageFeature.INSTAGRAM_AGENT, monthlyRequestLimit: 0, enabled: false },
+  { planKey: 'common', feature: AIUsageFeature.INTELLIGENT_IMPORT, monthlyRequestLimit: 30, enabled: true },
+  { planKey: 'basic', feature: AIUsageFeature.CHAT_IA, monthlyRequestLimit: 400, enabled: true },
+  { planKey: 'basic', feature: AIUsageFeature.WHATSAPP_AGENT, monthlyRequestLimit: 0, enabled: false },
+  { planKey: 'basic', feature: AIUsageFeature.INSTAGRAM_AGENT, monthlyRequestLimit: 0, enabled: false },
+  { planKey: 'basic', feature: AIUsageFeature.INTELLIGENT_IMPORT, monthlyRequestLimit: 30, enabled: true },
+  { planKey: 'premium', feature: AIUsageFeature.CHAT_IA, monthlyRequestLimit: 1000, enabled: true },
+  { planKey: 'premium', feature: AIUsageFeature.WHATSAPP_AGENT, monthlyRequestLimit: 3000, enabled: true },
+  { planKey: 'premium', feature: AIUsageFeature.INSTAGRAM_AGENT, monthlyRequestLimit: 3000, enabled: true },
+  { planKey: 'premium', feature: AIUsageFeature.INTELLIGENT_IMPORT, monthlyRequestLimit: 200, enabled: true },
+  { planKey: 'pro_business', feature: AIUsageFeature.CHAT_IA, monthlyRequestLimit: 5000, enabled: true },
+  { planKey: 'pro_business', feature: AIUsageFeature.WHATSAPP_AGENT, monthlyRequestLimit: 10000, enabled: true },
+  { planKey: 'pro_business', feature: AIUsageFeature.INSTAGRAM_AGENT, monthlyRequestLimit: 10000, enabled: true },
+  { planKey: 'pro_business', feature: AIUsageFeature.INTELLIGENT_IMPORT, monthlyRequestLimit: null, enabled: true },
+  { planKey: 'business', feature: AIUsageFeature.CHAT_IA, monthlyRequestLimit: 5000, enabled: true },
+  { planKey: 'business', feature: AIUsageFeature.WHATSAPP_AGENT, monthlyRequestLimit: 10000, enabled: true },
+  { planKey: 'business', feature: AIUsageFeature.INSTAGRAM_AGENT, monthlyRequestLimit: 10000, enabled: true },
+  { planKey: 'business', feature: AIUsageFeature.INTELLIGENT_IMPORT, monthlyRequestLimit: null, enabled: true },
+] as const;
 
 function intEnv(key: string, fallback: number) {
   const parsed = Number(process.env[key]);
@@ -152,8 +181,34 @@ async function seedBillingPlans() {
   }
 }
 
+async function seedAiUsageLimits() {
+  for (const limit of aiUsageLimits) {
+    await prisma.aIUsageLimit.upsert({
+      where: {
+        planKey_feature: {
+          planKey: limit.planKey,
+          feature: limit.feature,
+        },
+      },
+      create: {
+        planKey: limit.planKey,
+        feature: limit.feature,
+        monthlyRequestLimit: limit.monthlyRequestLimit,
+        monthlyTokenLimit: null,
+        enabled: limit.enabled,
+      },
+      update: {
+        monthlyRequestLimit: limit.monthlyRequestLimit,
+        monthlyTokenLimit: null,
+        enabled: limit.enabled,
+      },
+    });
+  }
+}
+
 async function main() {
   await seedBillingPlans();
+  await seedAiUsageLimits();
 
   const company = await prisma.company.upsert({
     where: { slug: 'empresa-demo' },

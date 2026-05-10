@@ -13,6 +13,7 @@ import {
 import { Request, Response } from 'express';
 import { Public } from '../../common/decorators/public.decorator';
 import { ActiveCompanyGuard } from '../../common/guards/active-company.guard';
+import { RequirePlan } from '../billing/decorators/require-plan.decorator';
 import { InstagramService } from './instagram.service';
 
 type AuthenticatedRequest = Request & {
@@ -32,6 +33,7 @@ export class InstagramController {
 
   @Get('connect')
   @UseGuards(ActiveCompanyGuard)
+  @RequirePlan('PREMIUM')
   connect(
     @Req() req: AuthenticatedRequest,
     @Query('companyId') companyId: string,

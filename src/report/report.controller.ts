@@ -6,7 +6,7 @@ import { RequirePlan } from '../modules/billing/decorators/require-plan.decorato
 
 @Controller('report')
 @UseGuards(JwtAuthGuard)
-@RequirePlan('PREMIUM')
+@RequirePlan('COMMON')
 export class ReportController {
   constructor(private readonly reportService: ReportService) {}
 

@@ -33,12 +33,19 @@ O billing interno permanece no backend:
    - Next Level Pro Business Mensal
    - Next Level Pro Business Anual
 6. Configure ofertas mensais como recorrencia mensal e anuais como recorrencia anual, quando disponivel.
-7. Habilite Pix, cartao de credito e boleto se desejado.
-8. Para cada produto/oferta, copie:
+7. Configure os precos no painel Cakto para refletir a fonte interna da NEXT LEVEL:
+   - Comum Mensal: R$ 57,00
+   - Comum Anual: R$ 570,00
+   - Premium Mensal: R$ 97,00
+   - Premium Anual: R$ 970,00
+   - Pro Business Mensal: R$ 197,00
+   - Pro Business Anual: R$ 1.970,00
+8. Habilite Pix, cartao de credito e boleto se desejado.
+9. Para cada produto/oferta, copie:
    - product ID
    - offer ID
    - checkout/payment link
-9. Configure a URL de retorno no produto/oferta:
+10. Configure a URL de retorno no produto/oferta:
    - `FRONTEND_URL + "/billing/success?provider=cakto"`
 
 ## Variaveis no Render

@@ -3,75 +3,22 @@ import { ConfigService } from '@nestjs/config';
 import { BillingCycle, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { BillingPlanKey } from './constants/billing.constants';
+import { PLAN_CATALOG } from './plan-entitlements.service';
 import { PaymentProviderResolver } from './providers/payment-provider.resolver';
 
-const PLAN_DEFINITIONS: Array<{
-  key: BillingPlanKey;
-  name: string;
-  description: string;
-  level: number;
-  features: string[];
-}> = [
-  {
-    key: 'COMMON',
-    name: 'Comum',
-    description:
-      'Plano inicial para negocios que querem organizar dados e acompanhar indicadores basicos.',
-    level: 1,
-    features: [
-      'Dashboard essencial',
-      'Cadastro manual de vendas, produtos, clientes e custos',
-      'Visao basica de vendas e financas',
-      'Relatorios simples',
-      'Insights limitados de IA',
-      'Suporte padrao',
-    ],
-  },
-  {
-    key: 'PREMIUM',
-    name: 'Premium',
-    description:
-      'Plano para empresas que querem usar IA de verdade na gestao e enxergar crescimento.',
-    level: 2,
-    features: [
-      'Tudo do Comum',
-      'Chat IA com contexto do negocio',
-      'Analises financeiras avancadas',
-      'Alertas inteligentes',
-      'Relatorios completos',
-      'Integracoes principais',
-      'Atendente IA, se disponivel',
-    ],
-  },
-  {
-    key: 'PRO_BUSINESS',
-    name: 'Pro Business',
-    description:
-      'Plano completo para automacao, inteligencia de mercado e recursos avancados.',
-    level: 3,
-    features: [
-      'Tudo do Premium',
-      'IA estrategica avancada',
-      'Automacoes inteligentes',
-      'Market intelligence',
-      'Maior limite de dados',
-      'Previsoes avancadas',
-      'Prioridade em novas funcionalidades',
-    ],
-  },
-];
+const PLAN_DEFINITIONS = Object.values(PLAN_CATALOG);
 
 const PRICE_ENV: Record<BillingPlanKey, Record<BillingCycle, { abacateProduct: string; amount: string; fallback: number }>> = {
   COMMON: {
     MONTHLY: {
       abacateProduct: 'ABACATEPAY_COMMON_MONTHLY_PRODUCT_ID',
       amount: 'PLAN_COMMON_MONTHLY_CENTS',
-      fallback: 4990,
+      fallback: 5700,
     },
     ANNUAL: {
       abacateProduct: 'ABACATEPAY_COMMON_ANNUAL_PRODUCT_ID',
       amount: 'PLAN_COMMON_ANNUAL_CENTS',
-      fallback: 49900,
+      fallback: 57000,
     },
   },
   PREMIUM: {

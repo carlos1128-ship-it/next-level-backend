@@ -20,6 +20,7 @@ import { DashboardModule } from '../dashboard/dashboard.module';
 import { AiModule } from '../ai/ai.module';
 import { AlertsModule } from '../alerts/alerts.module';
 import { AttendantActionsModule } from '../attendant-actions/attendant-actions.module';
+import { BillingModule } from '../billing/billing.module';
 
 @Global()
 @Module({
@@ -29,6 +30,7 @@ import { AttendantActionsModule } from '../attendant-actions/attendant-actions.m
     AlertsModule,
     MetaIntegrationModule,
     AttendantActionsModule,
+    BillingModule,
   ],
   controllers: [
     IntegrationsController,

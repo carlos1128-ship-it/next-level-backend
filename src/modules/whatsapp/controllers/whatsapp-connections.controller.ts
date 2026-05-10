@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { Public } from '../../../common/decorators/public.decorator';
 import { ActiveCompanyGuard } from '../../../common/guards/active-company.guard';
+import { RequirePlan } from '../../billing/decorators/require-plan.decorator';
 import { ConnectWhatsappDto } from '../dto/connect-whatsapp.dto';
 import { WhatsappConnectionsService } from '../services/whatsapp-connections.service';
 
@@ -51,6 +52,7 @@ export class WhatsappConnectionsController {
 
   @Post('connect/start')
   @UseGuards(ActiveCompanyGuard)
+  @RequirePlan('PREMIUM')
   startConnection(
     @Req() req: AuthenticatedRequest,
     @Body() dto: ConnectWhatsappDto,
@@ -81,6 +83,7 @@ export class WhatsappConnectionsController {
 
   @Post('connection/connect')
   @UseGuards(ActiveCompanyGuard)
+  @RequirePlan('PREMIUM')
   connect(
     @Req() req: AuthenticatedRequest,
     @Body() dto: ConnectWhatsappDto,
@@ -94,6 +97,7 @@ export class WhatsappConnectionsController {
 
   @Post('connection/refresh-qr')
   @UseGuards(ActiveCompanyGuard)
+  @RequirePlan('PREMIUM')
   refreshQr(
     @Req() req: AuthenticatedRequest,
     @Query('companyId') companyId?: string,
@@ -105,6 +109,7 @@ export class WhatsappConnectionsController {
 
   @Post('connect/qr')
   @UseGuards(ActiveCompanyGuard)
+  @RequirePlan('PREMIUM')
   requestQr(
     @Req() req: AuthenticatedRequest,
     @Body('companyId') bodyCompanyId?: string,
@@ -117,6 +122,7 @@ export class WhatsappConnectionsController {
 
   @Post('connect/restart')
   @UseGuards(ActiveCompanyGuard)
+  @RequirePlan('PREMIUM')
   restartConnection(
     @Req() req: AuthenticatedRequest,
     @Body('companyId') bodyCompanyId?: string,

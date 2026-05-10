@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { ActiveCompanyGuard } from '../../common/guards/active-company.guard';
 import { PrismaService } from '../../prisma/prisma.service';
+import { RequirePlan } from '../billing/decorators/require-plan.decorator';
 import { MetaIntegrationService } from './meta.service';
 import { SaveMetaConfigDto } from './dto/save-meta-config.dto';
 
@@ -18,6 +19,7 @@ export class WhatsappConfigController {
   constructor(private readonly metaIntegrationService: MetaIntegrationService) {}
 
   @Post('config')
+  @RequirePlan('PREMIUM')
   async saveMetaConfig(
     @Query('companyId') companyId: string,
     @Body() dto: SaveMetaConfigDto,
@@ -26,6 +28,7 @@ export class WhatsappConfigController {
   }
 
   @Delete('config')
+  @RequirePlan('PREMIUM')
   async deleteMetaConfig(@Query('companyId') companyId: string) {
     return this.metaIntegrationService.deleteConfig(companyId);
   }

@@ -13,6 +13,7 @@ import { ConfigService } from '@nestjs/config';
 import { Request, Response } from 'express';
 import { Public } from '../../common/decorators/public.decorator';
 import { ActiveCompanyGuard } from '../../common/guards/active-company.guard';
+import { PlanEntitlementsService } from '../billing/plan-entitlements.service';
 
 type OAuthProvider =
   | 'whatsapp'
@@ -53,7 +54,10 @@ const PROVIDER_SCOPES: Record<OAuthProvider, string> = {
 export class IntegrationsOAuthController {
   private readonly logger = new Logger(IntegrationsOAuthController.name);
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly planEntitlements: PlanEntitlementsService,
+  ) {}
 
   @Get(OAUTH_ROUTE_PARAM)
   @UseGuards(ActiveCompanyGuard)
@@ -73,10 +77,18 @@ export class IntegrationsOAuthController {
       );
     }
 
+    const effectiveCompanyId = companyId?.trim() || req.user?.companyId?.trim() || null;
+    if (effectiveCompanyId) {
+      await this.planEntitlements.assertIntegrationAccessForCompany(
+        effectiveCompanyId,
+        provider === 'mercadolivre' ? 'MERCADOLIVRE' : provider.toUpperCase(),
+      );
+    }
+
     const callbackUrl = this.buildCallbackUrl(req, provider);
     const state = this.encodeState({
       provider,
-      companyId: companyId?.trim() || req.user?.companyId?.trim() || null,
+      companyId: effectiveCompanyId,
       userId: req.user?.id || null,
       returnTo: this.resolveReturnTo(returnTo),
       issuedAt: new Date().toISOString(),

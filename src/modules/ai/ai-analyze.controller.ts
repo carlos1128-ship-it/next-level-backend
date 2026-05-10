@@ -4,7 +4,7 @@ import { AiService } from './ai.service';
 import { RequirePlan } from '../billing/decorators/require-plan.decorator';
 
 @Controller('ai')
-@RequirePlan('PREMIUM')
+@RequirePlan('COMMON')
 export class AiAnalyzeController {
   constructor(private readonly aiService: AiService) {}
 

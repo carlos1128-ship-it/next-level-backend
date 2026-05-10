@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import {
   AIUsageFeature,
   AIUsageProvider,
@@ -7,6 +7,12 @@ import {
   Prisma,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  AI_FEATURE_TO_ENTITLEMENT,
+  AI_FEATURE_TO_QUOTA,
+  PLAN_CATALOG,
+  PlanEntitlementsService,
+} from '../billing/plan-entitlements.service';
 import { AIUsageLimitExceededException } from './ai-usage-limit.exception';
 
 type UsageTokens = {
@@ -33,46 +39,46 @@ const LIMITED_FEATURES = [
 
 const DEFAULT_PLAN_LIMITS: Record<string, Partial<Record<AIUsageFeature, FeatureLimit>>> = {
   common: {
-    [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 500, monthlyTokenLimit: null, enabled: true },
-    [AIUsageFeature.WHATSAPP_AGENT]: { monthlyRequestLimit: 1500, monthlyTokenLimit: null, enabled: true },
-    [AIUsageFeature.INSTAGRAM_AGENT]: { monthlyRequestLimit: 1500, monthlyTokenLimit: null, enabled: true },
-    [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: 100, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 400, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.WHATSAPP_AGENT]: { monthlyRequestLimit: 0, monthlyTokenLimit: null, enabled: false },
+    [AIUsageFeature.INSTAGRAM_AGENT]: { monthlyRequestLimit: 0, monthlyTokenLimit: null, enabled: false },
+    [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: 30, monthlyTokenLimit: null, enabled: true },
   },
   free: {
-    [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 100, monthlyTokenLimit: null, enabled: true },
-    [AIUsageFeature.WHATSAPP_AGENT]: { monthlyRequestLimit: 300, monthlyTokenLimit: null, enabled: true },
-    [AIUsageFeature.INSTAGRAM_AGENT]: { monthlyRequestLimit: 300, monthlyTokenLimit: null, enabled: true },
-    [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: 50, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 400, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.WHATSAPP_AGENT]: { monthlyRequestLimit: 0, monthlyTokenLimit: null, enabled: false },
+    [AIUsageFeature.INSTAGRAM_AGENT]: { monthlyRequestLimit: 0, monthlyTokenLimit: null, enabled: false },
+    [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: 30, monthlyTokenLimit: null, enabled: true },
   },
   test: {
-    [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 100, monthlyTokenLimit: null, enabled: true },
-    [AIUsageFeature.WHATSAPP_AGENT]: { monthlyRequestLimit: 300, monthlyTokenLimit: null, enabled: true },
-    [AIUsageFeature.INSTAGRAM_AGENT]: { monthlyRequestLimit: 300, monthlyTokenLimit: null, enabled: true },
-    [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: 50, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 5000, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.WHATSAPP_AGENT]: { monthlyRequestLimit: 10000, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.INSTAGRAM_AGENT]: { monthlyRequestLimit: 10000, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: null, monthlyTokenLimit: null, enabled: true },
   },
   basic: {
-    [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 500, monthlyTokenLimit: null, enabled: true },
-    [AIUsageFeature.WHATSAPP_AGENT]: { monthlyRequestLimit: 1500, monthlyTokenLimit: null, enabled: true },
-    [AIUsageFeature.INSTAGRAM_AGENT]: { monthlyRequestLimit: 1500, monthlyTokenLimit: null, enabled: true },
-    [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: 100, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 400, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.WHATSAPP_AGENT]: { monthlyRequestLimit: 0, monthlyTokenLimit: null, enabled: false },
+    [AIUsageFeature.INSTAGRAM_AGENT]: { monthlyRequestLimit: 0, monthlyTokenLimit: null, enabled: false },
+    [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: 30, monthlyTokenLimit: null, enabled: true },
   },
   premium: {
-    [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 3000, monthlyTokenLimit: null, enabled: true },
-    [AIUsageFeature.WHATSAPP_AGENT]: { monthlyRequestLimit: 8000, monthlyTokenLimit: null, enabled: true },
-    [AIUsageFeature.INSTAGRAM_AGENT]: { monthlyRequestLimit: 8000, monthlyTokenLimit: null, enabled: true },
-    [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: 500, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 1000, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.WHATSAPP_AGENT]: { monthlyRequestLimit: 3000, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.INSTAGRAM_AGENT]: { monthlyRequestLimit: 3000, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: 200, monthlyTokenLimit: null, enabled: true },
   },
   business: {
-    [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 10000, monthlyTokenLimit: null, enabled: true },
-    [AIUsageFeature.WHATSAPP_AGENT]: { monthlyRequestLimit: 30000, monthlyTokenLimit: null, enabled: true },
-    [AIUsageFeature.INSTAGRAM_AGENT]: { monthlyRequestLimit: 30000, monthlyTokenLimit: null, enabled: true },
-    [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: 2000, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 5000, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.WHATSAPP_AGENT]: { monthlyRequestLimit: 10000, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.INSTAGRAM_AGENT]: { monthlyRequestLimit: 10000, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: null, monthlyTokenLimit: null, enabled: true },
   },
   pro_business: {
-    [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 10000, monthlyTokenLimit: null, enabled: true },
-    [AIUsageFeature.WHATSAPP_AGENT]: { monthlyRequestLimit: 30000, monthlyTokenLimit: null, enabled: true },
-    [AIUsageFeature.INSTAGRAM_AGENT]: { monthlyRequestLimit: 30000, monthlyTokenLimit: null, enabled: true },
-    [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: 2000, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 5000, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.WHATSAPP_AGENT]: { monthlyRequestLimit: 10000, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.INSTAGRAM_AGENT]: { monthlyRequestLimit: 10000, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: null, monthlyTokenLimit: null, enabled: true },
   },
 };
 
@@ -101,10 +107,19 @@ const FEATURE_UNITS: Record<AIUsageFeature, string> = {
 };
 
 @Injectable()
-export class AIUsageService {
+export class AIUsageService implements OnModuleInit {
   private readonly logger = new Logger(AIUsageService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly planEntitlements: PlanEntitlementsService,
+  ) {}
+
+  async onModuleInit() {
+    await this.bootstrapUsageLimits().catch((error) => {
+      this.logger.warn(`Bootstrap de cotas de IA adiado: ${this.extractErrorMessage(error)}`);
+    });
+  }
 
   async logUsage(
     companyId: string,
@@ -204,21 +219,37 @@ export class AIUsageService {
       }),
     ]);
 
-    if (!limit || !limit.enabled) {
+    const requestCount = usage?.requestCount || 0;
+    const tokenCount = usage?.tokenCount || 0;
+
+    if (!limit) {
       return {
         allowed: true,
+        enabled: true,
         companyId,
         planKey,
         feature: this.toFeatureKey(feature),
-        requestCount: usage?.requestCount || 0,
-        tokenCount: usage?.tokenCount || 0,
-        monthlyRequestLimit: limit?.monthlyRequestLimit ?? null,
-        monthlyTokenLimit: limit?.monthlyTokenLimit ?? null,
+        requestCount,
+        tokenCount,
+        monthlyRequestLimit: null,
+        monthlyTokenLimit: null,
       };
     }
 
-    const requestCount = usage?.requestCount || 0;
-    const tokenCount = usage?.tokenCount || 0;
+    if (!limit.enabled) {
+      return {
+        allowed: false,
+        enabled: false,
+        companyId,
+        planKey,
+        feature: this.toFeatureKey(feature),
+        requestCount,
+        tokenCount,
+        monthlyRequestLimit: limit.monthlyRequestLimit,
+        monthlyTokenLimit: limit.monthlyTokenLimit,
+      };
+    }
+
     const requestExceeded =
       limit.monthlyRequestLimit !== null &&
       limit.monthlyRequestLimit !== undefined &&
@@ -230,6 +261,7 @@ export class AIUsageService {
 
     return {
       allowed: !requestExceeded && !tokenExceeded,
+      enabled: limit.enabled,
       companyId,
       planKey,
       feature: this.toFeatureKey(feature),
@@ -258,7 +290,7 @@ export class AIUsageService {
       AIUsageStatus.BLOCKED,
       {
         ...metadata,
-        reason: 'monthly_limit_exceeded',
+        reason: result.enabled ? 'monthly_limit_exceeded' : 'feature_not_included',
         planKey: result.planKey,
       },
       {
@@ -269,7 +301,38 @@ export class AIUsageService {
       this.logger.warn(`Falha ao registrar bloqueio de IA: ${this.extractErrorMessage(error)}`);
     });
 
-    throw new AIUsageLimitExceededException();
+    if (!result.enabled) {
+      const featureKey = AI_FEATURE_TO_ENTITLEMENT[feature] || 'AI_CHAT';
+      const requiredPlan = this.planEntitlements.getRequiredPlanForFeature(featureKey);
+      throw new AIUsageLimitExceededException(
+        {
+          statusCode: HttpStatus.FORBIDDEN,
+          code: 'FEATURE_NOT_INCLUDED',
+          feature: featureKey,
+          currentPlan: this.normalizePlanResponseKey(result.planKey),
+          requiredPlan,
+          message: `${FEATURE_LABELS[feature]} esta disponivel a partir do plano ${PLAN_CATALOG[requiredPlan].name}.`,
+        },
+        HttpStatus.FORBIDDEN,
+      );
+    }
+
+    const quotaKey = AI_FEATURE_TO_QUOTA[feature] || 'AI_CHAT_MESSAGES';
+    const requiredPlan = this.planEntitlements.getRecommendedUpgradePlan(
+      this.normalizePlanResponseKey(result.planKey),
+      quotaKey,
+    );
+    throw new AIUsageLimitExceededException(
+      {
+        statusCode: HttpStatus.TOO_MANY_REQUESTS,
+        code: 'PLAN_LIMIT_REACHED',
+        feature: quotaKey,
+        currentPlan: this.normalizePlanResponseKey(result.planKey),
+        requiredPlan,
+        message: `Voce atingiu o limite de ${FEATURE_LABELS[feature]} no seu plano. Faca upgrade para continuar.`,
+      },
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
   }
 
   async incrementUsage(
@@ -365,6 +428,44 @@ export class AIUsageService {
     return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
   }
 
+  private async bootstrapUsageLimits() {
+    const planKeys = [
+      ['common', PLAN_CATALOG.COMMON.quotas],
+      ['basic', PLAN_CATALOG.COMMON.quotas],
+      ['premium', PLAN_CATALOG.PREMIUM.quotas],
+      ['pro_business', PLAN_CATALOG.PRO_BUSINESS.quotas],
+      ['business', PLAN_CATALOG.PRO_BUSINESS.quotas],
+    ] as const;
+
+    for (const [planKey, quotas] of planKeys) {
+      for (const feature of LIMITED_FEATURES) {
+        const quotaKey = AI_FEATURE_TO_QUOTA[feature];
+        if (!quotaKey) continue;
+        const monthlyRequestLimit = quotas[quotaKey];
+        await this.prisma.aIUsageLimit.upsert({
+          where: {
+            planKey_feature: {
+              planKey,
+              feature,
+            },
+          },
+          create: {
+            planKey,
+            feature,
+            monthlyRequestLimit,
+            monthlyTokenLimit: null,
+            enabled: monthlyRequestLimit === null || monthlyRequestLimit > 0,
+          },
+          update: {
+            monthlyRequestLimit,
+            monthlyTokenLimit: null,
+            enabled: monthlyRequestLimit === null || monthlyRequestLimit > 0,
+          },
+        });
+      }
+    }
+  }
+
   private async getResolvedPlanLimits(companyId: string) {
     const planKey = await this.resolveCompanyPlanKey(companyId);
     const defaults = DEFAULT_PLAN_LIMITS[planKey] || DEFAULT_PLAN_LIMITS.free;
@@ -417,25 +518,8 @@ export class AIUsageService {
   }
 
   private async resolveCompanyPlanKey(companyId: string) {
-    const company = await this.prisma.company.findUnique({
-      where: { id: companyId },
-      select: {
-        userId: true,
-        users: {
-          select: { plan: true },
-          take: 1,
-        },
-      },
-    });
-
-    const ownerPlan = company?.userId
-      ? await this.prisma.user.findUnique({
-          where: { id: company.userId },
-          select: { plan: true },
-        })
-      : null;
-
-    return this.mapPlanToKey(ownerPlan?.plan || company?.users[0]?.plan || null);
+    const planKey = await this.planEntitlements.resolveCompanyPlanKey(companyId);
+    return this.normalizeUsagePlanKey(planKey);
   }
 
   private mapPlanToKey(plan: Plan | null | undefined) {
@@ -443,6 +527,21 @@ export class AIUsageService {
     if (plan === Plan.ENTERPRISE) return 'pro_business';
     if (plan === Plan.COMUM) return 'common';
     return 'free';
+  }
+
+  private normalizeUsagePlanKey(planKey: string | null | undefined) {
+    const normalized = String(planKey || '').trim().toLowerCase();
+    if (normalized === 'common' || normalized === 'comum') return 'common';
+    if (normalized === 'premium' || normalized === 'pro') return 'premium';
+    if (normalized === 'pro_business' || normalized === 'enterprise') return 'pro_business';
+    return 'free';
+  }
+
+  private normalizePlanResponseKey(planKey: string | null | undefined) {
+    const normalized = this.normalizeUsagePlanKey(planKey);
+    if (normalized === 'premium') return 'PREMIUM';
+    if (normalized === 'pro_business') return 'PRO_BUSINESS';
+    return 'COMMON';
   }
 
   private getPlanOverrideKeys(planKey: string) {
@@ -482,8 +581,17 @@ export class AIUsageService {
   ) {
     const used = usage?.requestCount || 0;
     const requestLimit = limit?.monthlyRequestLimit ?? null;
-    const percent = requestLimit && requestLimit > 0 ? Math.min(100, Math.round((used / requestLimit) * 100)) : 0;
-    const status = requestLimit && used >= requestLimit ? 'exceeded' : requestLimit && used >= requestLimit * 0.8 ? 'near_limit' : 'ok';
+    const enabled = limit?.enabled ?? true;
+    const percent = enabled && requestLimit && requestLimit > 0
+      ? Math.min(100, Math.round((used / requestLimit) * 100))
+      : 0;
+    const status = !enabled
+      ? 'blocked'
+      : requestLimit && used >= requestLimit
+        ? 'exceeded'
+        : requestLimit && used >= requestLimit * 0.8
+          ? 'near_limit'
+          : 'ok';
 
     return {
       feature: this.toFeatureKey(feature),
@@ -493,7 +601,7 @@ export class AIUsageService {
       tokenCount: usage?.tokenCount || 0,
       monthlyRequestLimit: requestLimit,
       monthlyTokenLimit: limit?.monthlyTokenLimit ?? null,
-      enabled: limit?.enabled ?? true,
+      enabled,
       progressPercent: percent,
       status,
     };
