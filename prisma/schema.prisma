@@ -372,6 +372,11 @@ model BillingPlanPrice {
   billingCycle        BillingCycle
   amountInCents       Int
   currency            String       @default("BRL")
+  provider            String       @default("MANUAL")
+  providerProductId   String?
+  providerOfferId     String?
+  providerCheckoutUrl String?      @db.Text
+  providerMetadata    Json?
   abacatepayProductId String?
   isActive            Boolean      @default(true)
   createdAt           DateTime     @default(now())
@@ -380,6 +385,9 @@ model BillingPlanPrice {
   plan BillingPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
 
   @@unique([planId, billingCycle])
+  @@index([provider])
+  @@index([providerProductId])
+  @@index([providerOfferId])
   @@index([abacatepayProductId])
 }
 
@@ -391,6 +399,17 @@ model Subscription {
   planKey                  String
   billingCycle             BillingCycle
   status                   SubscriptionStatus @default(PENDING)
+  provider                 String             @default("MANUAL")
+  providerCheckoutId       String?
+  providerSubscriptionId   String?
+  providerCustomerId       String?
+  providerOrderId          String?
+  providerOfferId          String?
+  providerProductId        String?
+  providerCheckoutUrl      String?            @db.Text
+  providerRefId            String?
+  providerSck              String?
+  providerMetadata         Json?
   abacatepayCheckoutId     String?
   abacatepaySubscriptionId String?
   abacatepayCustomerId     String?
@@ -417,6 +436,13 @@ model Subscription {
   @@index([companyId])
   @@index([status])
   @@index([planKey])
+  @@index([provider])
+  @@index([providerCheckoutId])
+  @@index([providerSubscriptionId])
+  @@index([providerOrderId])
+  @@index([providerOfferId])
+  @@index([providerProductId])
+  @@index([providerSck])
   @@index([source])
   @@index([abacatepayCheckoutId])
   @@index([abacatepaySubscriptionId])
@@ -426,6 +452,12 @@ model PaymentEvent {
   id                       String   @id @default(cuid())
   eventId                  String?  @unique
   eventType                String
+  provider                 String   @default("MANUAL")
+  providerEventId          String?
+  providerObjectId         String?
+  providerOrderId          String?
+  providerSubscriptionId   String?
+  providerRawEventType     String?
   apiVersion               Int?
   devMode                  Boolean  @default(false)
   rawPayload               Json
@@ -438,6 +470,11 @@ model PaymentEvent {
   processedAt              DateTime?
 
   @@index([eventType])
+  @@index([provider])
+  @@index([providerEventId])
+  @@index([providerObjectId])
+  @@index([providerOrderId])
+  @@index([providerSubscriptionId])
   @@index([processed])
   @@index([subscriptionId])
   @@index([abacatepayCheckoutId])

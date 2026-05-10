@@ -128,6 +128,19 @@ export function validateEnvironment(config: RawEnv): RawEnv {
     normalized.ABACATEPAY_API_BASE_URL || 'https://api.abacatepay.com/v2',
     { allowHttpLocalhost: true },
   );
+  normalized.CAKTO_API_BASE_URL = normalizeUrl(
+    'CAKTO_API_BASE_URL',
+    normalized.CAKTO_API_BASE_URL || 'https://api.cakto.com.br',
+    { allowHttpLocalhost: true },
+  );
+  normalized.BILLING_PAYMENT_PROVIDER = (() => {
+    const provider = String(normalized.BILLING_PAYMENT_PROVIDER || 'MANUAL').trim().toUpperCase();
+    if (provider === 'CACTO') return 'CAKTO';
+    if (['MANUAL', 'ABACATEPAY', 'CAKTO', 'ASAAS', 'MERCADO_PAGO', 'MERCADOPAGO'].includes(provider)) {
+      return provider === 'MERCADOPAGO' ? 'MERCADO_PAGO' : provider;
+    }
+    return 'MANUAL';
+  })();
 
   normalized.EVOLUTION_API_TIMEOUT_MS = normalizePositiveInteger(
     'EVOLUTION_API_TIMEOUT_MS',

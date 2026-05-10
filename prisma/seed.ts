@@ -71,6 +71,50 @@ function intEnv(key: string, fallback: number) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function normalizeBillingProvider() {
+  const provider = String(process.env.BILLING_PAYMENT_PROVIDER || 'MANUAL').trim().toUpperCase();
+  if (provider === 'CACTO') return 'CAKTO';
+  if (['MANUAL', 'ABACATEPAY', 'CAKTO', 'ASAAS', 'MERCADO_PAGO'].includes(provider)) {
+    return provider;
+  }
+  return 'MANUAL';
+}
+
+function providerPriceConfig(planKey: string, cycle: BillingCycle, productEnv: string) {
+  const provider = normalizeBillingProvider();
+  if (provider === 'CAKTO') {
+    const prefix = `CAKTO_${planKey}_${cycle}`;
+    return {
+      provider,
+      providerProductId: process.env[`${prefix}_PRODUCT_ID`] || null,
+      providerOfferId: process.env[`${prefix}_OFFER_ID`] || null,
+      providerCheckoutUrl: process.env[`${prefix}_CHECKOUT_URL`] || null,
+      providerMetadata: {
+        type: 'subscription',
+        integrationStrategy: 'fixed_checkout_link',
+      },
+    };
+  }
+
+  if (provider === 'ABACATEPAY') {
+    return {
+      provider,
+      providerProductId: process.env[productEnv] || null,
+      providerOfferId: null,
+      providerCheckoutUrl: null,
+      providerMetadata: null,
+    };
+  }
+
+  return {
+    provider,
+    providerProductId: null,
+    providerOfferId: null,
+    providerCheckoutUrl: null,
+    providerMetadata: null,
+  };
+}
+
 async function seedBillingPlans() {
   for (const definition of billingPlans) {
     const plan = await prisma.billingPlan.upsert({
@@ -87,16 +131,19 @@ async function seedBillingPlans() {
 
     for (const cycle of [BillingCycle.MONTHLY, BillingCycle.ANNUAL]) {
       const [productEnv, amountEnv, fallback] = priceEnv[definition.key as keyof typeof priceEnv][cycle];
+      const providerConfig = providerPriceConfig(definition.key, cycle, productEnv);
       await prisma.billingPlanPrice.upsert({
         where: { planId_billingCycle: { planId: plan.id, billingCycle: cycle } },
         create: {
           planId: plan.id,
           billingCycle: cycle,
           amountInCents: intEnv(amountEnv, fallback),
+          ...providerConfig,
           abacatepayProductId: process.env[productEnv] || null,
         },
         update: {
           amountInCents: intEnv(amountEnv, fallback),
+          ...providerConfig,
           abacatepayProductId: process.env[productEnv] || null,
           isActive: true,
         },

@@ -5,13 +5,13 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { BillingCycle, Plan, Prisma, SubscriptionStatus } from '@prisma/client';
-import { Request } from 'express';
 import { createHmac, timingSafeEqual } from 'crypto';
+import { Request } from 'express';
 import { PrismaService } from '../../prisma/prisma.service';
-import { AbacatePayService } from './abacatepay.service';
 import {
   ACTIVE_SUBSCRIPTION_STATUSES,
   BillingPlanKey,
@@ -19,6 +19,9 @@ import {
   PLAN_LEVELS,
   normalizeBillingPlanKey,
 } from './constants/billing.constants';
+import { CaktoProvider } from './providers/cakto/cakto.provider';
+import { BillingWebhookEvent } from './providers/payment-provider.adapter';
+import { PaymentProviderResolver } from './providers/payment-provider.resolver';
 
 type AuthUser = {
   id?: string;
@@ -37,7 +40,8 @@ export class BillingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
-    private readonly abacatePayService: AbacatePayService,
+    private readonly paymentProviderResolver: PaymentProviderResolver,
+    private readonly caktoProvider: CaktoProvider,
   ) {}
 
   async getBillingForUser(userId: string) {
@@ -59,6 +63,25 @@ export class BillingService {
     };
   }
 
+  async getBillingConfig() {
+    const provider = this.paymentProviderResolver.activeProviderKey;
+    const adapter = this.paymentProviderResolver.resolve(provider);
+    const checkoutEnabled = provider === 'CAKTO' && adapter.isCheckoutEnabled();
+    const backendUrl = (
+      this.configService.get<string>('BACKEND_URL') ||
+      this.configService.get<string>('PUBLIC_API_URL') ||
+      this.configService.get<string>('APP_URL') ||
+      'http://localhost:3333'
+    ).replace(/\/+$/, '');
+
+    return {
+      paymentProvider: provider,
+      checkoutEnabled,
+      message: checkoutEnabled ? null : 'Gateway de pagamento temporariamente indisponivel.',
+      webhookUrl: provider === 'CAKTO' ? `${backendUrl}/api/billing/webhooks/cakto` : null,
+    };
+  }
+
   async createCheckout(user: AuthUser, input: { planKey: string; billingCycle: BillingCycle }) {
     const userId = this.resolveUserId(user);
     const planKey = normalizeBillingPlanKey(input.planKey);
@@ -74,6 +97,15 @@ export class BillingService {
       });
     }
 
+    const provider = this.paymentProviderResolver.activeProviderKey;
+    const adapter = this.paymentProviderResolver.resolve(provider);
+    if (provider === 'MANUAL' || provider === 'ASAAS' || provider === 'MERCADO_PAGO') {
+      throw new BadRequestException({
+        code: 'PAYMENT_PROVIDER_UNAVAILABLE',
+        message: 'Gateway de pagamento temporariamente indisponivel.',
+      });
+    }
+
     const plan = await this.prisma.billingPlan.findUnique({
       where: { key: planKey },
       include: { prices: { where: { billingCycle: input.billingCycle, isActive: true } } },
@@ -82,13 +114,24 @@ export class BillingService {
     if (!plan || !price) {
       throw new NotFoundException({ code: 'PLAN_NOT_FOUND', message: 'Plano nao encontrado.' });
     }
-    if (!price.abacatepayProductId) {
+
+    const priceUnavailable =
+      provider === 'CAKTO'
+        ? !price.providerCheckoutUrl
+        : provider === 'ABACATEPAY'
+          ? !price.abacatepayProductId
+          : true;
+    if (priceUnavailable) {
       throw new BadRequestException({
         code: 'PLAN_PRICE_UNAVAILABLE',
         message: 'Este plano esta indisponivel no momento.',
       });
     }
 
+    const dbUser = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true },
+    });
     const externalId = `nextlevel_${userId}_${planKey}_${input.billingCycle}_${Date.now()}`;
     const subscription = await this.prisma.subscription.create({
       data: {
@@ -98,7 +141,17 @@ export class BillingService {
         planKey,
         billingCycle: input.billingCycle,
         status: SubscriptionStatus.PENDING,
-        source: 'ABACATEPAY',
+        provider,
+        providerProductId: price.providerProductId,
+        providerOfferId: price.providerOfferId,
+        providerCheckoutUrl: price.providerCheckoutUrl,
+        providerRefId: externalId,
+        providerSck: externalId,
+        providerMetadata: {
+          priceId: price.id,
+          providerMetadata: price.providerMetadata || null,
+        } as Prisma.InputJsonValue,
+        source: provider,
         abacatepayExternalId: externalId,
         amountInCents: price.amountInCents,
         currency: price.currency,
@@ -110,50 +163,54 @@ export class BillingService {
       },
     });
 
-    const methods = this.subscriptionMethods();
-    this.logger.log(
-      JSON.stringify({
-        event: 'billing.checkout.create',
-        endpoint: '/subscriptions/create',
-        productId: price.abacatepayProductId,
-        planKey,
-        billingCycle: input.billingCycle,
-        methods,
-        externalId,
-      }),
-    );
-
-    const checkout = await this.abacatePayService.createSubscriptionCheckout({
-      productId: price.abacatepayProductId,
-      methods,
+    const checkout = await adapter.createCheckout({
+      userId,
+      companyId: user.companyId || null,
+      userEmail: dbUser?.email || null,
+      subscriptionId: subscription.id,
       externalId,
-      returnUrl: `${this.frontendUrl}/planos`,
-      completionUrl: `${this.frontendUrl}/billing/success`,
-      metadata: {
-        localSubscriptionId: subscription.id,
-        userId,
-        companyId: user.companyId || null,
-        planKey,
-        billingCycle: input.billingCycle,
-      },
+      planKey,
+      billingCycle: input.billingCycle,
+      amountInCents: price.amountInCents,
+      currency: price.currency,
+      providerProductId: price.providerProductId,
+      providerOfferId: price.providerOfferId,
+      providerCheckoutUrl: price.providerCheckoutUrl,
+      providerMetadata: this.asPlainObject(price.providerMetadata),
+      legacyProductId: price.abacatepayProductId,
     });
 
     await this.prisma.subscription.update({
       where: { id: subscription.id },
       data: {
-        abacatepayCheckoutId: checkout.id || null,
-        checkoutUrl: checkout.url || null,
+        providerCheckoutId: checkout.providerCheckoutId || null,
+        providerSubscriptionId: checkout.providerSubscriptionId || null,
+        providerCustomerId: checkout.providerCustomerId || null,
+        providerOrderId: checkout.providerOrderId || null,
+        providerOfferId: checkout.providerOfferId || price.providerOfferId,
+        providerProductId: checkout.providerProductId || price.providerProductId,
+        providerCheckoutUrl: checkout.providerCheckoutUrl || price.providerCheckoutUrl,
+        providerRefId: checkout.providerRefId || externalId,
+        providerSck: checkout.providerSck || subscription.id,
+        providerMetadata: {
+          ...(checkout.providerMetadata || {}),
+          priceId: price.id,
+        } as Prisma.InputJsonValue,
+        abacatepayCheckoutId: provider === 'ABACATEPAY' ? checkout.providerCheckoutId || null : null,
+        checkoutUrl: checkout.checkoutUrl || null,
         metadata: {
           planKey,
           billingCycle: input.billingCycle,
-          abacatepayStatus: checkout.status || null,
+          provider,
+          checkoutStrategy: provider === 'CAKTO' ? 'fixed_checkout_link' : 'api_checkout',
         } as Prisma.InputJsonValue,
       },
     });
 
     return {
-      checkoutUrl: checkout.url,
+      checkoutUrl: checkout.checkoutUrl,
       subscriptionId: subscription.id,
+      provider,
       status: SubscriptionStatus.PENDING,
     };
   }
@@ -168,13 +225,21 @@ export class BillingService {
       throw new NotFoundException({ code: 'NO_ACTIVE_SUBSCRIPTION', message: 'Assinatura ativa nao encontrada.' });
     }
 
-    if (subscription.abacatepaySubscriptionId) {
-      await this.abacatePayService.cancelSubscription(subscription.abacatepaySubscriptionId);
-    }
+    const provider = this.subscriptionProvider(subscription);
+    const adapter = this.paymentProviderResolver.resolve(provider);
+    const cancelResult = await adapter.cancelSubscription({
+      subscriptionId: subscription.id,
+      providerSubscriptionId:
+        subscription.providerSubscriptionId || subscription.abacatepaySubscriptionId,
+    });
 
     const updated = await this.prisma.subscription.update({
       where: { id: subscription.id },
-      data: { status: SubscriptionStatus.CANCELLED, canceledAt: new Date() },
+      data: {
+        status: SubscriptionStatus.CANCELLED,
+        canceledAt: new Date(),
+        providerMetadata: cancelResult.providerMetadata as Prisma.InputJsonValue,
+      },
     });
     await this.syncLegacyPlan(updated.userId, updated.companyId, 'COMMON');
     return { success: true, subscription: updated };
@@ -184,45 +249,86 @@ export class BillingService {
     return this.createCheckout(user, input);
   }
 
-  async handleWebhook(request: Request) {
-    if (!this.validateWebhookSecret(request)) {
-      throw new ForbiddenException({ code: 'INVALID_WEBHOOK_SECRET', message: 'Webhook invalido.' });
+  async handleWebhook(request: Request, providerName?: string) {
+    const adapter = this.paymentProviderResolver.resolve(providerName);
+    const verified = await adapter.verifyWebhook({
+      headers: request.headers as Record<string, unknown>,
+      query: request.query as Record<string, unknown>,
+      body: request.body,
+      rawBody: (request as Request & { rawBody?: Buffer }).rawBody,
+    });
+
+    if (!verified.valid) {
+      throw new UnauthorizedException({ code: 'INVALID_WEBHOOK_SECRET', message: 'Webhook invalido.' });
     }
 
     const payload = request.body as Record<string, unknown>;
-    const eventType = this.extractEventType(payload);
-    const data = this.extractData(payload);
-    const ids = this.extractPaymentIds(payload, data);
-    const eventId = this.extractString(payload, ['id', 'eventId', 'event_id']);
+    const mapped = await adapter.mapWebhookEvent(payload);
+    const eventId = mapped.eventId ? `${mapped.provider}:${mapped.eventId}` : null;
 
     if (eventId) {
       const existing = await this.prisma.paymentEvent.findUnique({ where: { eventId } });
-      if (existing?.processed) {
-        return { received: true, duplicated: true };
+      if (existing) {
+        return { received: true, duplicated: true, processed: existing.processed };
       }
     }
 
     const event = await this.prisma.paymentEvent.create({
       data: {
-        eventId: eventId || null,
-        eventType,
+        eventId,
+        eventType: mapped.eventType,
+        provider: mapped.provider,
+        providerEventId: mapped.eventId || null,
+        providerObjectId: mapped.objectId || null,
+        providerOrderId: mapped.orderId || null,
+        providerSubscriptionId: mapped.subscriptionId || null,
+        providerRawEventType: mapped.rawEventType,
         apiVersion: this.toInt(payload.apiVersion || payload.api_version),
         devMode: Boolean(payload.devMode || payload.dev_mode),
         rawPayload: payload as Prisma.InputJsonValue,
-        abacatepayCheckoutId: ids.checkoutId,
-        abacatepaySubscriptionId: ids.subscriptionId,
+        abacatepayCheckoutId: mapped.provider === 'ABACATEPAY' ? mapped.checkoutId || null : null,
+        abacatepaySubscriptionId: mapped.provider === 'ABACATEPAY' ? mapped.subscriptionId || null : null,
       },
     });
 
     try {
-      const subscription = await this.findSubscriptionFromWebhook(data);
-      await this.applyWebhookEvent(eventType, subscription?.id || null, data, ids);
+      const subscription = await this.findSubscriptionFromProviderWebhook(mapped);
+      const requiresSafeMatch = Boolean(mapped.targetStatus || mapped.shouldActivate);
+      if (!subscription && requiresSafeMatch) {
+        const message = 'Could not safely match Cakto webhook to local subscription';
+        await this.prisma.paymentEvent.update({
+          where: { id: event.id },
+          data: {
+            processingError: message,
+            processedAt: new Date(),
+          },
+        });
+        return { received: true, processed: false, reason: message };
+      }
+
+      if (subscription && mapped.shouldActivate) {
+        const verification = await this.verifyProviderOrderIfNeeded(mapped, subscription);
+        if (!verification.valid) {
+          await this.prisma.paymentEvent.update({
+            where: { id: event.id },
+            data: {
+              subscriptionId: subscription.id,
+              processingError: verification.reason,
+              processedAt: new Date(),
+            },
+          });
+          return { received: true, processed: false, reason: verification.reason };
+        }
+      }
+
+      await this.applyProviderWebhookEvent(mapped, subscription?.id || null);
       await this.prisma.paymentEvent.update({
         where: { id: event.id },
         data: {
           processed: true,
           processedAt: new Date(),
           subscriptionId: subscription?.id || null,
+          processingError: mapped.targetStatus ? null : `Evento ignorado: ${mapped.eventType}`,
         },
       });
       return { received: true };
@@ -234,8 +340,8 @@ export class BillingService {
           processedAt: new Date(),
         },
       });
-      this.logger.error(`Falha ao processar webhook AbacatePay: ${this.extractMessage(error)}`);
-      throw error;
+      this.logger.error(`Falha ao processar webhook ${mapped.provider}: ${this.extractMessage(error)}`);
+      return { received: true, processed: false };
     }
   }
 
@@ -371,6 +477,203 @@ export class BillingService {
     });
   }
 
+  private async applyProviderWebhookEvent(
+    mapped: BillingWebhookEvent,
+    localSubscriptionId: string | null,
+  ) {
+    if (!localSubscriptionId) return;
+
+    let status = mapped.targetStatus || null;
+    if (
+      mapped.eventType === 'subscription_created' &&
+      ['paid', 'authorized', 'active'].includes(String(mapped.status || '').toLowerCase())
+    ) {
+      status = SubscriptionStatus.ACTIVE;
+    }
+    if (!status) return;
+
+    const now = new Date();
+    const updated = await this.prisma.subscription.update({
+      where: { id: localSubscriptionId },
+      data: {
+        status,
+        provider: mapped.provider,
+        providerCheckoutId: mapped.checkoutId || undefined,
+        providerSubscriptionId: mapped.subscriptionId || undefined,
+        providerCustomerId: mapped.customerId || undefined,
+        providerOrderId: mapped.orderId || undefined,
+        providerOfferId: mapped.offerId || undefined,
+        providerProductId: mapped.productId || undefined,
+        providerRefId: mapped.refId || undefined,
+        providerSck: mapped.sck || undefined,
+        providerMetadata: {
+          customer: mapped.customer || null,
+          paymentMethod: mapped.paymentMethod || null,
+          amount: mapped.amount || null,
+          providerStatus: mapped.status || null,
+          rawEventType: mapped.rawEventType,
+        } as Prisma.InputJsonValue,
+        abacatepayCheckoutId: mapped.provider === 'ABACATEPAY' ? mapped.checkoutId || undefined : undefined,
+        abacatepaySubscriptionId: mapped.provider === 'ABACATEPAY' ? mapped.subscriptionId || undefined : undefined,
+        abacatepayCustomerId: mapped.provider === 'ABACATEPAY' ? mapped.customerId || undefined : undefined,
+        currentPeriodStart: mapped.currentPeriodStart || undefined,
+        currentPeriodEnd: mapped.currentPeriodEnd || undefined,
+        paidAt:
+          status === SubscriptionStatus.ACTIVE || status === SubscriptionStatus.PAID
+            ? mapped.paidAt || now
+            : undefined,
+        canceledAt: status === SubscriptionStatus.CANCELLED ? mapped.canceledAt || now : undefined,
+      },
+    });
+
+    if (ACTIVE_SUBSCRIPTION_STATUSES.includes(status)) {
+      await this.syncLegacyPlan(updated.userId, updated.companyId, updated.planKey);
+    } else {
+      const blockingStatuses: SubscriptionStatus[] = [
+        SubscriptionStatus.CANCELLED,
+        SubscriptionStatus.EXPIRED,
+        SubscriptionStatus.REFUNDED,
+        SubscriptionStatus.FAILED,
+        SubscriptionStatus.DISPUTED,
+        SubscriptionStatus.LOST,
+      ];
+      if (blockingStatuses.includes(status)) {
+        await this.syncLegacyPlan(updated.userId, updated.companyId, 'COMMON');
+      }
+    }
+  }
+
+  private async findSubscriptionFromProviderWebhook(mapped: BillingWebhookEvent) {
+    const provider = mapped.provider;
+
+    if (mapped.sck || mapped.refId) {
+      const byTracking = await this.prisma.subscription.findFirst({
+        where: {
+          OR: [
+            mapped.sck ? { id: mapped.sck } : undefined,
+            mapped.sck ? { providerSck: mapped.sck } : undefined,
+            mapped.refId ? { providerRefId: mapped.refId } : undefined,
+            mapped.refId ? { abacatepayExternalId: mapped.refId } : undefined,
+          ].filter(Boolean) as Prisma.SubscriptionWhereInput[],
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (byTracking) return byTracking;
+    }
+
+    if (mapped.orderId) {
+      const byOrder = await this.prisma.subscription.findFirst({
+        where: { provider, providerOrderId: mapped.orderId },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (byOrder) return byOrder;
+    }
+
+    if (mapped.subscriptionId) {
+      const bySubscription = await this.prisma.subscription.findFirst({
+        where: {
+          OR: [
+            { provider, providerSubscriptionId: mapped.subscriptionId },
+            provider === 'ABACATEPAY' ? { abacatepaySubscriptionId: mapped.subscriptionId } : undefined,
+          ].filter(Boolean) as Prisma.SubscriptionWhereInput[],
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (bySubscription) return bySubscription;
+    }
+
+    if (mapped.checkoutId && provider === 'ABACATEPAY') {
+      const byCheckout = await this.prisma.subscription.findFirst({
+        where: { abacatepayCheckoutId: mapped.checkoutId },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (byCheckout) return byCheckout;
+    }
+
+    const email = mapped.customerEmail?.trim().toLowerCase();
+    if (!email) return null;
+
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      select: { id: true },
+    });
+    if (!user) return null;
+
+    const offerOrProductFilters = [
+      mapped.offerId ? { providerOfferId: mapped.offerId } : undefined,
+      mapped.productId ? { providerProductId: mapped.productId } : undefined,
+    ].filter(Boolean) as Prisma.SubscriptionWhereInput[];
+
+    if (offerOrProductFilters.length > 0) {
+      const matches = await this.prisma.subscription.findMany({
+        where: {
+          userId: user.id,
+          provider,
+          status: { in: [SubscriptionStatus.PENDING, SubscriptionStatus.ACTIVE, SubscriptionStatus.PAID] },
+          OR: offerOrProductFilters,
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 2,
+      });
+      if (matches.length === 1) return matches[0];
+    }
+
+    const pendingMatches = await this.prisma.subscription.findMany({
+      where: {
+        userId: user.id,
+        provider,
+        status: SubscriptionStatus.PENDING,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 2,
+    });
+    return pendingMatches.length === 1 ? pendingMatches[0] : null;
+  }
+
+  private async verifyProviderOrderIfNeeded(
+    mapped: BillingWebhookEvent,
+    subscription: {
+      userId: string;
+      providerOfferId?: string | null;
+      providerProductId?: string | null;
+    },
+  ) {
+    if (mapped.provider !== 'CAKTO' || !mapped.orderId || !this.isTrue(this.configService.get<string>('CAKTO_VERIFY_ORDER_ON_WEBHOOK'))) {
+      return { valid: true };
+    }
+
+    try {
+      const order = await this.caktoProvider.getOrder(mapped.orderId);
+      const orderStatus = String(order.status || '').toLowerCase();
+      if (!['paid', 'authorized'].includes(orderStatus)) {
+        return { valid: false, reason: `Cakto order status not paid/authorized: ${orderStatus}` };
+      }
+
+      const user = await this.prisma.user.findUnique({
+        where: { id: subscription.userId },
+        select: { email: true },
+      });
+      const orderEmail = order.customer?.email?.trim().toLowerCase();
+      if (user?.email && orderEmail && user.email.trim().toLowerCase() !== orderEmail) {
+        return { valid: false, reason: 'Cakto order customer email does not match local user' };
+      }
+
+      const orderProductId =
+        order.product && typeof order.product === 'object' ? order.product.id : order.product;
+      if (
+        subscription.providerProductId &&
+        orderProductId &&
+        subscription.providerProductId !== orderProductId
+      ) {
+        return { valid: false, reason: 'Cakto order product does not match local price' };
+      }
+
+      return { valid: true };
+    } catch (error) {
+      return { valid: false, reason: `Cakto order verification failed: ${this.extractMessage(error)}` };
+    }
+  }
+
   private async applyWebhookEvent(
     eventType: string,
     localSubscriptionId: string | null,
@@ -502,6 +805,19 @@ export class BillingService {
     if (!subscription) return false;
     if (ACTIVE_SUBSCRIPTION_STATUSES.includes(subscription.status)) return true;
     return false;
+  }
+
+  private subscriptionProvider(subscription: { provider?: string | null; source?: string | null }) {
+    const provider =
+      subscription.provider && subscription.provider !== 'MANUAL'
+        ? subscription.provider
+        : subscription.source;
+    return this.paymentProviderResolver.normalizeProvider(provider);
+  }
+
+  private asPlainObject(value: unknown): Record<string, unknown> | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    return value as Record<string, unknown>;
   }
 
   private validateWebhookSecret(request: Request) {

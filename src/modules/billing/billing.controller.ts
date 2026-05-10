@@ -21,6 +21,12 @@ export class BillingController {
     return this.billingPlansService.listPlans();
   }
 
+  @Public()
+  @Get('config')
+  getConfig() {
+    return this.billingService.getBillingConfig();
+  }
+
   @SkipSubscriptionCheck()
   @Get('me')
   getMe(@CurrentUser() user: { id?: string; userId?: string; sub?: string }) {
@@ -39,7 +45,19 @@ export class BillingController {
   @Public()
   @Post('webhooks/abacatepay')
   handleAbacatePayWebhook(@Req() request: Request) {
-    return this.billingService.handleWebhook(request);
+    return this.billingService.handleWebhook(request, 'ABACATEPAY');
+  }
+
+  @Public()
+  @Post('webhooks/cakto')
+  handleCaktoWebhook(@Req() request: Request) {
+    return this.billingService.handleWebhook(request, 'CAKTO');
+  }
+
+  @Public()
+  @Post('webhooks/cacto')
+  handleCactoWebhook(@Req() request: Request) {
+    return this.billingService.handleWebhook(request, 'CACTO');
   }
 
   @Post('cancel')
