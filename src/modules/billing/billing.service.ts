@@ -457,16 +457,16 @@ export class BillingService {
   private async ensureBillingPlan(planKey: BillingPlanKey) {
     const labels: Record<BillingPlanKey, { name: string; description: string }> = {
       COMMON: {
-        name: 'Comum',
-        description: 'Plano inicial para organizar dados e acompanhar indicadores basicos.',
+        name: 'Essencial',
+        description: 'Plano inicial para organizar dados, acompanhar indicadores e usar IA basica sem integracoes automaticas.',
       },
       PREMIUM: {
         name: 'Premium',
         description: 'Plano para empresas que querem usar IA de verdade na gestao.',
       },
       PRO_BUSINESS: {
-        name: 'Pro Business',
-        description: 'Plano completo para automacao, market intelligence e recursos avancados.',
+        name: 'Business',
+        description: 'Plano completo para automacao, previsibilidade, market intelligence e escala.',
       },
     };
     return this.prisma.billingPlan.upsert({

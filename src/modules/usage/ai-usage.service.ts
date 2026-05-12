@@ -66,7 +66,7 @@ const DEFAULT_PLAN_LIMITS: Record<string, Partial<Record<AIUsageFeature, Feature
     [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 1000, monthlyTokenLimit: null, enabled: true },
     [AIUsageFeature.WHATSAPP_AGENT]: { monthlyRequestLimit: 3000, monthlyTokenLimit: null, enabled: true },
     [AIUsageFeature.INSTAGRAM_AGENT]: { monthlyRequestLimit: 3000, monthlyTokenLimit: null, enabled: true },
-    [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: 200, monthlyTokenLimit: null, enabled: true },
+    [AIUsageFeature.INTELLIGENT_IMPORT]: { monthlyRequestLimit: 240, monthlyTokenLimit: null, enabled: true },
   },
   business: {
     [AIUsageFeature.CHAT_IA]: { monthlyRequestLimit: 5000, monthlyTokenLimit: null, enabled: true },
@@ -84,13 +84,13 @@ const DEFAULT_PLAN_LIMITS: Record<string, Partial<Record<AIUsageFeature, Feature
 
 const FEATURE_LABELS: Record<AIUsageFeature, string> = {
   [AIUsageFeature.CHAT_IA]: 'Chat IA',
-  [AIUsageFeature.WHATSAPP_AGENT]: 'Atendente WhatsApp',
-  [AIUsageFeature.INSTAGRAM_AGENT]: 'Atendente Instagram',
+  [AIUsageFeature.WHATSAPP_AGENT]: 'Atendente IA WhatsApp',
+  [AIUsageFeature.INSTAGRAM_AGENT]: 'Atendente IA Instagram',
   [AIUsageFeature.IMAGE_ANALYSIS]: 'Analise de imagem',
   [AIUsageFeature.AUDIO_TRANSCRIPTION]: 'Transcricao de audio',
   [AIUsageFeature.WEB_SEARCH]: 'Busca web',
   [AIUsageFeature.REPORT_GENERATION]: 'Geracao de relatorio',
-  [AIUsageFeature.INTELLIGENT_IMPORT]: 'Importacao Inteligente',
+  [AIUsageFeature.INTELLIGENT_IMPORT]: 'Analises de dados com IA',
   [AIUsageFeature.OTHER]: 'Outros usos de IA',
 };
 
@@ -295,7 +295,7 @@ export class AIUsageService implements OnModuleInit {
       },
       {
         userId,
-        errorMessage: 'Limite de IA atingido para este mês.',
+        errorMessage: 'Você atingiu o limite mensal de IA do seu plano. Faça upgrade para continuar usando este recurso.',
       },
     ).catch((error) => {
       this.logger.warn(`Falha ao registrar bloqueio de IA: ${this.extractErrorMessage(error)}`);
@@ -329,7 +329,7 @@ export class AIUsageService implements OnModuleInit {
         feature: quotaKey,
         currentPlan: this.normalizePlanResponseKey(result.planKey),
         requiredPlan,
-        message: `Voce atingiu o limite de ${FEATURE_LABELS[feature]} no seu plano. Faca upgrade para continuar.`,
+        message: 'Você atingiu o limite mensal de IA do seu plano. Faça upgrade para continuar usando este recurso.',
       },
       HttpStatus.TOO_MANY_REQUESTS,
     );
