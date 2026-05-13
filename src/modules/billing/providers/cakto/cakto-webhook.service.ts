@@ -71,14 +71,21 @@ export class CaktoWebhookService {
       subscriptionId: this.extractSubscriptionId(payload, data),
       checkoutId: this.extractFirstString(payload, data, ['checkoutId', 'checkout_id', 'checkout']),
       customerId: this.extractFirstString(payload, data, ['customerId', 'customer_id']),
-      customerEmail: this.extractString(customer, ['email']),
+      customerEmail:
+        this.extractString(customer, ['email']) ||
+        this.deepFindString(payload, ['email', 'customerEmail', 'customer_email']),
       customer,
       productId:
         this.extractString(product, ['id']) ||
-        this.extractFirstString(payload, data, ['productId', 'product_id']),
+        this.extractFirstString(payload, data, ['productId', 'product_id']) ||
+        this.deepFindString(payload, ['productId', 'product_id']),
       offerId: this.extractOfferId(payload, data),
-      refId: this.extractFirstString(payload, data, ['refId', 'ref_id']),
-      sck: this.extractFirstString(payload, data, ['sck', 'subscriptionId', 'localSubscriptionId']),
+      refId:
+        this.extractFirstString(payload, data, ['refId', 'ref_id']) ||
+        this.deepFindString(payload, ['refId', 'ref_id', 'externalId', 'external_id']),
+      sck:
+        this.extractFirstString(payload, data, ['sck', 'subscriptionId', 'localSubscriptionId']) ||
+        this.deepFindString(payload, ['sck', 'localSubscriptionId']),
       paymentMethod: this.extractFirstString(payload, data, ['paymentMethod', 'payment_method']),
       amount: this.extractAmount(payload, data),
       status: this.extractFirstString(payload, data, ['status']),
@@ -169,7 +176,10 @@ export class CaktoWebhookService {
     if (offer && typeof offer === 'object') {
       return this.extractString(offer as Record<string, unknown>, ['id']);
     }
-    return this.extractFirstString(payload, data, ['offerId', 'offer_id']);
+    return (
+      this.extractFirstString(payload, data, ['offerId', 'offer_id']) ||
+      this.deepFindString(payload, ['offerId', 'offer_id'])
+    );
   }
 
   private extractAmount(payload: Record<string, unknown>, data: Record<string, unknown>) {
@@ -226,6 +236,21 @@ export class CaktoWebhookService {
 
   private asRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+  }
+
+  private deepFindString(source: unknown, keys: string[], depth = 0): string | null {
+    if (!source || typeof source !== 'object' || depth > 5) return null;
+    const record = source as Record<string, unknown>;
+    const direct = this.extractString(record, keys);
+    if (direct) return direct;
+
+    for (const value of Object.values(record)) {
+      if (value && typeof value === 'object') {
+        const found = this.deepFindString(value, keys, depth + 1);
+        if (found) return found;
+      }
+    }
+    return null;
   }
 
   private get isProduction() {

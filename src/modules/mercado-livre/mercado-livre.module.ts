@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { BillingModule } from '../billing/billing.module';
 import { WebhooksModule } from '../webhooks/webhooks.module';
 import { MercadoLivreApiService } from './mercado-livre-api.service';
 import { MercadoLivreAuthController } from './mercado-livre-auth.controller';
@@ -11,7 +12,7 @@ import { MercadoLivreWebhookController } from './mercado-livre-webhook.controlle
 import { MercadoLivreWebhookService } from './mercado-livre-webhook.service';
 
 @Module({
-  imports: [WebhooksModule],
+  imports: [BillingModule, WebhooksModule],
   controllers: [
     MercadoLivreAuthController,
     MercadoLivreController,

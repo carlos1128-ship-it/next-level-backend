@@ -34,7 +34,7 @@ export class AnalyticsEngineService {
       }),
       this.prisma.financialTransaction.findMany({
         where: { companyId, occurredAt: { gte: start, lte: end } },
-        select: { type: true, amount: true },
+        select: { type: true, amount: true, source: true },
       }),
       this.prisma.operationalCost.findMany({
         where: { companyId, date: { gte: start, lte: end } },
@@ -60,7 +60,10 @@ export class AnalyticsEngineService {
     const incomeRevenue = transactions
       .filter((item) => item.type === FinancialTransactionType.INCOME)
       .reduce((total, item) => total + this.toNumber(item.amount), 0);
-    const revenue = this.round(saleRevenue + incomeRevenue);
+    const saleBackedIncomeRevenue = transactions
+      .filter((item) => this.isSaleBackedIncomeTransaction(item))
+      .reduce((total, item) => total + this.toNumber(item.amount), 0);
+    const revenue = this.round(saleRevenue + incomeRevenue - saleBackedIncomeRevenue);
     const previousRevenue = previousSales.reduce((total, sale) => total + this.toNumber(sale.amount), 0);
     const transactionExpenses = transactions
       .filter((item) => item.type === FinancialTransactionType.EXPENSE)
@@ -69,7 +72,9 @@ export class AnalyticsEngineService {
     const adSpend = adSpends.reduce((total, item) => total + this.toNumber(item.amount), 0);
     const costsTotal = this.round(transactionExpenses + operationalCosts + adSpend);
     const profit = this.round(revenue - costsTotal);
-    const salesCount = sales.length + transactions.filter((item) => item.type === FinancialTransactionType.INCOME).length;
+    const salesCount =
+      sales.length +
+      transactions.filter((item) => item.type === FinancialTransactionType.INCOME && !this.isSaleBackedIncomeTransaction(item)).length;
     const averageTicket = salesCount > 0 ? this.round(revenue / salesCount) : null;
     const margin = revenue > 0 ? this.round((profit / revenue) * 100) : null;
     const operationalWaste = revenue > 0 ? this.round((operationalCosts / revenue) * 100) : null;
@@ -260,6 +265,12 @@ export class AnalyticsEngineService {
 
   private toNumber(value: Prisma.Decimal | number | null | undefined) {
     return Number(value || 0);
+  }
+
+  private isSaleBackedIncomeTransaction(transaction: { type: FinancialTransactionType; source?: string | null }) {
+    if (transaction.type !== FinancialTransactionType.INCOME) return false;
+    const source = String(transaction.source || '').trim().toLowerCase();
+    return source === 'mercadolivre' || source === 'mercado_livre' || source === 'mercado livre';
   }
 
   private round(value: number) {

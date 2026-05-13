@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Req } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
@@ -29,8 +29,11 @@ export class BillingController {
 
   @SkipSubscriptionCheck()
   @Get('me')
-  getMe(@CurrentUser() user: { id?: string; userId?: string; sub?: string }) {
-    return this.billingService.getBillingForUser(user.id || user.userId || user.sub || '');
+  getMe(
+    @CurrentUser() user: { id?: string; userId?: string; sub?: string },
+    @Query('companyId') companyId?: string,
+  ) {
+    return this.billingService.getBillingForUser(user.id || user.userId || user.sub || '', companyId);
   }
 
   @SkipSubscriptionCheck()

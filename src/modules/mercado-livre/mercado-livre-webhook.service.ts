@@ -78,6 +78,12 @@ export class MercadoLivreWebhookService {
       return;
     }
 
+    const shipmentId = this.matchResource(resource, /shipments\/([0-9]+)/);
+    if (shipmentId || topic === 'shipments') {
+      if (shipmentId) await this.syncService.syncShipmentById(companyId, shipmentId);
+      return;
+    }
+
     this.logger.log(`Webhook Mercado Livre recebido sem acao direta: ${topic || resource}`);
   }
 

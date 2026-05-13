@@ -44,8 +44,9 @@ export class BillingService {
     private readonly caktoProvider: CaktoProvider,
   ) {}
 
-  async getBillingForUser(userId: string) {
-    const subscription = await this.ensureEntitledSubscriptionForUser(userId);
+  async getBillingForUser(userId: string, companyId?: string | null) {
+    const scopedCompanyId = await this.resolveCompanyIdForUser(userId, companyId, null);
+    const subscription = await this.ensureEntitledSubscriptionForUser(userId, scopedCompanyId);
     const hasActiveSubscription = this.isSubscriptionActive(subscription);
     return {
       hasActiveSubscription,
@@ -83,14 +84,18 @@ export class BillingService {
     };
   }
 
-  async createCheckout(user: AuthUser, input: { planKey: string; billingCycle: BillingCycle }) {
+  async createCheckout(
+    user: AuthUser,
+    input: { planKey: string; billingCycle: BillingCycle; companyId?: string | null },
+  ) {
     const userId = this.resolveUserId(user);
     const planKey = normalizeBillingPlanKey(input.planKey);
     if (!planKey) {
       throw new BadRequestException({ code: 'INVALID_PLAN', message: 'Plano invalido.' });
     }
 
-    const current = await this.ensureEntitledSubscriptionForUser(userId);
+    const companyId = await this.resolveCompanyIdForUser(userId, input.companyId, user.companyId || null);
+    const current = await this.ensureEntitledSubscriptionForUser(userId, companyId);
     if (this.isSubscriptionActive(current)) {
       throw new ConflictException({
         code: 'ACTIVE_SUBSCRIPTION_EXISTS',
@@ -137,7 +142,7 @@ export class BillingService {
     const subscription = await this.prisma.subscription.create({
       data: {
         userId,
-        companyId: user.companyId || null,
+        companyId,
         billingPlanId: plan.id,
         planKey,
         billingCycle: input.billingCycle,
@@ -160,13 +165,14 @@ export class BillingService {
           planKey,
           billingCycle: input.billingCycle,
           source: 'checkout',
+          companyId,
         } as Prisma.InputJsonValue,
       },
     });
 
     const checkout = await adapter.createCheckout({
       userId,
-      companyId: user.companyId || null,
+      companyId,
       userEmail: dbUser?.email || null,
       subscriptionId: subscription.id,
       externalId,
@@ -204,9 +210,21 @@ export class BillingService {
           billingCycle: input.billingCycle,
           provider,
           checkoutStrategy: provider === 'CAKTO' ? 'fixed_checkout_link' : 'api_checkout',
+          companyId,
         } as Prisma.InputJsonValue,
       },
     });
+
+    this.logger.log(
+      JSON.stringify({
+        event: 'billing.checkout.created',
+        provider,
+        userId,
+        companyId,
+        subscriptionId: subscription.id,
+        planKey,
+      }),
+    );
 
     return {
       checkoutUrl: checkout.checkoutUrl,
@@ -246,7 +264,7 @@ export class BillingService {
     return { success: true, subscription: updated };
   }
 
-  async changePlan(user: AuthUser, input: { planKey: string; billingCycle: BillingCycle }) {
+  async changePlan(user: AuthUser, input: { planKey: string; billingCycle: BillingCycle; companyId?: string | null }) {
     return this.createCheckout(user, input);
   }
 
@@ -265,6 +283,14 @@ export class BillingService {
 
     const payload = request.body as Record<string, unknown>;
     const mapped = await adapter.mapWebhookEvent(payload);
+    this.logger.log(
+      JSON.stringify({
+        event: 'billing.webhook.received',
+        provider: mapped.provider,
+        eventType: mapped.eventType,
+        rawEventType: mapped.rawEventType,
+      }),
+    );
     const providerObjectKey =
       mapped.orderId || mapped.objectId || mapped.checkoutId || mapped.refId || mapped.sck || null;
     const eventId = mapped.eventId
@@ -357,7 +383,10 @@ export class BillingService {
     return this.isSubscriptionActive(subscription) ? subscription : null;
   }
 
-  private async ensureEntitledSubscriptionForUser(userId: string) {
+  private async ensureEntitledSubscriptionForUser(userId: string, companyId?: string | null) {
+    const activeByCompany = companyId ? await this.findActiveSubscriptionForCompany(companyId) : null;
+    if (activeByCompany) return activeByCompany;
+
     const active = await this.findActiveSubscription(userId);
     if (active) return active;
 
@@ -367,12 +396,16 @@ export class BillingService {
     });
     if (!user) return this.findLatestSubscription(userId);
 
-    if (user.admin || this.isBillingAdminEmail(user.email)) {
+    const shouldGrantAdmin =
+      (user.admin || this.isBillingAdminEmail(user.email)) &&
+      (!companyId || companyId === user.companyId);
+    if (shouldGrantAdmin) {
       return this.grantInternalSubscription(
         user,
         'PRO_BUSINESS',
         'ADMIN_GRANT',
         'Admin/dev account granted Pro Business access',
+        companyId || user.companyId,
       );
     }
 
@@ -383,6 +416,7 @@ export class BillingService {
           'PRO_BUSINESS',
           'INTERNAL_LEGACY',
           'Legacy ENTERPRISE user migrated to Pro Business entitlement',
+          companyId || user.companyId,
         );
       }
       if (user.plan === Plan.PRO) {
@@ -391,6 +425,7 @@ export class BillingService {
           'PREMIUM',
           'INTERNAL_LEGACY',
           'Legacy PRO user migrated to Premium entitlement',
+          companyId || user.companyId,
         );
       }
     }
@@ -403,6 +438,7 @@ export class BillingService {
     planKey: BillingPlanKey,
     source: InternalGrantSource,
     notes: string,
+    companyIdOverride?: string | null,
   ) {
     const existing = await this.prisma.subscription.findFirst({
       where: { userId: user.id, source, status: { in: ACTIVE_SUBSCRIPTION_STATUSES } },
@@ -417,7 +453,7 @@ export class BillingService {
     });
 
     const data = {
-      companyId: user.companyId,
+      companyId: companyIdOverride || user.companyId,
       billingPlanId: billingPlan.id,
       planKey,
       billingCycle: BillingCycle.MONTHLY,
@@ -501,10 +537,18 @@ export class BillingService {
     if (!status) return;
 
     const now = new Date();
+    const existing = await this.prisma.subscription.findUnique({
+      where: { id: localSubscriptionId },
+      select: {
+        companyId: true,
+        user: { select: { companyId: true } },
+      },
+    });
     const updated = await this.prisma.subscription.update({
       where: { id: localSubscriptionId },
       data: {
         status,
+        companyId: existing?.companyId || existing?.user.companyId || undefined,
         provider: mapped.provider,
         providerCheckoutId: mapped.checkoutId || undefined,
         providerSubscriptionId: mapped.subscriptionId || undefined,
@@ -536,6 +580,17 @@ export class BillingService {
 
     if (ACTIVE_SUBSCRIPTION_STATUSES.includes(status)) {
       await this.syncLegacyPlan(updated.userId, updated.companyId, updated.planKey);
+      this.logger.log(
+        JSON.stringify({
+          event: 'billing.subscription.activated',
+          provider: mapped.provider,
+          subscriptionId: updated.id,
+          userId: updated.userId,
+          companyId: updated.companyId,
+          planKey: updated.planKey,
+          status: updated.status,
+        }),
+      );
     } else {
       const blockingStatuses: SubscriptionStatus[] = [
         SubscriptionStatus.CANCELLED,
@@ -796,10 +851,21 @@ export class BillingService {
   }
 
   private async findActiveSubscription(userId: string) {
-    return this.prisma.subscription.findFirst({
+    const subscriptions = await this.prisma.subscription.findMany({
       where: { userId, status: { in: ACTIVE_SUBSCRIPTION_STATUSES } },
       orderBy: { createdAt: 'desc' },
+      take: 5,
     });
+    return subscriptions.find((subscription) => this.isSubscriptionActive(subscription)) || null;
+  }
+
+  private async findActiveSubscriptionForCompany(companyId: string) {
+    const subscriptions = await this.prisma.subscription.findMany({
+      where: { companyId, status: { in: ACTIVE_SUBSCRIPTION_STATUSES } },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+    });
+    return subscriptions.find((subscription) => this.isSubscriptionActive(subscription)) || null;
   }
 
   private async findLatestSubscription(userId: string) {
@@ -809,10 +875,13 @@ export class BillingService {
     });
   }
 
-  private isSubscriptionActive(subscription: { status: SubscriptionStatus; currentPeriodEnd?: Date | null } | null) {
+  private isSubscriptionActive(subscription: { status: SubscriptionStatus; currentPeriodEnd?: Date | null; expiresAt?: Date | null } | null) {
     if (!subscription) return false;
-    if (ACTIVE_SUBSCRIPTION_STATUSES.includes(subscription.status)) return true;
-    return false;
+    if (!ACTIVE_SUBSCRIPTION_STATUSES.includes(subscription.status)) return false;
+    const now = Date.now();
+    if (subscription.currentPeriodEnd && subscription.currentPeriodEnd.getTime() <= now) return false;
+    if (subscription.expiresAt && subscription.expiresAt.getTime() <= now) return false;
+    return true;
   }
 
   private subscriptionProvider(subscription: { provider?: string | null; source?: string | null }) {
@@ -930,6 +999,35 @@ export class BillingService {
       throw new BadRequestException('Usuario autenticado invalido.');
     }
     return userId;
+  }
+
+  private async resolveCompanyIdForUser(
+    userId: string,
+    requestedCompanyId?: string | null,
+    fallbackCompanyId?: string | null,
+  ) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { companyId: true, admin: true },
+    });
+    const candidate = requestedCompanyId?.trim() || fallbackCompanyId?.trim() || user?.companyId || null;
+    if (!candidate) return null;
+
+    const company = await this.prisma.company.findFirst({
+      where: {
+        id: candidate,
+        ...(user?.admin
+          ? {}
+          : {
+              OR: [{ userId }, { users: { some: { id: userId } } }],
+            }),
+      },
+      select: { id: true },
+    });
+    if (!company) {
+      throw new ForbiddenException('Sem acesso a empresa informada');
+    }
+    return company.id;
   }
 
   private extractEventType(payload: Record<string, unknown>) {

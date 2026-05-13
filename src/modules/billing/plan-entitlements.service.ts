@@ -1,4 +1,4 @@
-import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { AIUsageFeature, IntegrationProvider, Plan, SubscriptionStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
@@ -100,8 +100,9 @@ export const PLAN_CATALOG: Record<BillingPlanKey, PlanEntitlementDefinition> = {
       'Alertas inteligentes de margem',
       'Relatorios automaticos semanais',
       'Recomendacoes taticas da IA',
+      'Mercado Livre integrado',
       'Suporte prioritario',
-      'Sem Mercado Livre e Utmify',
+      'Sem Utmify e automacoes avancadas de escala',
     ],
     featureKeys: [
       'DASHBOARD_BASIC',
@@ -112,6 +113,7 @@ export const PLAN_CATALOG: Record<BillingPlanKey, PlanEntitlementDefinition> = {
       'SMART_IMPORTS',
       'WHATSAPP_INTEGRATION',
       'INSTAGRAM_INTEGRATION',
+      'MERCADO_LIVRE_INTEGRATION',
       'WHATSAPP_AI_ATTENDANT',
       'INSTAGRAM_AI_ATTENDANT',
       'PRIORITY_SUPPORT',
@@ -222,6 +224,8 @@ const INTEGRATION_FEATURES: Record<string, PlanFeatureKey> = {
 
 @Injectable()
 export class PlanEntitlementsService {
+  private readonly logger = new Logger(PlanEntitlementsService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   getEntitlements(planKey: unknown) {
@@ -260,10 +264,12 @@ export class PlanEntitlementsService {
   async assertFeatureAccessForCompany(companyId: string, featureKey: PlanFeatureKey) {
     const planKey = await this.resolveCompanyPlanKey(companyId);
     if (this.canAccessFeature(planKey, featureKey)) {
+      this.logPlanGate('allowed', companyId, planKey, featureKey);
       return { allowed: true, planKey, featureKey };
     }
 
     const requiredPlan = this.getRequiredPlanForFeature(featureKey);
+    this.logPlanGate('denied', companyId, planKey, featureKey, requiredPlan);
     throw new HttpException(
       {
         statusCode: HttpStatus.FORBIDDEN,
@@ -285,10 +291,12 @@ export class PlanEntitlementsService {
     const featureKey = INTEGRATION_FEATURES[normalized] || 'MARKETPLACE_INTEGRATIONS';
     const planKey = await this.resolveCompanyPlanKey(companyId);
     if (this.canAccessFeature(planKey, featureKey)) {
+      this.logPlanGate('allowed', companyId, planKey, featureKey, undefined, normalized);
       return { allowed: true, planKey, integration: normalized };
     }
 
     const requiredPlan = this.getRequiredPlanForFeature(featureKey);
+    this.logPlanGate('denied', companyId, planKey, featureKey, requiredPlan, normalized);
     throw new HttpException(
       {
         statusCode: HttpStatus.FORBIDDEN,
@@ -332,14 +340,23 @@ export class PlanEntitlementsService {
   }
 
   async resolveCompanyPlanKey(companyId: string): Promise<BillingPlanKey> {
-    const activeSubscription = await this.prisma.subscription.findFirst({
+    const activeSubscriptions = await this.prisma.subscription.findMany({
       where: {
         companyId,
         status: { in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.PAID] },
       },
       orderBy: { createdAt: 'desc' },
-      select: { planKey: true },
+      take: 5,
+      select: {
+        planKey: true,
+        status: true,
+        currentPeriodEnd: true,
+        expiresAt: true,
+      },
     });
+    const activeSubscription = activeSubscriptions.find((subscription) =>
+      this.isSubscriptionCurrentlyActive(subscription),
+    );
     const subscriptionPlan = normalizeBillingPlanKey(activeSubscription?.planKey);
     if (subscriptionPlan) return subscriptionPlan;
 
@@ -377,6 +394,25 @@ export class PlanEntitlementsService {
     return 'COMMON';
   }
 
+  private isSubscriptionCurrentlyActive(subscription: {
+    status: SubscriptionStatus;
+    currentPeriodEnd?: Date | null;
+    expiresAt?: Date | null;
+  }) {
+    const activeStatuses: SubscriptionStatus[] = [SubscriptionStatus.ACTIVE, SubscriptionStatus.PAID];
+    if (!activeStatuses.includes(subscription.status)) {
+      return false;
+    }
+    const now = Date.now();
+    if (subscription.currentPeriodEnd && subscription.currentPeriodEnd.getTime() <= now) {
+      return false;
+    }
+    if (subscription.expiresAt && subscription.expiresAt.getTime() <= now) {
+      return false;
+    }
+    return true;
+  }
+
   private integrationLabel(provider: string) {
     const labels: Record<string, string> = {
       WHATSAPP: 'WhatsApp',
@@ -387,5 +423,26 @@ export class PlanEntitlementsService {
       SHOPEE: 'Shopee',
     };
     return labels[provider] || provider;
+  }
+
+  private logPlanGate(
+    decision: 'allowed' | 'denied',
+    companyId: string,
+    currentPlan: BillingPlanKey,
+    featureKey: PlanFeatureKey,
+    requiredPlan?: BillingPlanKey,
+    integration?: string,
+  ) {
+    this.logger.log(
+      JSON.stringify({
+        event: 'plan.gate.decision',
+        decision,
+        companyId,
+        currentPlan,
+        featureKey,
+        requiredPlan: requiredPlan || null,
+        integration: integration || null,
+      }),
+    );
   }
 }

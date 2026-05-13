@@ -244,6 +244,7 @@ export class DashboardService {
           type: true,
           category: true,
           description: true,
+          source: true,
           occurredAt: true,
         },
         orderBy: { occurredAt: 'asc' },
@@ -278,7 +279,7 @@ export class DashboardService {
     const revenue =
       sales.reduce((total, sale) => total + this.toNumber(sale.amount), 0) +
       transactions
-        .filter((item) => item.type === FinancialTransactionType.INCOME)
+        .filter((item) => item.type === FinancialTransactionType.INCOME && !this.isSaleBackedIncomeTransaction(item))
         .reduce((total, item) => total + this.toNumber(item.amount), 0);
 
     const losses =
@@ -881,7 +882,7 @@ export class DashboardService {
       }),
       this.prisma.financialTransaction.findMany({
         where: { companyId, occurredAt: { gte: start, lte: end } },
-        select: { amount: true, type: true, category: true, description: true, occurredAt: true },
+        select: { amount: true, type: true, category: true, description: true, source: true, occurredAt: true },
         orderBy: { occurredAt: 'asc' },
       }),
       this.prisma.operationalCost.findMany({
@@ -946,6 +947,9 @@ export class DashboardService {
     const transactionIncome = data.transactions
       .filter((item) => item.type === FinancialTransactionType.INCOME)
       .reduce((total, item) => total + this.toNumber(item.amount), 0);
+    const saleBackedTransactionIncome = data.transactions
+      .filter((item) => this.isSaleBackedIncomeTransaction(item))
+      .reduce((total, item) => total + this.toNumber(item.amount), 0);
     const transactionExpenses = data.transactions
       .filter((item) => item.type === FinancialTransactionType.EXPENSE)
       .reduce((total, item) => total + this.toNumber(item.amount), 0);
@@ -956,7 +960,7 @@ export class DashboardService {
       if (!productKey) return total;
       return total + (productCostByName.get(productKey) || 0);
     }, 0);
-    const nativeRevenue = salesRevenue + transactionIncome;
+    const nativeRevenue = salesRevenue + transactionIncome - saleBackedTransactionIncome;
     const importedRevenue = importedMetricNumber(['revenue', 'income_revenue', 'grossRevenue', 'netRevenue', 'revenueAttributed']);
     const revenue = nativeRevenue > 0 ? nativeRevenue : importedRevenue;
     const nativeOperationalCosts = operationalCosts;
@@ -974,7 +978,7 @@ export class DashboardService {
     const fallbackCashFlow = importedMetricNumber(['cashFlow']);
     const salesCount =
       data.sales.length +
-      data.transactions.filter((item) => item.type === FinancialTransactionType.INCOME).length;
+      data.transactions.filter((item) => item.type === FinancialTransactionType.INCOME && !this.isSaleBackedIncomeTransaction(item)).length;
     const fallbackSalesCount = importedMetricNumber(['orderCount']);
     const resolvedSalesCount = salesCount > 0 ? salesCount : Math.round(fallbackSalesCount);
     const netProfit = revenue - totalOutflows;
@@ -989,7 +993,7 @@ export class DashboardService {
       revenue: this.round(revenue),
       transactionIncome: this.round(transactionIncome),
       salesCount: resolvedSalesCount,
-      revenueSources: data.sales.length + data.transactions.filter((item) => item.type === FinancialTransactionType.INCOME).length,
+      revenueSources: data.sales.length + data.transactions.filter((item) => item.type === FinancialTransactionType.INCOME && !this.isSaleBackedIncomeTransaction(item)).length,
       operationalCosts: this.round(resolvedOperationalCosts),
       operationalCostCount: data.operationalCosts.length,
       adSpend: this.round(adSpend),
@@ -1175,6 +1179,7 @@ export class DashboardService {
       const bucket = buckets.get(label);
       if (!bucket) return;
       if (transaction.type === FinancialTransactionType.INCOME) {
+        if (this.isSaleBackedIncomeTransaction(transaction)) return;
         bucket.Receitas += this.toNumber(transaction.amount);
       } else {
         bucket.Saidas += this.toNumber(transaction.amount);
@@ -1352,6 +1357,7 @@ export class DashboardService {
       amount: Prisma.Decimal;
       type: FinancialTransactionType;
       occurredAt: Date;
+      source?: string | null;
     }>,
     adSpends: Array<{ amount: Prisma.Decimal; spentAt: Date }>,
     operationalCosts: Array<{ amount: Prisma.Decimal; date: Date }>,
@@ -1380,6 +1386,7 @@ export class DashboardService {
       if (!bucket) continue;
 
       if (item.type === FinancialTransactionType.INCOME) {
+        if (this.isSaleBackedIncomeTransaction(item)) continue;
         bucket.Receitas += this.toNumber(item.amount);
       } else {
         bucket.Saidas += this.toNumber(item.amount);
@@ -1464,6 +1471,7 @@ export class DashboardService {
       type: FinancialTransactionType;
       category: string | null;
       description: string;
+      source?: string | null;
     }>,
     adSpends: Array<{ amount: Prisma.Decimal; source: string }>,
   ): PiePoint[] {
@@ -1476,6 +1484,7 @@ export class DashboardService {
 
     for (const item of transactions) {
       if (item.type !== FinancialTransactionType.INCOME) continue;
+      if (this.isSaleBackedIncomeTransaction(item)) continue;
       const key = item.category?.trim() || item.description?.trim() || 'Receita';
       totals.set(key, (totals.get(key) || 0) + this.toNumber(item.amount));
     }
@@ -1523,6 +1532,12 @@ export class DashboardService {
 
   private toNumber(value: Prisma.Decimal | number | null | undefined): number {
     return Number(value ?? 0);
+  }
+
+  private isSaleBackedIncomeTransaction(transaction: { type: FinancialTransactionType; source?: string | null }): boolean {
+    if (transaction.type !== FinancialTransactionType.INCOME) return false;
+    const source = String(transaction.source || '').trim().toLowerCase();
+    return source === 'mercadolivre' || source === 'mercado_livre' || source === 'mercado livre';
   }
 
   private jsonNumber(value: Prisma.JsonValue | null | undefined): number {

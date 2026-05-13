@@ -31,6 +31,7 @@ export class MercadoLivreSyncService {
   ) {}
 
   async syncAll(companyId: string, userId?: string): Promise<MercadoLivreSyncSummary> {
+    this.logger.log(JSON.stringify({ event: 'mercado_livre.sync.started', companyId }));
     const [products, orders, questions, reviews] = await Promise.all([
       this.syncProducts(companyId),
       this.syncOrders(companyId, userId),
@@ -44,6 +45,17 @@ export class MercadoLivreSyncService {
     });
 
     await this.refreshAnalytics(companyId);
+
+    this.logger.log(
+      JSON.stringify({
+        event: 'mercado_livre.sync.completed',
+        companyId,
+        products,
+        orders,
+        questions,
+        reviews,
+      }),
+    );
 
     return {
       products,
@@ -63,6 +75,13 @@ export class MercadoLivreSyncService {
     for (const item of items) {
       await this.upsertProduct(companyId, item);
     }
+    this.logger.log(
+      JSON.stringify({
+        event: 'mercado_livre.products.imported',
+        companyId,
+        count: items.length,
+      }),
+    );
     return items.length;
   }
 
@@ -85,17 +104,62 @@ export class MercadoLivreSyncService {
       },
     );
     const orders = asRecordArray(response.results);
+    let saleTransactionsUpserted = 0;
     for (const order of orders) {
       const id = asString(order.id);
-      if (id) await this.syncOrderById(companyId, id, userId);
+      if (id && (await this.syncOrderById(companyId, id, userId))) {
+        saleTransactionsUpserted += 1;
+      }
     }
+    this.logger.log(
+      JSON.stringify({
+        event: 'mercado_livre.orders.imported',
+        companyId,
+        count: orders.length,
+        saleTransactionsUpserted,
+      }),
+    );
     return orders.length;
   }
 
-  async syncOrderById(companyId: string, mlOrderId: string, userId?: string): Promise<void> {
+  async syncOrderById(companyId: string, mlOrderId: string, userId?: string): Promise<boolean> {
     const session = await this.authService.getValidAccessToken(companyId);
     const order = await this.api.getResource<JsonRecord>(session.accessToken, `/orders/${mlOrderId}`);
-    await this.upsertOrder(companyId, session.mlUserId, order, userId);
+    return this.upsertOrder(companyId, session.mlUserId, order, userId);
+  }
+
+  async syncShipmentById(companyId: string, mlShipmentId: string): Promise<void> {
+    const session = await this.authService.getValidAccessToken(companyId);
+    const shipment = await this.api.getResource<JsonRecord>(session.accessToken, `/shipments/${mlShipmentId}`);
+    const mlOrderId =
+      asString(shipment.order_id) ||
+      asString(asRecord(shipment.order)?.id);
+
+    if (mlOrderId) {
+      await this.syncOrderById(companyId, mlOrderId);
+    }
+
+    let orderId: string | null = null;
+    if (mlOrderId) {
+      const order = await this.prisma.mercadoLivreOrder.findUnique({
+        where: { mlOrderId },
+        select: { id: true },
+      });
+      orderId = order?.id || null;
+    }
+    if (!orderId) {
+      const existingShipment = await this.prisma.mercadoLivreShipment.findUnique({
+        where: { mlShipmentId },
+        select: { orderId: true },
+      });
+      orderId = existingShipment?.orderId || null;
+    }
+    if (!orderId) {
+      this.logger.warn(`Shipment Mercado Livre sem pedido local: ${mlShipmentId}`);
+      return;
+    }
+
+    await this.upsertShipmentRecord(companyId, orderId, mlShipmentId, shipment);
   }
 
   async syncQuestions(companyId: string): Promise<number> {
@@ -321,80 +385,103 @@ export class MercadoLivreSyncService {
     });
   }
 
-  private async upsertOrder(companyId: string, sellerId: string, order: JsonRecord, userId?: string) {
+  private async upsertOrder(companyId: string, sellerId: string, order: JsonRecord, userId?: string): Promise<boolean> {
     const mlOrderId = asString(order.id);
-    if (!mlOrderId) return;
+    if (!mlOrderId) return false;
 
     const buyer = asRecord(order.buyer);
     const dateCreated = asDate(order.date_created) || new Date();
     const dateClosed = asDate(order.date_closed);
     const totalAmount = asNumber(order.total_amount);
     const paidAmount = this.extractPaidAmount(order);
+    const revenueAmount = paidAmount && paidAmount > 0 ? paidAmount : totalAmount;
+    const status = asString(order.status) || 'unknown';
+    const shouldCreateRevenue = this.isRevenueOrder(order, status, revenueAmount);
     const resolvedUserId = userId || (await this.resolveUserId(companyId));
     const firstItem = asRecordArray(order.order_items)[0];
     const firstItemData = asRecord(firstItem?.item);
     const productName = asString(firstItemData?.title) || `Pedido ML ${mlOrderId}`;
+    const existingOrder = await this.prisma.mercadoLivreOrder.findUnique({
+      where: { mlOrderId },
+      select: { saleId: true, financialTransactionId: true },
+    });
 
-    const sale = await this.prisma.sale.upsert({
-      where: {
-        companyId_channel_externalId: {
+    let saleId = existingOrder?.saleId || null;
+    let financialTransactionId = existingOrder?.financialTransactionId || null;
+    const metadata = toInputJson({
+      mlOrderId,
+      status,
+      paidAmount,
+      externalSource: 'MERCADO_LIVRE',
+      provider: 'MERCADO_LIVRE',
+    });
+
+    if (shouldCreateRevenue) {
+      const sale = await this.prisma.sale.upsert({
+        where: {
+          companyId_channel_externalId: {
+            companyId,
+            channel: SaleChannel.mercadolivre,
+            externalId: mlOrderId,
+          },
+        },
+        update: {
+          amount: new Prisma.Decimal(revenueAmount),
+          productName,
+          category: 'Mercado Livre',
+          occurredAt: dateClosed || dateCreated,
+          metadataJson: metadata,
+        },
+        create: {
+          userId: resolvedUserId,
           companyId,
+          amount: new Prisma.Decimal(revenueAmount),
+          productName,
+          category: 'Mercado Livre',
           channel: SaleChannel.mercadolivre,
           externalId: mlOrderId,
+          occurredAt: dateClosed || dateCreated,
+          metadataJson: metadata,
         },
-      },
-      update: {
-        amount: new Prisma.Decimal(totalAmount),
-        productName,
-        category: 'Mercado Livre',
-        occurredAt: dateCreated,
-        metadataJson: toInputJson({ mlOrderId, status: order.status }),
-      },
-      create: {
-        userId: resolvedUserId,
-        companyId,
-        amount: new Prisma.Decimal(totalAmount),
-        productName,
-        category: 'Mercado Livre',
-        channel: SaleChannel.mercadolivre,
-        externalId: mlOrderId,
-        occurredAt: dateCreated,
-        metadataJson: toInputJson({ mlOrderId, status: order.status }),
-      },
-      select: { id: true },
-    });
+        select: { id: true },
+      });
+      saleId = sale.id;
 
-    const transaction = await this.prisma.financialTransaction.upsert({
-      where: {
-        companyId_source_externalId: {
+      const transaction = await this.prisma.financialTransaction.upsert({
+        where: {
+          companyId_source_externalId: {
+            companyId,
+            source: 'mercadolivre',
+            externalId: mlOrderId,
+          },
+        },
+        update: {
+          amount: new Prisma.Decimal(revenueAmount),
+          description: `Mercado Livre pedido ${mlOrderId}`,
+          category: 'Marketplace',
+          date: dateClosed || dateCreated,
+          occurredAt: dateClosed || dateCreated,
+          metadataJson: metadata,
+        },
+        create: {
           companyId,
+          userId: resolvedUserId,
+          type: FinancialTransactionType.INCOME,
+          amount: new Prisma.Decimal(revenueAmount),
+          description: `Mercado Livre pedido ${mlOrderId}`,
+          category: 'Marketplace',
           source: 'mercadolivre',
           externalId: mlOrderId,
+          date: dateClosed || dateCreated,
+          occurredAt: dateClosed || dateCreated,
+          metadataJson: metadata,
         },
-      },
-      update: {
-        amount: new Prisma.Decimal(totalAmount),
-        description: `Mercado Livre pedido ${mlOrderId}`,
-        category: 'Marketplace',
-        date: dateCreated,
-        occurredAt: dateCreated,
-        metadataJson: toInputJson({ mlOrderId, status: order.status }),
-      },
-      create: {
-        companyId,
-        userId: resolvedUserId,
-        type: FinancialTransactionType.INCOME,
-        amount: new Prisma.Decimal(totalAmount),
-        description: `Mercado Livre pedido ${mlOrderId}`,
-        category: 'Marketplace',
-        source: 'mercadolivre',
-        externalId: mlOrderId,
-        date: dateCreated,
-        occurredAt: dateCreated,
-        metadataJson: toInputJson({ mlOrderId, status: order.status }),
-      },
-      select: { id: true },
-    });
+        select: { id: true },
+      });
+      financialTransactionId = transaction.id;
+    } else {
+      await this.zeroRevenueRecords(saleId, financialTransactionId, metadata);
+    }
 
     const storedOrder = await this.prisma.mercadoLivreOrder.upsert({
       where: { mlOrderId },
@@ -402,14 +489,14 @@ export class MercadoLivreSyncService {
         companyId,
         sellerId,
         buyerId: asString(buyer?.id),
-        status: asString(order.status) || 'unknown',
+        status,
         currencyId: asString(order.currency_id),
         totalAmount: new Prisma.Decimal(totalAmount),
         paidAmount: paidAmount === null ? null : new Prisma.Decimal(paidAmount),
         dateCreated,
         dateClosed,
-        saleId: sale.id,
-        financialTransactionId: transaction.id,
+        saleId,
+        financialTransactionId,
         rawPayload: toInputJson(order),
       },
       create: {
@@ -417,14 +504,14 @@ export class MercadoLivreSyncService {
         mlOrderId,
         sellerId,
         buyerId: asString(buyer?.id),
-        status: asString(order.status) || 'unknown',
+        status,
         currencyId: asString(order.currency_id),
         totalAmount: new Prisma.Decimal(totalAmount),
         paidAmount: paidAmount === null ? null : new Prisma.Decimal(paidAmount),
         dateCreated,
         dateClosed,
-        saleId: sale.id,
-        financialTransactionId: transaction.id,
+        saleId,
+        financialTransactionId,
         rawPayload: toInputJson(order),
       },
       select: { id: true },
@@ -432,6 +519,7 @@ export class MercadoLivreSyncService {
 
     await this.upsertOrderItems(companyId, storedOrder.id, order);
     await this.upsertShipment(companyId, storedOrder.id, order);
+    return shouldCreateRevenue;
   }
 
   private async upsertOrderItems(companyId: string, orderId: string, order: JsonRecord) {
@@ -465,9 +553,19 @@ export class MercadoLivreSyncService {
 
   private async upsertShipment(companyId: string, orderId: string, order: JsonRecord) {
     const shipping = asRecord(order.shipping);
+    if (!shipping) return;
     const mlShipmentId = asString(shipping?.id);
     if (!mlShipmentId) return;
 
+    await this.upsertShipmentRecord(companyId, orderId, mlShipmentId, shipping);
+  }
+
+  private async upsertShipmentRecord(
+    companyId: string,
+    orderId: string,
+    mlShipmentId: string,
+    shipping: JsonRecord,
+  ) {
     await this.prisma.mercadoLivreShipment.upsert({
       where: { mlShipmentId },
       update: {
@@ -571,6 +669,52 @@ export class MercadoLivreSyncService {
     const payments = asRecordArray(order.payments);
     if (!payments.length) return null;
     return payments.reduce((total, payment) => total + asNumber(payment.total_paid_amount ?? payment.transaction_amount), 0);
+  }
+
+  private isRevenueOrder(order: JsonRecord, status: string, amount: number) {
+    if (amount <= 0) return false;
+    const normalizedStatus = status.trim().toLowerCase();
+    if (
+      [
+        'cancelled',
+        'canceled',
+        'refunded',
+        'charged_back',
+        'payment_required',
+        'payment_in_process',
+      ].includes(normalizedStatus)
+    ) {
+      return false;
+    }
+
+    const payments = asRecordArray(order.payments);
+    const approvedPayment = payments.some((payment) =>
+      ['approved', 'paid', 'accredited'].includes(
+        String(payment.status || payment.status_detail || '').trim().toLowerCase(),
+      ),
+    );
+    return approvedPayment || ['paid', 'confirmed', 'closed'].includes(normalizedStatus);
+  }
+
+  private async zeroRevenueRecords(
+    saleId: string | null,
+    financialTransactionId: string | null,
+    metadata: Prisma.InputJsonValue,
+  ) {
+    await Promise.all([
+      saleId
+        ? this.prisma.sale.update({
+            where: { id: saleId },
+            data: { amount: new Prisma.Decimal(0), metadataJson: metadata },
+          })
+        : Promise.resolve(),
+      financialTransactionId
+        ? this.prisma.financialTransaction.update({
+            where: { id: financialTransactionId },
+            data: { amount: new Prisma.Decimal(0), metadataJson: metadata },
+          })
+        : Promise.resolve(),
+    ]);
   }
 
   private async resolveUserId(companyId: string): Promise<string> {

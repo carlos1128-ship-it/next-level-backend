@@ -1,8 +1,9 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { IntegrationProvider, Prisma } from '@prisma/client';
 import { Request } from 'express';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PlanEntitlementsService } from '../billing/plan-entitlements.service';
 import { MercadoLivreApiService } from './mercado-livre-api.service';
 import { MercadoLivreCryptoService } from './mercado-livre-crypto.service';
 import { MercadoLivreOAuthState, MercadoLivreTokenResponse } from './mercado-livre.types';
@@ -10,11 +11,14 @@ import { asRecord, asString, toInputJson } from './mercado-livre-utils';
 
 @Injectable()
 export class MercadoLivreAuthService {
+  private readonly logger = new Logger(MercadoLivreAuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
     private readonly api: MercadoLivreApiService,
     private readonly cryptoService: MercadoLivreCryptoService,
+    private readonly planEntitlements: PlanEntitlementsService,
   ) {}
 
   async beginOAuth(input: {
@@ -24,6 +28,10 @@ export class MercadoLivreAuthService {
     req: Request;
   }) {
     await this.assertCompanyAccess(input.userId, input.companyId);
+    await this.planEntitlements.assertIntegrationAccessForCompany(
+      input.companyId,
+      IntegrationProvider.MERCADOLIVRE,
+    );
     const clientId = this.getClientId();
     const redirectUri = this.getRedirectUri(input.req);
     const state = this.encodeState({
@@ -52,6 +60,10 @@ export class MercadoLivreAuthService {
     }
 
     await this.assertCompanyAccess(state.userId, state.companyId);
+    await this.planEntitlements.assertIntegrationAccessForCompany(
+      state.companyId,
+      IntegrationProvider.MERCADOLIVRE,
+    );
     const token = await this.api.exchangeCode({
       clientId: this.getClientId(),
       clientSecret: this.getClientSecret(),
@@ -63,7 +75,12 @@ export class MercadoLivreAuthService {
     redirectUrl.searchParams.set('integration_provider', 'mercadolivre');
     redirectUrl.searchParams.set('integration_status', 'connected');
     redirectUrl.searchParams.set('integration_message', 'Mercado Livre conectado com sucesso.');
-    return { redirectUrl: redirectUrl.toString(), connected: true };
+    return {
+      redirectUrl: redirectUrl.toString(),
+      connected: true,
+      companyId: state.companyId,
+      userId: state.userId,
+    };
   }
 
   async getValidAccessToken(companyId: string) {
@@ -242,6 +259,14 @@ export class MercadoLivreAuthService {
         },
       }),
     ]);
+    this.logger.log(
+      JSON.stringify({
+        event: 'mercado_livre.oauth.connected',
+        companyId,
+        userId: userId || null,
+        mlUserId,
+      }),
+    );
   }
 
   private async fetchNickname(accessToken: string, mlUserId: string): Promise<string | null> {

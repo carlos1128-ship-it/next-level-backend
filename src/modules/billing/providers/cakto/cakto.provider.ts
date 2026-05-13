@@ -198,6 +198,9 @@ export class CaktoProvider implements PaymentProviderAdapter {
       url.searchParams.set('utm_source', 'next_level');
       url.searchParams.set('utm_medium', 'billing');
       url.searchParams.set('utm_campaign', `${input.planKey}_${input.billingCycle}`);
+      url.searchParams.set('success_url', `${this.frontendUrl}/billing/success`);
+      url.searchParams.set('return_url', `${this.frontendUrl}/billing/success`);
+      url.searchParams.set('cancel_url', `${this.frontendUrl}/billing/cancel`);
       if (input.userEmail) {
         url.searchParams.set('email', input.userEmail);
       }
@@ -222,6 +225,14 @@ export class CaktoProvider implements PaymentProviderAdapter {
     return (
       this.configService.get<string>('CAKTO_API_BASE_URL') ||
       'https://api.cakto.com.br'
+    ).replace(/\/+$/, '');
+  }
+
+  private get frontendUrl() {
+    return (
+      this.configService.get<string>('FRONTEND_URL') ||
+      this.configService.get<string>('FRONTEND_APP_URL') ||
+      'http://localhost:5173'
     ).replace(/\/+$/, '');
   }
 }

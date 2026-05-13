@@ -4,14 +4,12 @@ import { Request, Response } from 'express';
 import { Public } from '../../common/decorators/public.decorator';
 import { WebhookIngestService } from '../webhooks/webhook-ingest.service';
 import { MercadoLivreCryptoService } from './mercado-livre-crypto.service';
-import { MercadoLivreWebhookService } from './mercado-livre-webhook.service';
 import { asRecord, asString } from './mercado-livre-utils';
 
 @Controller('webhook/ml')
 export class MercadoLivreWebhookController {
   constructor(
     private readonly webhookIngestService: WebhookIngestService,
-    private readonly webhookService: MercadoLivreWebhookService,
     private readonly cryptoService: MercadoLivreCryptoService,
   ) {}
 
@@ -41,10 +39,6 @@ export class MercadoLivreWebhookController {
       externalId,
       null,
     );
-
-    setImmediate(() => {
-      this.webhookService.processEvent(event.id, companyId).catch(() => undefined);
-    });
 
     return res.status(200).json({ ok: true, eventId: event.id, companyId });
   }
