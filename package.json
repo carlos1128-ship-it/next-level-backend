@@ -23,6 +23,7 @@
     "test:dashboard-metrics": "tsx scripts/dashboard-metrics-isolation-check.ts",
     "test:sale-ai-attribution": "tsx scripts/sale-ai-attribution-check.ts",
     "test:whatsapp-isolation": "tsx scripts/whatsapp-tenant-isolation-check.ts",
+    "admin:promote-pro-business": "tsx scripts/grant-admin-subscription.ts",
     "postinstall": "prisma generate",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
