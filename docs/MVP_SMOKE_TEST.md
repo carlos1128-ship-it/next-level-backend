@@ -34,6 +34,14 @@
 23. Confirmar Premium liberado no Mercado Livre.
 24. Confirmar Pro Business liberado no Mercado Livre.
 25. Fazer logout/login novamente e confirmar que usuario pago nao volta para cobranca.
+26. Enviar mensagem WhatsApp de lead: `Meu nome e Ana, meu telefone e 11999999999 e quero orcamento`.
+27. Confirmar cliente/lead criado sem duplicar no reenvio da mesma mensagem.
+28. Enviar mensagem WhatsApp de venda: `Pagamento confirmado do pedido 1234 de R$ 197,00`.
+29. Confirmar `Sale`, `FinancialTransaction`, Dashboard e Financeiro atualizados uma unica vez.
+30. Enviar mensagem WhatsApp de agenda: `Quero agendar consulta amanha as 14h, meu nome e Ana e meu telefone e 11999999999`.
+31. Confirmar `AppointmentRequest` criado/atualizado.
+32. Enviar DM Instagram de lead/venda em ambiente conectado e validar cliente, lead, venda e financeiro quando houver valor confirmado.
+33. Perguntar no chat IA: `Qual o principal risco agora?` e confirmar que a resposta usa dados reais e nao contem asteriscos.
 
 ## Validacoes extras
 
@@ -42,3 +50,5 @@
 3. Confirmar que `/questions` redireciona para dashboard e nao aparece no menu.
 4. Confirmar que Dashboard mostra filtros: Hoje, Ontem, 7 dias, Mes, Ano.
 5. Exportar relatorio no Dashboard e confirmar PDF visual, nao CSV cru.
+6. Confirmar que a camada inteligente mostra estado vazio premium quando nao ha dados suficientes.
+7. Confirmar que nao existem labels visiveis como `Fase A`, `Dados completos` ou `dados reais do backend`.

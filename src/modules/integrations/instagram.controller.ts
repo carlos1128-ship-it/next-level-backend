@@ -8,6 +8,7 @@ import {
   Query,
   Req,
   Res,
+  UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
@@ -119,7 +120,8 @@ export class InstagramController {
 
   @Public()
   @Get('debug/oauth-url')
-  debugOAuthUrl() {
+  debugOAuthUrl(@Headers('authorization') authorization: string | undefined) {
+    this.assertDebugAllowed(authorization);
     return this.instagramService.getOAuthDebugInfo();
   }
 
@@ -129,6 +131,7 @@ export class InstagramController {
     @Body('metaEmbeddedUrl') metaEmbeddedUrl: string | undefined,
     @Headers('authorization') authorization: string | undefined,
   ) {
+    this.assertDebugAllowed(authorization);
     return this.instagramService.compareOAuthUrl(
       metaEmbeddedUrl,
       authorization,
@@ -146,5 +149,18 @@ export class InstagramController {
     redirectUrl.searchParams.set('integration_status', status);
     redirectUrl.searchParams.set('integration_message', message);
     return redirectUrl.toString();
+  }
+
+  private assertDebugAllowed(authorization?: string) {
+    if (process.env.NODE_ENV !== 'production') {
+      return;
+    }
+    const expected =
+      process.env.INTERNAL_AUTOMATION_TOKEN?.trim() ||
+      process.env.WEBHOOK_SECRET?.trim();
+    const provided = authorization?.replace(/^Bearer\s+/i, '').trim();
+    if (!expected || provided !== expected) {
+      throw new UnauthorizedException('Diagnostico protegido em producao');
+    }
   }
 }

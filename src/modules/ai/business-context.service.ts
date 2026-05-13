@@ -65,7 +65,7 @@ export class BusinessContextService {
       options.includeWhatsApp === false
         ? Promise.resolve([])
         : this.prisma.customerSignal.findMany({
-            where: { companyId, source: { in: ['whatsapp', 'whatsapp_agent'] } },
+            where: { companyId, source: { in: ['whatsapp', 'whatsapp_agent', 'instagram', 'instagram_agent'] } },
             orderBy: { createdAt: 'desc' },
             take: 10,
           }),

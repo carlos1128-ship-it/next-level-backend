@@ -17,6 +17,10 @@ export class AttendantDataExtractionService {
       preferredContactMethod: this.extractPreferredContact(compact),
       urgency: this.extractUrgency(compact),
       budget: this.extractBudget(compact),
+      amount: this.extractAmount(compact),
+      productName: this.extractProductName(compact),
+      quantity: this.extractQuantity(compact),
+      externalOrderId: this.extractOrderId(compact),
       notes: compact || null,
     };
   }
@@ -32,6 +36,10 @@ export class AttendantDataExtractionService {
     }
     if (this.requiresInterest(intent) && !fields.requestedService && !fields.objective) {
       missing.push('requestedService');
+    }
+
+    if (['SALE_COMPLETED', 'SUBSCRIPTION_CLOSED'].includes(intent) && !fields.amount) {
+      missing.push('amount');
     }
 
     if (['SCHEDULE_REQUEST', 'MEETING_REQUEST'].includes(intent)) {
@@ -247,8 +255,41 @@ export class AttendantDataExtractionService {
       'SERVICE_REQUEST',
       'QUOTE_REQUEST',
       'PRODUCT_INTEREST',
+      'ORDER_PLACED',
+      'PAYMENT_INTENTION',
       'SERVICE_INFORMATION',
+      'UPSELL_RENEWAL_OPPORTUNITY',
     ].includes(intent);
+  }
+
+  private extractAmount(text: string) {
+    const currency = text.match(/r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+(?:[.,]\d{2})?)/i);
+    const contextual = currency || text.match(/\b(?:valor|total|paguei|pagamento|fechou por|por)\s+(?:de\s+)?(\d{2,}(?:[.,]\d{2})?)\b/i);
+    const raw = contextual?.[1];
+    if (!raw) {
+      return null;
+    }
+    const normalized = raw.includes(',')
+      ? raw.replace(/\./g, '').replace(',', '.')
+      : raw;
+    const amount = Number(normalized);
+    return Number.isFinite(amount) && amount > 0 ? amount : null;
+  }
+
+  private extractProductName(text: string) {
+    const match = text.match(/\b(?:produto|pedido|comprar|comprei|vou ficar com|assinatura|plano|servico|serviço)\s+(?:de|do|da|o|a)?\s*([^,.!?]{3,80})/i);
+    return match?.[1]?.trim() || this.extractService(text);
+  }
+
+  private extractQuantity(text: string) {
+    const match = text.match(/\b(\d{1,3})\s*(?:unidades|unidade|un|x)\b/i);
+    const value = match ? Number(match[1]) : null;
+    return value && Number.isFinite(value) && value > 0 ? value : null;
+  }
+
+  private extractOrderId(text: string) {
+    const match = text.match(/\b(?:pedido|order|id)\s*(?:n[ºo.]*)?\s*#?\s*([A-Z0-9-]{4,30})\b/i);
+    return match?.[1]?.trim() || null;
   }
 
   private addDays(date: Date, days: number) {

@@ -270,7 +270,14 @@ export class AnalyticsEngineService {
   private isSaleBackedIncomeTransaction(transaction: { type: FinancialTransactionType; source?: string | null }) {
     if (transaction.type !== FinancialTransactionType.INCOME) return false;
     const source = String(transaction.source || '').trim().toLowerCase();
-    return source === 'mercadolivre' || source === 'mercado_livre' || source === 'mercado livre';
+    return [
+      'mercadolivre',
+      'mercado_livre',
+      'mercado livre',
+      'whatsapp',
+      'instagram',
+      'intelligent_import',
+    ].includes(source);
   }
 
   private round(value: number) {

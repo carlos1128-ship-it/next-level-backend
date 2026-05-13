@@ -37,6 +37,9 @@ export class RagService {
       mercadoLivreMonthRevenue,
       mercadoLivrePendingQuestions,
       mercadoLivreOrderItems,
+      recentBusinessEvents,
+      recentCustomerSignals,
+      businessMemories,
     ] = await Promise.all([
       this.prisma.company.findUnique({
         where: { id: normalizedCompanyId },
@@ -115,6 +118,21 @@ export class RagService {
         select: { title: true, quantity: true, unitPrice: true },
         take: 500,
       }),
+      this.prisma.businessEvent.findMany({
+        where: { companyId: normalizedCompanyId },
+        orderBy: { occurredAt: 'desc' },
+        take: 10,
+      }),
+      this.prisma.customerSignal.findMany({
+        where: { companyId: normalizedCompanyId },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+      }),
+      this.prisma.businessMemory.findMany({
+        where: { companyId: normalizedCompanyId },
+        orderBy: { updatedAt: 'desc' },
+        take: 10,
+      }),
     ]);
 
     const parts: string[] = [];
@@ -176,6 +194,25 @@ export class RagService {
     for (const i of insights) {
       parts.push(`- ${i.title}: ${i.description}`);
       if (i.value != null) parts.push(`  Valor: ${i.value}`);
+    }
+
+    parts.push('\n## Sinais reais de atendimento e memoria');
+    if (recentBusinessEvents.length || recentCustomerSignals.length || businessMemories.length) {
+      recentBusinessEvents.forEach((event) => {
+        parts.push(
+          `- Evento: ${event.title} | origem ${event.source} | ${event.description || 'sem descricao'} | ${event.occurredAt.toISOString()}`,
+        );
+      });
+      recentCustomerSignals.forEach((signal) => {
+        parts.push(
+          `- Sinal de cliente: ${signal.signalType} | origem ${signal.source} | ${signal.description}`,
+        );
+      });
+      businessMemories.forEach((memory) => {
+        parts.push(`- Memoria: ${memory.category} | ${memory.value}`);
+      });
+    } else {
+      parts.push('Nenhum sinal de atendimento ou memoria empresarial registrado ainda.');
     }
 
     parts.push('\n## Importacoes inteligentes confirmadas');

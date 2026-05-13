@@ -1923,6 +1923,9 @@ export class WhatsappConnectionsService {
       assistantInstruction: action.assistantInstruction || action.nextAssistantInstruction,
       customerId: action.customerId || null,
       leadId: action.leadId || null,
+      saleId: action.saleId || null,
+      financialTransactionId: action.financialTransactionId || null,
+      appointmentRequestId: action.appointmentRequestId || null,
       businessActionRequestId: action.businessActionRequestId || null,
     };
   }
@@ -1940,6 +1943,7 @@ export class WhatsappConnectionsService {
       base,
       'Contexto estruturado do Atendente IA para esta mensagem WhatsApp:',
       action.promptContext,
+      'Formato obrigatorio: a resposta final ao cliente nao deve conter asteriscos ou negrito markdown.',
       'Use esse contexto sem repetir perguntas ja respondidas. Se a solicitacao foi salva, diga apenas que ficou registrada e pendente de confirmacao da equipe.',
     ]
       .filter(Boolean)

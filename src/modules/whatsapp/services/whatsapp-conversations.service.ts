@@ -406,6 +406,9 @@ export class WhatsappConversationsService {
       shouldFinalize: Boolean(action.shouldFinalize),
       nextAssistantInstruction: action.nextAssistantInstruction,
       customerId: action.customerId || null,
+      saleId: action.saleId || null,
+      financialTransactionId: action.financialTransactionId || null,
+      appointmentRequestId: action.appointmentRequestId || null,
       businessActionRequestId: action.businessActionRequestId || null,
     };
   }
@@ -455,7 +458,7 @@ export class WhatsappConversationsService {
       });
 
       try {
-        await this.prisma.message.create({
+        const createdMessage = await this.prisma.message.create({
           data: {
             companyId: connection.companyId,
             conversationId: conversation.id,
@@ -473,7 +476,19 @@ export class WhatsappConversationsService {
             createdAt: timestamp,
             updatedAt: timestamp,
           },
+          select: { id: true, externalMessageId: true },
         });
+        if (!parsed.fromMe) {
+          await this.processAutomationActionLayer({
+            companyId: connection.companyId,
+            conversationId: conversation.id,
+            remoteJid: parsed.remoteJid,
+            remoteNumber: parsed.remoteNumber,
+            text: parsed.content,
+            contactName: parsed.pushName,
+            sourceMessageId: createdMessage.externalMessageId || createdMessage.id,
+          });
+        }
       } catch (error) {
         if (
           error instanceof Prisma.PrismaClientKnownRequestError &&

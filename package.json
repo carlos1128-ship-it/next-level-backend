@@ -22,6 +22,7 @@
     "test:dashboard-layout": "tsx scripts/dashboard-layout-check.ts",
     "test:dashboard-metrics": "tsx scripts/dashboard-metrics-isolation-check.ts",
     "test:sale-ai-attribution": "tsx scripts/sale-ai-attribution-check.ts",
+    "test:social-automation": "tsx scripts/social-automation-check.ts",
     "test:whatsapp-isolation": "tsx scripts/whatsapp-tenant-isolation-check.ts",
     "admin:promote-pro-business": "tsx scripts/grant-admin-subscription.ts",
     "admin:pro-business": "ts-node scripts/promote-admin-pro-business.ts",

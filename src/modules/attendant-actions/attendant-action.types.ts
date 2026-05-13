@@ -7,6 +7,13 @@ export type AttendantIntent =
   | 'SERVICE_REQUEST'
   | 'QUOTE_REQUEST'
   | 'PRODUCT_INTEREST'
+  | 'ORDER_PLACED'
+  | 'SALE_COMPLETED'
+  | 'SUBSCRIPTION_CLOSED'
+  | 'PAYMENT_INTENTION'
+  | 'SUPPORT_REQUEST'
+  | 'CANCELLATION_REQUEST'
+  | 'UPSELL_RENEWAL_OPPORTUNITY'
   | 'SERVICE_INFORMATION'
   | 'CUSTOMER_DATA_CAPTURE'
   | 'HUMAN_HANDOFF'
@@ -30,6 +37,10 @@ export type ExtractedAttendantFields = {
   preferredContactMethod?: string | null;
   urgency?: string | null;
   budget?: string | null;
+  amount?: number | null;
+  productName?: string | null;
+  quantity?: number | null;
+  externalOrderId?: string | null;
   notes?: string | null;
 };
 
@@ -57,6 +68,8 @@ export type AttendantActionAnalysis = {
   customerId?: string | null;
   leadId?: string | null;
   appointmentRequestId?: string | null;
+  saleId?: string | null;
+  financialTransactionId?: string | null;
   businessActionRequestId?: string | null;
   actionCreated: boolean;
   draftSaved: boolean;
@@ -64,6 +77,9 @@ export type AttendantActionAnalysis = {
   customerCreated?: boolean;
   customerUpdated?: boolean;
   leadCreatedOrUpdated?: boolean;
+  saleCreatedOrUpdated?: boolean;
+  financialTransactionCreatedOrUpdated?: boolean;
+  appointmentRequestCreatedOrUpdated?: boolean;
   businessActionRequestCreatedOrUpdated?: boolean;
   businessActionRequestCreated?: boolean;
   appearsInCustomers?: boolean;

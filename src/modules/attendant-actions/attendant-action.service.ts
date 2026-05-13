@@ -1,5 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import {
+  FinancialTransactionType,
+  Prisma,
+  SaleAIAttributionSource,
+  SaleChannel,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   AttendantActionAnalysis,
@@ -18,6 +23,13 @@ const LEAD_INTENTS: AttendantIntent[] = [
   'SERVICE_REQUEST',
   'QUOTE_REQUEST',
   'PRODUCT_INTEREST',
+  'ORDER_PLACED',
+  'SALE_COMPLETED',
+  'SUBSCRIPTION_CLOSED',
+  'PAYMENT_INTENTION',
+  'SUPPORT_REQUEST',
+  'CANCELLATION_REQUEST',
+  'UPSELL_RENEWAL_OPPORTUNITY',
   'CUSTOMER_DATA_CAPTURE',
   'SERVICE_INFORMATION',
   'HUMAN_HANDOFF',
@@ -97,7 +109,7 @@ export class AttendantActionService {
     const actionStatus = this.resolveActionStatus(effectiveIntent, missingFields);
     const companyContext = await this.contextService.buildCompanyActionContext(input.companyId);
     const leadIntent = this.isLeadIntent(effectiveIntent);
-    const shouldCreateCustomer = leadIntent && this.hasCustomerMinimum(extractedFields);
+    const shouldCreateCustomer = leadIntent && this.hasCustomerMinimum(input, extractedFields);
     const shouldCreateActionRequest =
       shouldCreateCustomer && this.hasActionMinimum(effectiveIntent, extractedFields);
     let appearsInCustomers = false;
@@ -216,10 +228,41 @@ export class AttendantActionService {
       }
     }
 
+    const appointmentRequest = await this.maybeUpsertAppointmentRequest({
+      input,
+      intent: effectiveIntent,
+      status: actionStatus,
+      fields: extractedFields,
+      leadId: lead?.id || null,
+    });
+
+    const commercialRecord = await this.maybeUpsertCommercialRecord({
+      input,
+      intent: effectiveIntent,
+      fields: extractedFields,
+      customerId: customer?.id || null,
+      leadId: lead?.id || null,
+    });
+
+    await this.persistActionSignals({
+      input,
+      intent: effectiveIntent,
+      status: actionStatus,
+      fields: extractedFields,
+      customerId: customer?.id || null,
+      leadId: lead?.id || null,
+      appointmentRequestId: appointmentRequest?.id || null,
+      saleId: commercialRecord?.saleId || null,
+      financialTransactionId: commercialRecord?.financialTransactionId || null,
+    });
+
     const actionCreated = Boolean(
       customer?.id &&
         appearsInCustomers &&
-        (shouldCreateActionRequest || effectiveIntent === 'CUSTOMER_DATA_CAPTURE'),
+        (shouldCreateActionRequest ||
+          effectiveIntent === 'CUSTOMER_DATA_CAPTURE' ||
+          appointmentRequest?.id ||
+          commercialRecord?.saleId),
     );
 
     this.logger.log(
@@ -233,6 +276,9 @@ export class AttendantActionService {
         customerCreatedOrUpdated: Boolean(customer?.id),
         leadCreatedOrUpdated: Boolean(lead?.id),
         businessActionRequestId: request?.id || null,
+        appointmentRequestId: appointmentRequest?.id || null,
+        saleId: commercialRecord?.saleId || null,
+        financialTransactionId: commercialRecord?.financialTransactionId || null,
         appearsInCustomers,
         registrationClaimAllowed: actionCreated,
         missingFields,
@@ -268,10 +314,18 @@ export class AttendantActionService {
       customerId: customer?.id || null,
       leadId: lead?.id || null,
       businessActionRequestId: request?.id || null,
+      appointmentRequestId: appointmentRequest?.id || null,
+      saleId: commercialRecord?.saleId || null,
+      financialTransactionId: commercialRecord?.financialTransactionId || null,
       customerCreatedOrUpdated: Boolean(customer?.id),
       customerCreated: customer?.operation === 'created',
       customerUpdated: customer?.operation === 'updated',
       leadCreatedOrUpdated: Boolean(lead?.id),
+      saleCreatedOrUpdated: Boolean(commercialRecord?.saleId),
+      financialTransactionCreatedOrUpdated: Boolean(
+        commercialRecord?.financialTransactionId,
+      ),
+      appointmentRequestCreatedOrUpdated: Boolean(appointmentRequest?.id),
       businessActionRequestCreatedOrUpdated: Boolean(request?.id),
       businessActionRequestCreated: request?.operation === 'created',
       appearsInCustomers,
@@ -507,6 +561,370 @@ export class AttendantActionService {
     return { id: created.id, operation: 'created' as const };
   }
 
+  private async maybeUpsertAppointmentRequest(input: {
+    input: AttendantActionInput;
+    intent: AttendantIntent;
+    status: AttendantActionStatus;
+    fields: ExtractedAttendantFields;
+    leadId?: string | null;
+  }) {
+    if (!['SCHEDULE_REQUEST', 'MEETING_REQUEST'].includes(input.intent)) {
+      return null;
+    }
+    if (!input.input.conversationId) {
+      return null;
+    }
+
+    const payload = {
+      leadId: input.leadId || undefined,
+      channel: input.input.channel,
+      provider: input.input.provider,
+      customerExternalId: input.input.customerExternalId,
+      customerName: input.fields.customerName || undefined,
+      phone: input.fields.phone || undefined,
+      email: input.fields.email || undefined,
+      intent: input.intent,
+      status: input.status,
+      requestedService:
+        input.fields.requestedService || input.fields.objective || undefined,
+      requestedDate: this.parseDate(input.fields.desiredDate) || undefined,
+      requestedTime: input.fields.desiredTime || undefined,
+      notes: this.buildOwnerNote(input.input, input.fields),
+      sourceMessageId: input.input.sourceMessageId || undefined,
+      metadata: this.toJson(
+        this.buildMetadata(input.input, input.intent, input.fields),
+      ),
+    };
+
+    const existing = await this.prisma.appointmentRequest.findFirst({
+      where: {
+        companyId: input.input.companyId,
+        conversationId: input.input.conversationId,
+        OR: [
+          ...(input.input.sourceMessageId
+            ? [{ sourceMessageId: input.input.sourceMessageId }]
+            : []),
+          {
+            customerExternalId: input.input.customerExternalId,
+            intent: input.intent,
+            requestedDate: this.parseDate(input.fields.desiredDate) || undefined,
+            requestedTime: input.fields.desiredTime || undefined,
+          },
+        ],
+      },
+      select: { id: true },
+    });
+
+    if (existing) {
+      const updated = await this.prisma.appointmentRequest.update({
+        where: { id: existing.id },
+        data: payload,
+        select: { id: true },
+      });
+      return { id: updated.id, operation: 'updated' as const };
+    }
+
+    const created = await this.prisma.appointmentRequest.create({
+      data: {
+        companyId: input.input.companyId,
+        conversationId: input.input.conversationId,
+        ...payload,
+        leadId: input.leadId || null,
+        customerName: input.fields.customerName || null,
+        phone: input.fields.phone || null,
+        email: input.fields.email || null,
+        requestedService:
+          input.fields.requestedService || input.fields.objective || null,
+        requestedDate: this.parseDate(input.fields.desiredDate),
+        requestedTime: input.fields.desiredTime || null,
+        sourceMessageId: input.input.sourceMessageId || null,
+      },
+      select: { id: true },
+    });
+    return { id: created.id, operation: 'created' as const };
+  }
+
+  private async maybeUpsertCommercialRecord(input: {
+    input: AttendantActionInput;
+    intent: AttendantIntent;
+    fields: ExtractedAttendantFields;
+    customerId?: string | null;
+    leadId?: string | null;
+  }) {
+    if (!['SALE_COMPLETED', 'SUBSCRIPTION_CLOSED'].includes(input.intent)) {
+      return null;
+    }
+    const amount = input.fields.amount || 0;
+    if (!amount || amount <= 0) {
+      return null;
+    }
+
+    const externalId = this.buildExternalEventId(input.input, input.intent, input.fields);
+    const occurredAt = new Date();
+    const productName =
+      input.fields.productName ||
+      input.fields.requestedService ||
+      input.fields.objective ||
+      (input.intent === 'SUBSCRIPTION_CLOSED' ? 'Assinatura' : 'Venda via atendimento');
+    const source = input.input.channel === 'instagram' ? 'instagram' : 'whatsapp';
+    const sale = await this.prisma.sale.upsert({
+      where: {
+        companyId_channel_externalId: {
+          companyId: input.input.companyId,
+          channel: SaleChannel.meta,
+          externalId,
+        },
+      },
+      update: {
+        amount: new Prisma.Decimal(amount),
+        productName,
+        category: source.toUpperCase(),
+        metadataJson: this.toJson({
+          source,
+          provider: input.input.provider,
+          intent: input.intent,
+          customerId: input.customerId || null,
+          leadId: input.leadId || null,
+          fields: input.fields,
+        }),
+        occurredAt,
+      },
+      create: {
+        companyId: input.input.companyId,
+        amount: new Prisma.Decimal(amount),
+        productName,
+        category: source.toUpperCase(),
+        channel: SaleChannel.meta,
+        externalId,
+        metadataJson: this.toJson({
+          source,
+          provider: input.input.provider,
+          intent: input.intent,
+          customerId: input.customerId || null,
+          leadId: input.leadId || null,
+          fields: input.fields,
+        }),
+        occurredAt,
+      },
+      select: { id: true },
+    });
+
+    const transaction = await this.prisma.financialTransaction.upsert({
+      where: {
+        companyId_source_externalId: {
+          companyId: input.input.companyId,
+          source,
+          externalId,
+        },
+      },
+      update: {
+        amount: new Prisma.Decimal(amount),
+        description: `Receita ${source}: ${productName}`,
+        category: source.toUpperCase(),
+        metadataJson: this.toJson({
+          saleId: sale.id,
+          intent: input.intent,
+          customerId: input.customerId || null,
+          leadId: input.leadId || null,
+          fields: input.fields,
+        }),
+        date: occurredAt,
+        occurredAt,
+      },
+      create: {
+        companyId: input.input.companyId,
+        type: FinancialTransactionType.INCOME,
+        amount: new Prisma.Decimal(amount),
+        description: `Receita ${source}: ${productName}`,
+        category: source.toUpperCase(),
+        source,
+        externalId,
+        metadataJson: this.toJson({
+          saleId: sale.id,
+          intent: input.intent,
+          customerId: input.customerId || null,
+          leadId: input.leadId || null,
+          fields: input.fields,
+        }),
+        date: occurredAt,
+        occurredAt,
+      },
+      select: { id: true },
+    });
+
+    await this.prisma.saleAIAttribution.upsert({
+      where: { saleId: sale.id },
+      update: {
+        companyId: input.input.companyId,
+        conversationId: input.input.conversationId || undefined,
+        leadId: input.leadId || undefined,
+        source:
+          source === 'instagram'
+            ? SaleAIAttributionSource.INSTAGRAM_AGENT
+            : SaleAIAttributionSource.WHATSAPP_AGENT,
+        attributedRevenue: new Prisma.Decimal(amount),
+        confidence: 0.9,
+        metadataJson: this.toJson({
+          source,
+          provider: input.input.provider,
+          sourceMessageId: input.input.sourceMessageId || null,
+          intent: input.intent,
+        }),
+        occurredAt,
+      },
+      create: {
+        companyId: input.input.companyId,
+        saleId: sale.id,
+        conversationId: input.input.conversationId || null,
+        leadId: input.leadId || null,
+        source:
+          source === 'instagram'
+            ? SaleAIAttributionSource.INSTAGRAM_AGENT
+            : SaleAIAttributionSource.WHATSAPP_AGENT,
+        attributedRevenue: new Prisma.Decimal(amount),
+        confidence: 0.9,
+        metadataJson: this.toJson({
+          source,
+          provider: input.input.provider,
+          sourceMessageId: input.input.sourceMessageId || null,
+          intent: input.intent,
+        }),
+        occurredAt,
+      },
+    });
+
+    return { saleId: sale.id, financialTransactionId: transaction.id };
+  }
+
+  private async persistActionSignals(input: {
+    input: AttendantActionInput;
+    intent: AttendantIntent;
+    status: AttendantActionStatus;
+    fields: ExtractedAttendantFields;
+    customerId?: string | null;
+    leadId?: string | null;
+    appointmentRequestId?: string | null;
+    saleId?: string | null;
+    financialTransactionId?: string | null;
+  }) {
+    const source = input.input.channel === 'instagram' ? 'instagram_agent' : 'whatsapp_agent';
+    const description = this.describeSignal(input.intent, input.fields);
+    const metadata = this.toJson({
+      channel: input.input.channel,
+      provider: input.input.provider,
+      status: input.status,
+      sourceMessageId: input.input.sourceMessageId || null,
+      customerId: input.customerId || null,
+      leadId: input.leadId || null,
+      appointmentRequestId: input.appointmentRequestId || null,
+      saleId: input.saleId || null,
+      financialTransactionId: input.financialTransactionId || null,
+      fields: input.fields,
+    });
+
+    if (input.customerId || input.leadId || input.saleId || input.appointmentRequestId) {
+      await this.prisma.customerSignal.create({
+        data: {
+          companyId: input.input.companyId,
+          customerId: input.customerId || null,
+          source,
+          signalType: input.intent,
+          description,
+          metadataJson: metadata,
+        },
+      });
+    }
+
+    if (input.saleId || input.appointmentRequestId || input.intent === 'HUMAN_HANDOFF') {
+      await this.prisma.businessEvent.create({
+        data: {
+          companyId: input.input.companyId,
+          source,
+          type: input.intent,
+          title: this.eventTitle(input.intent),
+          description,
+          metadataJson: metadata,
+          occurredAt: new Date(),
+        },
+      });
+    }
+
+    await this.prisma.businessMemory.upsert({
+      where: {
+        companyId_key: {
+          companyId: input.input.companyId,
+          key: `social:${input.input.channel}:${input.input.sourceMessageId || input.input.conversationId || input.intent}`,
+        },
+      },
+      update: {
+        value: description,
+        category: 'social_automation',
+        confidence: input.saleId || input.appointmentRequestId ? 0.9 : 0.7,
+        metadataJson: metadata,
+      },
+      create: {
+        companyId: input.input.companyId,
+        key: `social:${input.input.channel}:${input.input.sourceMessageId || input.input.conversationId || input.intent}`,
+        value: description,
+        category: 'social_automation',
+        confidence: input.saleId || input.appointmentRequestId ? 0.9 : 0.7,
+        metadataJson: metadata,
+      },
+    });
+  }
+
+  private buildExternalEventId(
+    input: AttendantActionInput,
+    intent: AttendantIntent,
+    fields: ExtractedAttendantFields,
+  ) {
+    const explicit = fields.externalOrderId || input.sourceMessageId;
+    if (explicit) {
+      return `${input.channel}:${explicit}`;
+    }
+    const fingerprint = [
+      input.conversationId || input.customerExternalId,
+      intent,
+      fields.amount || 0,
+      fields.productName || fields.requestedService || fields.objective || 'sem-produto',
+    ]
+      .join(':')
+      .toLowerCase()
+      .replace(/[^a-z0-9:._-]+/g, '-')
+      .slice(0, 180);
+    return `${input.channel}:${fingerprint}`;
+  }
+
+  private describeSignal(intent: AttendantIntent, fields: ExtractedAttendantFields) {
+    const product =
+      fields.productName || fields.requestedService || fields.objective || 'interesse nao especificado';
+    const amount = fields.amount ? ` Valor: R$ ${fields.amount.toFixed(2)}.` : '';
+    const schedule = [fields.desiredDate, fields.desiredTime].filter(Boolean).join(' as ');
+    const scheduleText = schedule ? ` Agenda solicitada: ${schedule}.` : '';
+    return `${this.eventTitle(intent)} detectado em atendimento. Item: ${product}.${amount}${scheduleText}`.trim();
+  }
+
+  private eventTitle(intent: AttendantIntent) {
+    const titles: Partial<Record<AttendantIntent, string>> = {
+      SALE_COMPLETED: 'Venda concluida',
+      SUBSCRIPTION_CLOSED: 'Assinatura fechada',
+      ORDER_PLACED: 'Pedido solicitado',
+      PAYMENT_INTENTION: 'Intencao de pagamento',
+      SCHEDULE_REQUEST: 'Agendamento solicitado',
+      MEETING_REQUEST: 'Reuniao solicitada',
+      SUPPORT_REQUEST: 'Suporte solicitado',
+      HUMAN_HANDOFF: 'Atendimento humano solicitado',
+      CANCELLATION_REQUEST: 'Cancelamento solicitado',
+      UPSELL_RENEWAL_OPPORTUNITY: 'Oportunidade de upsell ou renovacao',
+      PRODUCT_INTEREST: 'Interesse comercial',
+      QUOTE_REQUEST: 'Orcamento solicitado',
+      SERVICE_REQUEST: 'Servico solicitado',
+      CUSTOMER_DATA_CAPTURE: 'Dados de cliente capturados',
+      SERVICE_INFORMATION: 'Pedido de informacao',
+    };
+    return titles[intent] || 'Sinal de atendimento';
+  }
+
   private buildAnalysis(input: {
     companyId: string;
     intent: AttendantIntent;
@@ -522,11 +940,17 @@ export class AttendantActionService {
     justSaved?: boolean;
     customerId?: string | null;
     leadId?: string | null;
+    appointmentRequestId?: string | null;
+    saleId?: string | null;
+    financialTransactionId?: string | null;
     businessActionRequestId?: string | null;
     customerCreatedOrUpdated?: boolean;
     customerCreated?: boolean;
     customerUpdated?: boolean;
     leadCreatedOrUpdated?: boolean;
+    saleCreatedOrUpdated?: boolean;
+    financialTransactionCreatedOrUpdated?: boolean;
+    appointmentRequestCreatedOrUpdated?: boolean;
     businessActionRequestCreatedOrUpdated?: boolean;
     businessActionRequestCreated?: boolean;
     appearsInCustomers?: boolean;
@@ -575,7 +999,9 @@ export class AttendantActionService {
       shouldCreateActionRequest: input.shouldCreateActionRequest,
       customerId: input.customerId || null,
       leadId: input.leadId || null,
-      appointmentRequestId: null,
+      appointmentRequestId: input.appointmentRequestId || null,
+      saleId: input.saleId || null,
+      financialTransactionId: input.financialTransactionId || null,
       businessActionRequestId: input.businessActionRequestId || null,
       actionCreated: input.actionCreated,
       draftSaved: input.draftSaved,
@@ -583,6 +1009,13 @@ export class AttendantActionService {
       customerCreated: Boolean(input.customerCreated),
       customerUpdated: Boolean(input.customerUpdated),
       leadCreatedOrUpdated: Boolean(input.leadCreatedOrUpdated),
+      saleCreatedOrUpdated: Boolean(input.saleCreatedOrUpdated),
+      financialTransactionCreatedOrUpdated: Boolean(
+        input.financialTransactionCreatedOrUpdated,
+      ),
+      appointmentRequestCreatedOrUpdated: Boolean(
+        input.appointmentRequestCreatedOrUpdated,
+      ),
       businessActionRequestCreatedOrUpdated: Boolean(
         input.businessActionRequestCreatedOrUpdated,
       ),
@@ -695,6 +1128,10 @@ export class AttendantActionService {
         current.preferredContactMethod || existing.preferredContactMethod || null,
       urgency: current.urgency || existing.urgency || null,
       budget: current.budget || existing.budget || null,
+      amount: current.amount || existing.amount || null,
+      productName: current.productName || existing.productName || null,
+      quantity: current.quantity || existing.quantity || null,
+      externalOrderId: current.externalOrderId || existing.externalOrderId || null,
       notes: [existing.notes, current.notes].filter(Boolean).join(' | ') || null,
     };
   }
@@ -703,9 +1140,13 @@ export class AttendantActionService {
     fields: ExtractedAttendantFields,
     input: AttendantActionInput,
   ): ExtractedAttendantFields {
+    const channelLabel = input.channel === 'instagram' ? 'Instagram' : 'WhatsApp';
     return {
       ...fields,
-      customerName: fields.customerName || input.customerName || null,
+      customerName:
+        fields.customerName ||
+        input.customerName ||
+        (input.customerExternalId ? `Cliente ${channelLabel}` : null),
       phone: fields.phone || input.customerPhone || null,
     };
   }
@@ -794,13 +1235,27 @@ export class AttendantActionService {
     return Boolean(intent && LEAD_INTENTS.includes(intent));
   }
 
-  private hasCustomerMinimum(fields: ExtractedAttendantFields) {
-    return Boolean(fields.customerName && (fields.phone || fields.email));
+  private hasCustomerMinimum(input: AttendantActionInput, fields: ExtractedAttendantFields) {
+    return Boolean(
+      fields.customerName &&
+        (fields.phone || fields.email || input.customerExternalId),
+    );
   }
 
   private hasActionMinimum(intent: AttendantIntent, fields: ExtractedAttendantFields) {
     if (!this.isLeadIntent(intent)) {
       return false;
+    }
+    if (
+      [
+        'SUPPORT_REQUEST',
+        'CANCELLATION_REQUEST',
+        'PAYMENT_INTENTION',
+        'UPSELL_RENEWAL_OPPORTUNITY',
+        'HUMAN_HANDOFF',
+      ].includes(intent)
+    ) {
+      return true;
     }
     const hasInterest = Boolean(fields.requestedService || fields.objective);
     if (!hasInterest && intent !== 'CUSTOMER_DATA_CAPTURE' && intent !== 'HUMAN_HANDOFF') {
@@ -811,6 +1266,9 @@ export class AttendantActionService {
     }
     if (['SCHEDULE_REQUEST', 'MEETING_REQUEST'].includes(intent)) {
       return Boolean(fields.desiredDate && fields.desiredTime && hasInterest);
+    }
+    if (['SALE_COMPLETED', 'SUBSCRIPTION_CLOSED'].includes(intent)) {
+      return Boolean(fields.amount && fields.amount > 0);
     }
     return true;
   }
