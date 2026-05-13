@@ -68,6 +68,7 @@ async function bootstrap() {
   app.setGlobalPrefix('api', {
     exclude: [
       { path: 'webhook/whatsapp', method: RequestMethod.POST },
+      { path: 'webhook/ml', method: RequestMethod.POST },
       // Meta Cloud API webhook — must be reachable WITHOUT /api prefix
       { path: 'webhooks/meta', method: RequestMethod.GET },
       { path: 'webhooks/meta', method: RequestMethod.POST },
@@ -95,6 +96,7 @@ async function bootstrap() {
         req.path.startsWith('/api/whatsapp/webhooks/evolution') ||
         req.path.startsWith('/api/billing/webhooks/abacatepay') ||
         req.path.startsWith('/api/instagram/webhook') ||
+        req.path.startsWith('/webhook/ml') ||
         req.path.startsWith('/webhooks/'),
     }),
   );
@@ -115,7 +117,7 @@ async function bootstrap() {
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-abacatepay-secret', 'x-webhook-secret', 'x-webhook-signature'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-abacatepay-secret', 'x-webhook-secret', 'x-webhook-signature', 'x-meli-signature', 'x-signature'],
   });
 
   const port = process.env.PORT || 3333;

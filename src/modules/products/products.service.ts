@@ -20,6 +20,9 @@ type ProductRecord = {
   category: string | null;
   price: Prisma.Decimal;
   cost: Prisma.Decimal | null;
+  mlItemId?: string | null;
+  marketplaceStatus?: string | null;
+  availableQuantity?: number | null;
   tax?: Prisma.Decimal | null;
   shipping?: Prisma.Decimal | null;
   createdAt: Date;
@@ -113,6 +116,9 @@ export class ProductsService {
       category: true,
       price: true,
       cost: true,
+      mlItemId: true,
+      marketplaceStatus: true,
+      availableQuantity: true,
       ...(fieldAvailability.tax ? { tax: true } : {}),
       ...(fieldAvailability.shipping ? { shipping: true } : {}),
       createdAt: true,
@@ -125,6 +131,9 @@ export class ProductsService {
       ...product,
       tax: product.tax ?? null,
       shipping: product.shipping ?? null,
+      mlItemId: product.mlItemId ?? null,
+      marketplaceStatus: product.marketplaceStatus ?? null,
+      availableQuantity: product.availableQuantity ?? null,
     };
   }
 

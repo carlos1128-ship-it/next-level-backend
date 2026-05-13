@@ -8,9 +8,10 @@
   "scripts": {
     "dev": "nest start --watch",
     "build": "nest build",
-    "build:render": "npx prisma generate && npm run build",
+    "build:render": "npm install --include=dev && npx prisma generate && npm run build",
     "start": "node dist/main",
-    "start:prod": "prisma migrate deploy && node dist/main.js",
+    "start:prod": "npx prisma migrate deploy && node dist/main.js",
+    "test": "tsx scripts/mercado-livre-integration-check.ts",
     "smoke": "powershell -ExecutionPolicy Bypass -File scripts/smoke-test.ps1",
     "test:integration": "powershell -ExecutionPolicy Bypass -File scripts/integration-test.ps1",
     "test:ai-isolation": "tsx scripts/ai-isolation-check.ts",

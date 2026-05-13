@@ -32,6 +32,7 @@ import { InsightsModule } from './modules/insights/insights.module';
 import { IntelligentImportsModule } from './modules/intelligent-imports/intelligent-imports.module';
 import { IntegrationsModule } from './modules/integrations/integrations.module';
 import { MarketIntelligenceModule } from './modules/market-intel/market-intelligence.module';
+import { MercadoLivreModule } from './modules/mercado-livre/mercado-livre.module';
 import { ProductsModule } from './modules/products/products.module';
 import { SalesModule } from './modules/sales/sales.module';
 import { StrategyModule } from './modules/strategy/strategy.module';
@@ -73,6 +74,7 @@ import { WhatsappModule } from './modules/whatsapp/whatsapp.module';
     WhatsappModule,
     StrategyModule,
     MarketIntelligenceModule,
+    MercadoLivreModule,
     AdminModule,
     ReportModule,
   ],

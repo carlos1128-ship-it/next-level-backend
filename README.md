@@ -112,12 +112,26 @@ Start Command: npm run start
 - `POST /api/webhooks/shopify`
 - `GET /api/webhooks/meta`
 - `POST /api/webhooks/meta`
+- `GET /api/auth/ml`
+- `GET /api/auth/ml/callback`
+- `POST /webhook/ml`
+- `POST /api/integrations/mercadolivre/sync`
+- `GET /api/integrations/mercadolivre/products`
+- `GET /api/integrations/mercadolivre/orders`
+- `GET /api/integrations/mercadolivre/questions`
+
+## Mercado Livre
+
+Configure `ML_CLIENT_ID`, `ML_CLIENT_SECRET`, `ML_REDIRECT_URI`, `ML_TOKEN_ENCRYPTION_KEY`, `ML_STATE_SECRET` e `WEBHOOK_SECRET`.
+O redirect local padrao e `http://localhost:3333/api/auth/ml/callback`; o webhook publico e `/webhook/ml`.
+Tokens sao criptografados, pedidos viram vendas/transacoes financeiras, e os jobs rodam diariamente para pedidos/itens e de hora em hora para estoque.
 
 Documentacao de integração frontend:
 - `docs/frontend-integration.md`
 
 Smoke test automatizado:
 - `npm run smoke`
+- `npm test`
 
 ## Comportamento atual
 

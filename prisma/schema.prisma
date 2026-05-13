@@ -259,56 +259,65 @@ model Company {
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
-  users                 User[]
-  sales                 Sale[]
-  saleAIAttributions    SaleAIAttribution[]
-  adSpends              AdSpend[]
-  financialTransactions FinancialTransaction[]
-  aiChatMessages        AiChatMessage[]
-  products              Product[]
-  customers             Customer[]
-  operationalCosts      OperationalCost[]
-  integrations          Integration[]
-  integrationAccounts   IntegrationAccount[]
-  integrationEvents     IntegrationEvent[]
-  webhookEvents         WebhookEvent[]
-  webhookLogs           WebhookLog[]
-  alerts                Alert[]
-  forecastSnapshots     ForecastSnapshot[]
-  strategicActions      StrategicAction[]
-  competitors           Competitor[]
-  marketPrices          MarketPrice[]
-  marketTrends          MarketTrend[]
-  botConfig             BotConfig?
-  agentConfig           AgentConfig?
-  leads                 Lead[]
-  appointmentRequests   AppointmentRequest[]
+  users                  User[]
+  sales                  Sale[]
+  saleAIAttributions     SaleAIAttribution[]
+  adSpends               AdSpend[]
+  financialTransactions  FinancialTransaction[]
+  aiChatMessages         AiChatMessage[]
+  products               Product[]
+  stocks                 Stock[]
+  customers              Customer[]
+  operationalCosts       OperationalCost[]
+  integrations           Integration[]
+  integrationAccounts    IntegrationAccount[]
+  integrationEvents      IntegrationEvent[]
+  webhookEvents          WebhookEvent[]
+  webhookLogs            WebhookLog[]
+  alerts                 Alert[]
+  forecastSnapshots      ForecastSnapshot[]
+  strategicActions       StrategicAction[]
+  competitors            Competitor[]
+  marketPrices           MarketPrice[]
+  marketTrends           MarketTrend[]
+  botConfig              BotConfig?
+  agentConfig            AgentConfig?
+  leads                  Lead[]
+  appointmentRequests    AppointmentRequest[]
   businessActionRequests BusinessActionRequest[]
-  conversations         Conversation[]
-  messages              Message[]
-  usageQuota            UsageQuota?
-  apiLogs               ApiLog[]
-  auditTrails           AuditTrail[]
-  whatsappInstance      WhatsappInstance?
-  whatsappConnection    WhatsappConnection?
-  whatsappMessageEvents WhatsappMessageEvent[]
-  dashboardPreferences  DashboardPreference[]
-  companyProfile        CompanyProfile?
-  modulePreferences     CompanyModulePreference[]
-  csvImportJobs         CsvImportJob[]
-  intelligentImports    IntelligentImport[]
-  importedMetrics       ImportedMetric[]
-  importedEntities      ImportedEntity[]
-  aiUsageLogs           AIUsageLog[]
-  aiUsageMonthly        CompanyAIUsageMonthly[]
-  businessEvents        BusinessEvent[]
-  aiInsights            AiInsight[]
-  aiAlerts              AiAlert[]
-  businessMemories      BusinessMemory[]
-  customerSignals       CustomerSignal[]
-  conversationAnalyses  ConversationAnalysis[]
-  aiRecommendations     AiRecommendation[]
+  conversations          Conversation[]
+  messages               Message[]
+  usageQuota             UsageQuota?
+  apiLogs                ApiLog[]
+  auditTrails            AuditTrail[]
+  whatsappInstance       WhatsappInstance?
+  whatsappConnection     WhatsappConnection?
+  whatsappMessageEvents  WhatsappMessageEvent[]
+  dashboardPreferences   DashboardPreference[]
+  companyProfile         CompanyProfile?
+  modulePreferences      CompanyModulePreference[]
+  csvImportJobs          CsvImportJob[]
+  intelligentImports     IntelligentImport[]
+  importedMetrics        ImportedMetric[]
+  importedEntities       ImportedEntity[]
+  aiUsageLogs            AIUsageLog[]
+  aiUsageMonthly         CompanyAIUsageMonthly[]
+  businessEvents         BusinessEvent[]
+  aiInsights             AiInsight[]
+  aiAlerts               AiAlert[]
+  businessMemories       BusinessMemory[]
+  customerSignals        CustomerSignal[]
+  conversationAnalyses   ConversationAnalysis[]
+  aiRecommendations      AiRecommendation[]
   subscriptions          Subscription[]
+  mercadoLivreTokens     MercadoLivreOAuthToken[]
+  mercadoLivreOrders     MercadoLivreOrder[]
+  mercadoLivreOrderItems MercadoLivreOrderItem[]
+  mercadoLivreShipments  MercadoLivreShipment[]
+  mercadoLivreQuestions  MercadoLivreQuestion[]
+  mercadoLivreReviews    MercadoLivreReview[]
+  mercadoLivreAnalytics  MercadoLivreAnalytics[]
+  lgpdLogs               LGPDLog[]
 }
 
 model AdSpend {
@@ -340,7 +349,7 @@ model User {
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
-  company               Company?               @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  company               Company?                 @relation(fields: [companyId], references: [id], onDelete: SetNull)
   sales                 Sale[]
   analyses              Analysis[]
   financialTransactions FinancialTransaction[]
@@ -349,6 +358,7 @@ model User {
   intelligentImports    IntelligentImport[]
   aiUsageLogs           AIUsageLog[]
   subscriptions         Subscription[]
+  mercadoLivreTokens    MercadoLivreOAuthToken[]
 }
 
 model BillingPlan {
@@ -449,24 +459,24 @@ model Subscription {
 }
 
 model PaymentEvent {
-  id                       String   @id @default(cuid())
-  eventId                  String?  @unique
+  id                       String    @id @default(cuid())
+  eventId                  String?   @unique
   eventType                String
-  provider                 String   @default("MANUAL")
+  provider                 String    @default("MANUAL")
   providerEventId          String?
   providerObjectId         String?
   providerOrderId          String?
   providerSubscriptionId   String?
   providerRawEventType     String?
   apiVersion               Int?
-  devMode                  Boolean  @default(false)
+  devMode                  Boolean   @default(false)
   rawPayload               Json
-  processed                Boolean  @default(false)
-  processingError          String?  @db.Text
+  processed                Boolean   @default(false)
+  processingError          String?   @db.Text
   subscriptionId           String?
   abacatepayCheckoutId     String?
   abacatepaySubscriptionId String?
-  createdAt                DateTime @default(now())
+  createdAt                DateTime  @default(now())
   processedAt              DateTime?
 
   @@index([eventType])
@@ -501,23 +511,28 @@ enum SaleChannel {
   manual
   shopify
   meta
+  mercadolivre
 }
 
 model Sale {
-  id          String      @id @default(cuid())
-  userId      String?
-  companyId   String
-  amount      Decimal     @db.Decimal(12, 2)
-  productName String? // Nome do produto (ou use category para agrupamento)
-  category    String? // Categoria opcional para agrupamento no dashboard
-  channel     SaleChannel @default(manual) // manual | shopify | meta
-  occurredAt  DateTime // Timestamp real da venda (não o created_at)
-  createdAt   DateTime    @default(now())
+  id           String      @id @default(cuid())
+  userId       String?
+  companyId    String
+  amount       Decimal     @db.Decimal(12, 2)
+  productName  String? // Nome do produto (ou use category para agrupamento)
+  category     String? // Categoria opcional para agrupamento no dashboard
+  channel      SaleChannel @default(manual) // manual | shopify | meta
+  externalId   String?
+  metadataJson Json?
+  occurredAt   DateTime // Timestamp real da venda (não o created_at)
+  createdAt    DateTime    @default(now())
 
-  user          User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
-  company       Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  aiAttribution SaleAIAttribution?
+  user              User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+  company           Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  aiAttribution     SaleAIAttribution?
+  mercadoLivreOrder MercadoLivreOrder?
 
+  @@unique([companyId, channel, externalId])
   @@index([userId])
   @@index([userId, occurredAt])
   @@index([companyId])
@@ -565,20 +580,25 @@ model Analysis {
 }
 
 model FinancialTransaction {
-  id          String                   @id @default(cuid())
-  companyId   String
-  userId      String
-  type        FinancialTransactionType
-  amount      Decimal                  @db.Decimal(12, 2)
-  description String
-  category    String?
-  date        DateTime                 @default(now())
-  occurredAt  DateTime
-  createdAt   DateTime                 @default(now())
+  id           String                   @id @default(cuid())
+  companyId    String
+  userId       String
+  type         FinancialTransactionType
+  amount       Decimal                  @db.Decimal(12, 2)
+  description  String
+  category     String?
+  source       String                   @default("manual")
+  externalId   String?
+  metadataJson Json?
+  date         DateTime                 @default(now())
+  occurredAt   DateTime
+  createdAt    DateTime                 @default(now())
 
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company           Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mercadoLivreOrder MercadoLivreOrder?
 
+  @@unique([companyId, source, externalId])
   @@index([companyId])
   @@index([userId])
   @@index([occurredAt])
@@ -603,52 +623,261 @@ model AiChatMessage {
 }
 
 model Product {
-  id        String   @id @default(cuid())
-  companyId String
-  name      String
-  sku       String?
-  category  String?
-  price     Decimal  @db.Decimal(12, 2)
-  cost      Decimal? @db.Decimal(12, 2)
+  id                    String               @id @default(cuid())
+  companyId             String
+  name                  String
+  sku                   String?
+  category              String?
+  price                 Decimal              @db.Decimal(12, 2)
+  cost                  Decimal?             @db.Decimal(12, 2)
+  mlItemId              String?
+  marketplaceProvider   IntegrationProvider?
+  marketplaceStatus     String?
+  marketplacePermalink  String?              @db.Text
+  currencyId            String?
+  availableQuantity     Int?
+  soldQuantity          Int?
+  lastMarketplaceSyncAt DateTime?
   /// Impostos/tributos estimados por unidade (opcional, para margem real)
-  tax       Decimal? @db.Decimal(12, 2)
+  tax                   Decimal?             @db.Decimal(12, 2)
   /// Frete/logística estimado por unidade (opcional)
-  shipping  Decimal? @db.Decimal(12, 2)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  shipping              Decimal?             @db.Decimal(12, 2)
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
 
-  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  marketPrices MarketPrice[]
+  company                Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  marketPrices           MarketPrice[]
+  stock                  Stock?
+  mercadoLivreOrderItems MercadoLivreOrderItem[]
+  mercadoLivreQuestions  MercadoLivreQuestion[]
 
+  @@unique([mlItemId])
   @@index([companyId])
   @@index([companyId, name])
   @@index([companyId, sku])
+  @@index([companyId, marketplaceProvider])
+}
+
+model Stock {
+  id               String              @id @default(cuid())
+  companyId        String
+  productId        String              @unique
+  provider         IntegrationProvider @default(MERCADOLIVRE)
+  externalId       String?
+  quantity         Int                 @default(0)
+  reservedQuantity Int                 @default(0)
+  updatedAt        DateTime            @updatedAt
+  createdAt        DateTime            @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([provider, externalId])
+}
+
+model MercadoLivreOAuthToken {
+  id                    String    @id @default(cuid())
+  companyId             String    @unique
+  userId                String?
+  mlUserId              String
+  nickname              String?
+  accessTokenEncrypted  String    @db.Text
+  refreshTokenEncrypted String    @db.Text
+  tokenType             String    @default("bearer")
+  scope                 String?
+  expiresAt             DateTime
+  status                String    @default("connected")
+  lastSyncAt            DateTime?
+  rawPayload            Json?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@unique([companyId, mlUserId])
+  @@index([mlUserId])
+  @@index([expiresAt])
+}
+
+model MercadoLivreOrder {
+  id                     String    @id @default(cuid())
+  companyId              String
+  mlOrderId              String    @unique
+  sellerId               String
+  buyerId                String?
+  status                 String
+  currencyId             String?
+  totalAmount            Decimal   @db.Decimal(12, 2)
+  paidAmount             Decimal?  @db.Decimal(12, 2)
+  dateCreated            DateTime
+  dateClosed             DateTime?
+  saleId                 String?   @unique
+  financialTransactionId String?   @unique
+  rawPayload             Json?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  company              Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  sale                 Sale?                   @relation(fields: [saleId], references: [id], onDelete: SetNull)
+  financialTransaction FinancialTransaction?   @relation(fields: [financialTransactionId], references: [id], onDelete: SetNull)
+  items                MercadoLivreOrderItem[]
+  shipment             MercadoLivreShipment?
+  reviews              MercadoLivreReview[]
+
+  @@index([companyId, dateCreated])
+  @@index([companyId, status])
+  @@index([sellerId])
+}
+
+model MercadoLivreOrderItem {
+  id            String   @id @default(cuid())
+  companyId     String
+  orderId       String
+  productId     String?
+  mlItemId      String
+  title         String
+  quantity      Int
+  unitPrice     Decimal  @db.Decimal(12, 2)
+  fullUnitPrice Decimal? @db.Decimal(12, 2)
+  currencyId    String?
+  rawPayload    Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  company Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  order   MercadoLivreOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product?          @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@unique([orderId, mlItemId])
+  @@index([companyId])
+  @@index([mlItemId])
+}
+
+model MercadoLivreShipment {
+  id           String   @id @default(cuid())
+  companyId    String
+  orderId      String   @unique
+  mlShipmentId String   @unique
+  status       String?
+  substatus    String?
+  logisticType String?
+  trackingCode String?
+  receiverName String?
+  rawPayload   Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  company Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  order   MercadoLivreOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, status])
+}
+
+model MercadoLivreQuestion {
+  id                String    @id @default(cuid())
+  companyId         String
+  productId         String?
+  mlQuestionId      String    @unique
+  mlItemId          String?
+  sellerId          String?
+  status            String?
+  question          String    @db.Text
+  answer            String?   @db.Text
+  dateCreated       DateTime?
+  answerDateCreated DateTime?
+  rawPayload        Json?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  company Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, status])
+  @@index([companyId, dateCreated])
+  @@index([mlItemId])
+}
+
+model MercadoLivreReview {
+  id          String    @id @default(cuid())
+  companyId   String
+  orderId     String?
+  mlReviewId  String    @unique
+  rating      Int?
+  status      String?
+  title       String?
+  content     String?   @db.Text
+  dateCreated DateTime?
+  rawPayload  Json?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  company Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  order   MercadoLivreOrder? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, dateCreated])
+  @@index([companyId, rating])
+}
+
+model MercadoLivreAnalytics {
+  id          String    @id @default(cuid())
+  companyId   String
+  metricKey   String
+  value       Json
+  periodStart DateTime?
+  periodEnd   DateTime?
+  source      String    @default("mercadolivre")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, metricKey, periodStart, periodEnd])
+  @@index([companyId, metricKey])
+}
+
+model LGPDLog {
+  id        String               @id @default(cuid())
+  companyId String?
+  provider  IntegrationProvider?
+  actorType ActorType            @default(SYSTEM)
+  actorId   String?
+  action    String
+  subjectId String?
+  metadata  Json?
+  createdAt DateTime             @default(now())
+
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt])
+  @@index([provider, action, createdAt])
 }
 
 model Customer {
-  id        String   @id @default(cuid())
-  companyId String
-  name      String
-  email     String?
-  phone     String?
-  channel   String?
-  provider  IntegrationProvider?
-  externalCustomerId String?
+  id                   String               @id @default(cuid())
+  companyId            String
+  name                 String
+  email                String?
+  phone                String?
+  channel              String?
+  provider             IntegrationProvider?
+  externalCustomerId   String?
   sourceConversationId String?
-  sourceMessageId String?
-  source   String?
-  interest String?
-  objective String? @db.Text
-  desiredDate DateTime?
-  desiredTime String?
-  status    String?
-  metadata  Json?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  sourceMessageId      String?
+  source               String?
+  interest             String?
+  objective            String?              @db.Text
+  desiredDate          DateTime?
+  desiredTime          String?
+  status               String?
+  metadata             Json?
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
 
-  company              Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  signals              CustomerSignal[]
-  conversationAnalyses ConversationAnalysis[]
+  company                Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  signals                CustomerSignal[]
+  conversationAnalyses   ConversationAnalysis[]
   businessActionRequests BusinessActionRequest[]
 
   @@index([companyId])
@@ -901,31 +1130,31 @@ model WhatsappConnection {
 }
 
 model Conversation {
-  id                   String                 @id @default(cuid())
-  companyId            String
-  whatsappConnectionId String?
-  provider             IntegrationProvider    @default(WHATSAPP)
-  channel              String                 @default("whatsapp")
-  externalThreadId     String?
-  externalAccountId    String?
-  contactNumber        String
-  remoteJid            String?
-  contactName          String?
-  status               String                 @default("Aguardando")
-  isPaused             Boolean                @default(false)
-  botPaused            Boolean                @default(false)
-  pausedUntil          DateTime?
-  lastMessagePreview   String?                @db.Text
-  lastMessageAt        DateTime               @default(now())
-  createdAt            DateTime               @default(now())
-  updatedAt            DateTime               @updatedAt
-  messages             Message[]
-  appointmentRequests  AppointmentRequest[]
+  id                     String                  @id @default(cuid())
+  companyId              String
+  whatsappConnectionId   String?
+  provider               IntegrationProvider     @default(WHATSAPP)
+  channel                String                  @default("whatsapp")
+  externalThreadId       String?
+  externalAccountId      String?
+  contactNumber          String
+  remoteJid              String?
+  contactName            String?
+  status                 String                  @default("Aguardando")
+  isPaused               Boolean                 @default(false)
+  botPaused              Boolean                 @default(false)
+  pausedUntil            DateTime?
+  lastMessagePreview     String?                 @db.Text
+  lastMessageAt          DateTime                @default(now())
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+  messages               Message[]
+  appointmentRequests    AppointmentRequest[]
   businessActionRequests BusinessActionRequest[]
-  saleAIAttributions   SaleAIAttribution[]
-  analyses             ConversationAnalysis[]
-  company              Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  whatsappConnection   WhatsappConnection?    @relation(fields: [whatsappConnectionId], references: [id], onDelete: SetNull)
+  saleAIAttributions     SaleAIAttribution[]
+  analyses               ConversationAnalysis[]
+  company                Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  whatsappConnection     WhatsappConnection?     @relation(fields: [whatsappConnectionId], references: [id], onDelete: SetNull)
 
   @@unique([companyId, contactNumber])
   @@index([companyId, provider, updatedAt])
@@ -974,36 +1203,36 @@ model Message {
 }
 
 model Lead {
-  id              String     @id @default(cuid())
-  companyId       String
-  externalId      String
-  name            String?
-  email           String?
-  phone           String?
-  channel         String?
-  provider        IntegrationProvider?
-  externalCustomerId String?
+  id                   String               @id @default(cuid())
+  companyId            String
+  externalId           String
+  name                 String?
+  email                String?
+  phone                String?
+  channel              String?
+  provider             IntegrationProvider?
+  externalCustomerId   String?
   sourceConversationId String?
-  latestIntent    String?
-  actionStatus    String?
-  requestedService String?
-  requestedDate   DateTime?
-  requestedTime   String?
-  notes           String?    @db.Text
-  metadata        Json?
-  status          LeadStatus @default(NEW)
-  score           Int        @default(0)
-  lastInteraction DateTime?
-  botPausedUntil  DateTime?
-  lastQuotedValue Decimal?   @db.Decimal(12, 2)
-  createdAt       DateTime   @default(now())
-  updatedAt       DateTime   @updatedAt
+  latestIntent         String?
+  actionStatus         String?
+  requestedService     String?
+  requestedDate        DateTime?
+  requestedTime        String?
+  notes                String?              @db.Text
+  metadata             Json?
+  status               LeadStatus           @default(NEW)
+  score                Int                  @default(0)
+  lastInteraction      DateTime?
+  botPausedUntil       DateTime?
+  lastQuotedValue      Decimal?             @db.Decimal(12, 2)
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
 
-  company            Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  conversations      ChatConversation[]
-  appointmentRequests AppointmentRequest[]
+  company                Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversations          ChatConversation[]
+  appointmentRequests    AppointmentRequest[]
   businessActionRequests BusinessActionRequest[]
-  saleAIAttributions SaleAIAttribution[]
+  saleAIAttributions     SaleAIAttribution[]
 
   @@unique([companyId, externalId])
   @@index([companyId, status])
