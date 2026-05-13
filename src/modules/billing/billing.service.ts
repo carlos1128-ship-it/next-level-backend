@@ -378,8 +378,8 @@ export class BillingService {
     }
   }
 
-  async findActiveSubscriptionForGuard(userId: string) {
-    const subscription = await this.ensureEntitledSubscriptionForUser(userId);
+  async findActiveSubscriptionForGuard(userId: string, companyId?: string | null) {
+    const subscription = await this.ensureEntitledSubscriptionForUser(userId, companyId);
     return this.isSubscriptionActive(subscription) ? subscription : null;
   }
 
@@ -407,6 +407,13 @@ export class BillingService {
         'Admin/dev account granted Pro Business access',
         companyId || user.companyId,
       );
+    }
+
+    const latestCompanySubscription = companyId
+      ? await this.findLatestSubscriptionForCompany(companyId)
+      : null;
+    if (latestCompanySubscription) {
+      return latestCompanySubscription;
     }
 
     if (this.legacyGraceEnabled) {
@@ -871,6 +878,13 @@ export class BillingService {
   private async findLatestSubscription(userId: string) {
     return this.prisma.subscription.findFirst({
       where: { userId },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  private async findLatestSubscriptionForCompany(companyId: string) {
+    return this.prisma.subscription.findFirst({
+      where: { companyId },
       orderBy: { createdAt: 'desc' },
     });
   }

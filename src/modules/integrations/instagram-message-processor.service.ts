@@ -544,8 +544,9 @@ export class InstagramMessageProcessorService {
 
     return this.prisma.conversation.upsert({
       where: {
-        companyId_contactNumber: {
+        companyId_provider_contactNumber: {
           companyId,
+          provider: IntegrationProvider.INSTAGRAM,
           contactNumber,
         },
       },

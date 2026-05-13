@@ -164,6 +164,56 @@ export function validateEnvironment(config: RawEnv): RawEnv {
     return 'MANUAL';
   })();
 
+  const isProduction = String(normalized.NODE_ENV || '').toLowerCase() === 'production';
+  if (isProduction) {
+    normalized.JWT_REFRESH_SECRET = requireEnv(
+      'JWT_REFRESH_SECRET',
+      normalized.JWT_REFRESH_SECRET,
+      { minLength: 32 },
+    );
+    if (normalized.JWT_REFRESH_SECRET === normalized.JWT_SECRET) {
+      throw new Error('JWT_REFRESH_SECRET precisa ser diferente de JWT_SECRET em producao');
+    }
+
+    if (normalized.BILLING_PAYMENT_PROVIDER === 'CAKTO') {
+      normalized.CAKTO_WEBHOOK_SECRET = requireEnv(
+        'CAKTO_WEBHOOK_SECRET',
+        normalized.CAKTO_WEBHOOK_SECRET,
+        { minLength: 16 },
+      );
+    }
+
+    if (normalized.BILLING_PAYMENT_PROVIDER === 'ABACATEPAY') {
+      normalized.ABACATEPAY_WEBHOOK_SECRET = requireEnv(
+        'ABACATEPAY_WEBHOOK_SECRET',
+        normalized.ABACATEPAY_WEBHOOK_SECRET,
+        { minLength: 16 },
+      );
+    }
+
+    const hasMercadoLivreOAuth = Boolean(
+      (normalized.ML_CLIENT_ID || normalized.MERCADOLIVRE_OAUTH_CLIENT_ID)?.trim(),
+    );
+    if (hasMercadoLivreOAuth) {
+      normalized.ML_TOKEN_ENCRYPTION_KEY = requireEnv(
+        'ML_TOKEN_ENCRYPTION_KEY',
+        normalized.ML_TOKEN_ENCRYPTION_KEY || normalized.MERCADOLIVRE_TOKEN_ENCRYPTION_KEY,
+        { minLength: 32 },
+      );
+      normalized.ML_STATE_SECRET = requireEnv(
+        'ML_STATE_SECRET',
+        normalized.ML_STATE_SECRET,
+        { minLength: 32 },
+      );
+    }
+
+    if (normalized.MERCADOLIVRE_WEBHOOK_SECRET_REQUIRED === 'true') {
+      normalized.WEBHOOK_SECRET = requireEnv('WEBHOOK_SECRET', normalized.WEBHOOK_SECRET, {
+        minLength: 16,
+      });
+    }
+  }
+
   normalized.EVOLUTION_API_TIMEOUT_MS = normalizePositiveInteger(
     'EVOLUTION_API_TIMEOUT_MS',
     normalized.EVOLUTION_API_TIMEOUT_MS,

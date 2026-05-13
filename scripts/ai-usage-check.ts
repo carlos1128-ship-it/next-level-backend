@@ -27,13 +27,25 @@ function createUsagePrisma() {
   ]);
   const users = new Map([
     ['userA', { id: 'userA', plan: Plan.COMUM }],
-    ['userB', { id: 'userB', plan: Plan.COMUM }],
+    ['userB', { id: 'userB', plan: Plan.PRO }],
   ]);
+  const planEntitlements = {
+    resolveCompanyPlanKey: async (companyId: string) => {
+      const company = companies.get(companyId);
+      const owner = company ? users.get(company.userId) : null;
+      if (owner?.plan === Plan.ENTERPRISE) return 'PRO_BUSINESS';
+      if (owner?.plan === Plan.PRO) return 'PREMIUM';
+      return 'COMMON';
+    },
+    getRequiredPlanForFeature: () => 'COMMON',
+    getRecommendedUpgradePlan: () => 'PREMIUM',
+  };
 
   return {
     logs,
     monthly,
     limits,
+    planEntitlements,
     prisma: {
       company: {
         findUnique: async ({ where }: any) => companies.get(where.id) || null,
@@ -102,8 +114,8 @@ function createUsagePrisma() {
 }
 
 async function assertUsageServiceCore() {
-  const { prisma, logs, monthly } = createUsagePrisma();
-  const usage = new AIUsageService(prisma as never);
+  const { prisma, logs, monthly, planEntitlements } = createUsagePrisma();
+  const usage = new AIUsageService(prisma as never, planEntitlements as never);
 
   await usage.logUsage(
     'companyA',
@@ -148,6 +160,18 @@ async function assertUsageServiceCore() {
 
   const belowLimit = await usage.checkLimit('companyA', AIUsageFeature.CHAT_IA);
   assert.equal(belowLimit.allowed, true);
+
+  monthly.set(monthlyKey('companyB', yearMonth, AIUsageFeature.CHAT_IA), {
+    id: 'usage-premium',
+    companyId: 'companyB',
+    yearMonth,
+    feature: AIUsageFeature.CHAT_IA,
+    requestCount: 800,
+    tokenCount: 0,
+    estimatedCost: new Prisma.Decimal(0),
+  });
+  const premiumLimit = await usage.checkLimit('companyB', AIUsageFeature.CHAT_IA);
+  assert.equal(premiumLimit.allowed, true);
 
   monthly.set(monthlyKey('companyA', yearMonth, AIUsageFeature.CHAT_IA), {
     id: 'usage-limit',
@@ -234,6 +258,9 @@ async function assertWhatsappLogsUsage() {
   let loggedFeature: AIUsageFeature | null = null;
   const service = new WhatsappConnectionsService(
     {
+      conversation: {
+        upsert: async () => ({ id: 'conv-companyA' }),
+      },
       message: {
         findFirst: async () => null,
       },
@@ -274,6 +301,43 @@ async function assertWhatsappLogsUsage() {
         loggedFeature = feature;
         return {};
       },
+    } as never,
+    {
+      analyzeAndPrepare: async () => ({
+        intent: 'GENERAL_QUESTION',
+        extractedFields: {},
+        missingFields: [],
+        actionStatus: 'NEEDS_INFO',
+        shouldCreateCustomer: false,
+        shouldCreateActionRequest: false,
+        customerId: null,
+        leadId: null,
+        appointmentRequestId: null,
+        businessActionRequestId: null,
+        actionCreated: false,
+        draftSaved: false,
+        customerCreatedOrUpdated: false,
+        customerCreated: false,
+        customerUpdated: false,
+        leadCreatedOrUpdated: false,
+        businessActionRequestCreatedOrUpdated: false,
+        businessActionRequestCreated: false,
+        appearsInCustomers: false,
+        registrationClaimAllowed: false,
+        isComplete: false,
+        justSaved: false,
+        userConfirmed: false,
+        shouldAskConfirmation: false,
+        shouldFinalize: false,
+        ok: true,
+        errorClassification: null,
+        shouldContinueAiResponse: true,
+        shouldAskMissingFields: false,
+        shouldHumanHandoff: false,
+        assistantInstruction: 'answer_normally',
+        nextAssistantInstruction: 'answer_normally',
+        promptContext: '',
+      }),
     } as never,
   );
 

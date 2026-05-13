@@ -52,6 +52,7 @@ cp .env.example .env
 Variaveis obrigatorias no `.env`:
 - `DATABASE_URL`
 - `JWT_SECRET`
+- `JWT_REFRESH_SECRET`
 - `GEMINI_API_KEY`
 
 Gere um `JWT_SECRET` forte:
@@ -94,8 +95,9 @@ npm run start
 No Render, configure:
 
 ```bash
-Build Command: npm install && npm run build:render
-Start Command: npm run start
+Root Directory: next-level-backend
+Build Command: npm install --include=dev && npm run build:render
+Start Command: npm run start:prod
 ```
 
 ## Endpoints principais

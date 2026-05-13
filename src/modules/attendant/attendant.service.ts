@@ -637,18 +637,23 @@ export class AttendantService {
 
     let conversation = await this.prisma.conversation.upsert({
       where: {
-        companyId_contactNumber: {
+        companyId_provider_contactNumber: {
           companyId,
+          provider,
           contactNumber: externalId,
         },
       },
       update: {
+        provider,
+        channel: String(provider).toLowerCase(),
         contactName: name || undefined,
         lastMessageAt: new Date(),
         status: 'Aguardando',
       },
       create: {
         companyId,
+        provider,
+        channel: String(provider).toLowerCase(),
         contactNumber: externalId,
         contactName: name || undefined,
         status: 'Aguardando',

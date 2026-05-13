@@ -360,6 +360,15 @@ export class PlanEntitlementsService {
     const subscriptionPlan = normalizeBillingPlanKey(activeSubscription?.planKey);
     if (subscriptionPlan) return subscriptionPlan;
 
+    const latestSubscription = await this.prisma.subscription.findFirst({
+      where: { companyId },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    });
+    if (latestSubscription) {
+      return 'COMMON';
+    }
+
     const company = await this.prisma.company.findUnique({
       where: { id: companyId },
       select: {

@@ -89,6 +89,7 @@ function createPrismaMock() {
     ['companyB', { id: 'companyB', name: 'Empresa B' }],
   ]);
   const connections = new Map<string, ConnectionRecord>();
+  const conversations = new Map<string, { id: string; companyId: string; contactNumber: string }>();
   const webhookEvents: unknown[] = [];
 
   function findConnection(where: { id?: string; companyId?: string; instanceName?: string }) {
@@ -103,10 +104,33 @@ function createPrismaMock() {
   return {
     companies,
     connections,
+    conversations,
     webhookEvents,
     prisma: {
       company: {
         findUnique: async ({ where }: { where: { id: string } }) => companies.get(where.id) || null,
+      },
+      conversation: {
+        upsert: async ({ where, create, update, select }: any) => {
+          const compound = where.companyId_provider_contactNumber || where.companyId_contactNumber;
+          const key = `${compound.companyId}:${compound.provider || 'WHATSAPP'}:${compound.contactNumber}`;
+          const existing = conversations.get(key);
+          const next = existing
+            ? { ...existing, ...update }
+            : {
+                id: `conv-${conversations.size + 1}`,
+                companyId: create.companyId,
+                contactNumber: create.contactNumber,
+                ...create,
+              };
+          conversations.set(key, next);
+          if (!select) return next;
+          return Object.fromEntries(
+            Object.entries(select)
+              .filter(([, enabled]) => enabled)
+              .map(([field]) => [field, (next as Record<string, unknown>)[field]]),
+          );
+        },
       },
       whatsappInstance: {
         findUnique: async () => null,
@@ -273,6 +297,43 @@ async function main() {
       agentConfigService as never,
       { ingestEvolutionMessages: async () => undefined } as never,
       { enforceLimit: async () => ({ allowed: true }), logUsage: async () => ({}) } as never,
+      {
+        analyzeAndPrepare: async () => ({
+          intent: 'GENERAL_QUESTION',
+          extractedFields: {},
+          missingFields: [],
+          actionStatus: 'NEEDS_INFO',
+          shouldCreateCustomer: false,
+          shouldCreateActionRequest: false,
+          customerId: null,
+          leadId: null,
+          appointmentRequestId: null,
+          businessActionRequestId: null,
+          actionCreated: false,
+          draftSaved: false,
+          customerCreatedOrUpdated: false,
+          customerCreated: false,
+          customerUpdated: false,
+          leadCreatedOrUpdated: false,
+          businessActionRequestCreatedOrUpdated: false,
+          businessActionRequestCreated: false,
+          appearsInCustomers: false,
+          registrationClaimAllowed: false,
+          isComplete: false,
+          justSaved: false,
+          userConfirmed: false,
+          shouldAskConfirmation: false,
+          shouldFinalize: false,
+          ok: true,
+          errorClassification: null,
+          shouldContinueAiResponse: true,
+          shouldAskMissingFields: false,
+          shouldHumanHandoff: false,
+          assistantInstruction: 'answer_normally',
+          nextAssistantInstruction: 'answer_normally',
+          promptContext: 'Contexto de acao validado no teste de isolamento.',
+        }),
+      } as never,
     );
 
     const snapshotA = await service.connect('companyA', {});
@@ -322,7 +383,9 @@ async function main() {
     const payloadB = n8nPayloads[0];
     assert.equal(payloadB.companyId, 'companyB');
     assert.equal(payloadB.instanceName, snapshotB.instanceName);
-    assert.equal((payloadB.agentConfig as Record<string, unknown>).systemPrompt, 'PROMPT_B_TEST');
+    const systemPromptB = String((payloadB.agentConfig as Record<string, unknown>).systemPrompt || '');
+    assert.ok(systemPromptB.includes('PROMPT_B_TEST'));
+    assert.ok(systemPromptB.includes('Contexto de acao validado no teste de isolamento.'));
     assert.equal(payloadB.memoryKey, 'memory:companyB:whatsapp:5511999999999@s.whatsapp.net');
     assert.equal(payloadB.bufferKey, 'buffer:companyB:5511999999999@s.whatsapp.net');
     assert.equal(payloadB.bufferLastKey, 'buffer:last:companyB:5511999999999@s.whatsapp.net');
@@ -330,7 +393,7 @@ async function main() {
     assert.equal(payloadB.agentKey, 'agent:companyB');
     assert.equal((payloadB.reply as Record<string, unknown>).instanceName, snapshotB.instanceName);
     assert.notEqual(payloadB.memoryKey, 'memory:companyA:whatsapp:5511999999999@s.whatsapp.net');
-    assert.notEqual((payloadB.agentConfig as Record<string, unknown>).systemPrompt, 'PROMPT_A_TEST');
+    assert.equal(systemPromptB.includes('PROMPT_A_TEST'), false);
 
     await assert.rejects(
       () =>

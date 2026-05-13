@@ -101,7 +101,7 @@ export class AuthController {
         admin: String(result.user.admin),
       });
 
-      res.redirect(`${frontendUrl}/auth/callback?${params.toString()}`);
+      res.redirect(`${frontendUrl}/auth/callback#${params.toString()}`);
     } catch (error) {
       this.logger.error('Google OAuth callback error', error);
       const frontendUrl =

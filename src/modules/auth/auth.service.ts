@@ -1,4 +1,10 @@
-import { ConflictException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
@@ -593,7 +599,16 @@ export class AuthService {
   }
 
   private get refreshTokenSecret() {
-    return this.configService.get<string>('JWT_REFRESH_SECRET') || this.accessTokenSecret;
+    const configured = this.configService.get<string>('JWT_REFRESH_SECRET')?.trim();
+    if (configured) return configured;
+
+    if (this.configService.get<string>('NODE_ENV') === 'production') {
+      throw new InternalServerErrorException(
+        'JWT_REFRESH_SECRET precisa estar configurado em producao',
+      );
+    }
+
+    return this.accessTokenSecret;
   }
 
   private get accessTokenExpiresIn() {

@@ -12,6 +12,14 @@ type RequestUser = {
   id?: string;
   userId?: string;
   sub?: string;
+  companyId?: string | null;
+};
+
+type BillingGuardRequest = {
+  user?: RequestUser;
+  query?: Record<string, unknown>;
+  body?: Record<string, unknown>;
+  params?: Record<string, unknown>;
 };
 
 @Injectable()
@@ -34,12 +42,13 @@ export class SubscriptionGuard implements CanActivate {
     ]);
     if (skip) return true;
 
-    const request = context.switchToHttp().getRequest<{ user?: RequestUser }>();
+    const request = context.switchToHttp().getRequest<BillingGuardRequest>();
     const user = request.user;
     const userId = user?.id || user?.userId || user?.sub;
     if (!userId) return true;
 
-    const subscription = await this.billingService.findActiveSubscriptionForGuard(userId);
+    const companyId = this.resolveCompanyId(request);
+    const subscription = await this.billingService.findActiveSubscriptionForGuard(userId, companyId);
     if (!subscription) {
       throw new HttpException(
         {
@@ -69,5 +78,23 @@ export class SubscriptionGuard implements CanActivate {
     }
 
     return true;
+  }
+
+  private resolveCompanyId(request: BillingGuardRequest): string | null {
+    return (
+      this.asString(request.query?.companyId) ||
+      this.asString(request.body?.companyId) ||
+      this.asString(request.params?.companyId) ||
+      this.asString(request.user?.companyId) ||
+      null
+    );
+  }
+
+  private asString(value: unknown): string {
+    if (Array.isArray(value)) {
+      const first = value.find((item) => typeof item === 'string' && item.trim());
+      return typeof first === 'string' ? first.trim() : '';
+    }
+    return typeof value === 'string' ? value.trim() : '';
   }
 }

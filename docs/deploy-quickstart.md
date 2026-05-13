@@ -1,63 +1,60 @@
 # Deploy Quickstart (NEXT LEVEL AI)
 
-## 1) Ambiente
+## Backend Render
 
-- Node.js 20+
-- PostgreSQL 15+
-- Variáveis configuradas em `.env`
+- Root Directory: `next-level-backend`
+- Build Command: `npm install --include=dev && npm run build:render`
+- Start Command: `npm run start:prod`
+- Node: `20.x`
 
-## 2) Variáveis mínimas
+`start:prod` executa `prisma migrate deploy` antes de subir `dist/main.js`.
 
-- `PORT`
+## Frontend Vercel
+
+- Root Directory: `next-level-front`
+- Build Command: `npm run build`
+- Output Directory: `dist`
+- Variavel obrigatoria: `VITE_API_URL=https://next-level-backend.onrender.com`
+
+## Variaveis Obrigatorias No Render
+
 - `DATABASE_URL`
 - `JWT_SECRET`
-- `JWT_EXPIRES_IN`
+- `JWT_REFRESH_SECRET`
+- `FRONTEND_URL`
+- `BACKEND_URL`
+- `PUBLIC_API_URL`
 - `CORS_ORIGINS`
+- `ML_CLIENT_ID`
+- `ML_CLIENT_SECRET`
+- `ML_REDIRECT_URI`
+- `ML_TOKEN_ENCRYPTION_KEY`
+- `ML_STATE_SECRET`
+- `WEBHOOK_SECRET`
+- `MERCADOLIVRE_WEBHOOK_SECRET_REQUIRED=false`
+- `BILLING_PAYMENT_PROVIDER`
+- `CAKTO_WEBHOOK_SECRET` quando `BILLING_PAYMENT_PROVIDER=CAKTO`
+- `ABACATEPAY_WEBHOOK_SECRET` quando `BILLING_PAYMENT_PROVIDER=ABACATEPAY`
+- `GEMINI_API_KEY` se IA real estiver habilitada
+- `REDIS_URL` se fila/BullMQ estiver habilitada
 
-Opcional:
-- `OPENAI_API_KEY`
-- `OPENAI_MODEL`
-- `PRISMA_CONNECT_RETRIES`
-- `PRISMA_CONNECT_RETRY_DELAY_MS`
-- `SHOPIFY_WEBHOOK_SECRET`
-- `META_WEBHOOK_VERIFY_TOKEN`
-- `META_APP_SECRET`
-- `META_AD_ACCOUNT_TO_COMPANY`
+Em producao, `JWT_REFRESH_SECRET` precisa existir e ser diferente de `JWT_SECRET`.
 
-Para Postgres remoto (Neon, Supabase, Render PostgreSQL), use `DATABASE_URL` com SSL habilitado, por exemplo:
-
-```bash
-DATABASE_URL="postgresql://USER:PASSWORD@HOST/DB?schema=public&sslmode=require"
-```
-
-## 3) Build e migração
+## Comandos Locais De Validacao
 
 ```bash
-npm install
-npm run prisma:generate
-npm run prisma:migrate:deploy
+npx prisma generate
 npm run build
+npm test
+npm run test:ai-usage
+npm run test:whatsapp-isolation
+npm audit --omit=dev
 ```
 
-## 4) Start em produção
+Frontend:
 
 ```bash
-npm run start
+npm run build
+npm test
+npm audit --omit=dev
 ```
-
-Para Render, deixe o deploy com esse fluxo:
-
-```bash
-Build Command: npm install && npm run prisma:generate && npm run prisma:migrate:deploy && npm run build
-Start Command: npm run start
-```
-
-## 5) Health operacional (manual)
-
-- Login: `POST /api/auth/login`
-- Dashboard: `GET /api/sales/aggregates`
-- Insights: `GET /api/insights`
-
-## 6) Frontend
-
-Configurar base URL do frontend para `https://SEU_DOMINIO/api`.

@@ -8,6 +8,7 @@ import {
   Query,
   Req,
   Res,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { IntegrationProvider } from '@prisma/client';
@@ -108,7 +109,16 @@ export class WebhooksController {
 
   @Public()
   @Post('mercadolivre')
-  async handleMercadoLivre(@Body() body: Record<string, unknown>) {
+  async handleMercadoLivre(
+    @Headers() headers: Record<string, string | string[] | undefined>,
+    @Query('secret') querySecret: string | undefined,
+    @Body() body: Record<string, unknown>,
+  ) {
+    if (!this.isLegacyMercadoLivreWebhookAuthorized(headers, querySecret)) {
+      this.logger.warn('Webhook legado Mercado Livre rejeitado por falta de segredo valido');
+      throw new UnauthorizedException('Webhook Mercado Livre legado exige segredo valido');
+    }
+
     const externalId = this.extractMercadoLivreExternalId(body);
     const companyIdHint = this.extractCompanyId(body);
 
@@ -209,5 +219,48 @@ export class WebhooksController {
     const direct = payload?.['companyId'] || payload?.['company_id'];
     if (typeof direct === 'string' && direct.trim()) return direct.trim();
     return null;
+  }
+
+  private isLegacyMercadoLivreWebhookAuthorized(
+    headers: Record<string, string | string[] | undefined>,
+    querySecret?: string,
+  ) {
+    const expected =
+      this.configService.get<string>('MERCADOLIVRE_LEGACY_WEBHOOK_SECRET')?.trim() ||
+      this.configService.get<string>('WEBHOOK_SECRET')?.trim();
+
+    if (!expected) {
+      const isProduction =
+        String(this.configService.get<string>('NODE_ENV') || process.env.NODE_ENV || '').toLowerCase() ===
+        'production';
+      return (
+        !isProduction &&
+        this.configService.get<string>('ALLOW_UNSAFE_LEGACY_WEBHOOKS') === 'true'
+      );
+    }
+
+    const authorization = this.firstHeader(headers.authorization);
+    const bearer = authorization?.replace(/^Bearer\s+/i, '').trim();
+    const candidates = [
+      querySecret,
+      this.firstHeader(headers['x-webhook-secret']),
+      this.firstHeader(headers['x-nextlevel-webhook-secret']),
+      bearer,
+    ].filter((value): value is string => Boolean(value?.trim()));
+
+    return candidates.some((candidate) => this.safeCompare(candidate.trim(), expected));
+  }
+
+  private firstHeader(value: string | string[] | undefined) {
+    return Array.isArray(value) ? value[0] : value;
+  }
+
+  private safeCompare(left: string, right: string): boolean {
+    const leftBuffer = Buffer.from(left);
+    const rightBuffer = Buffer.from(right);
+    return (
+      leftBuffer.length === rightBuffer.length &&
+      crypto.timingSafeEqual(leftBuffer, rightBuffer)
+    );
   }
 }

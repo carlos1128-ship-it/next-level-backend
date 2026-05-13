@@ -1669,8 +1669,9 @@ export class WhatsappConnectionsService {
     const now = new Date();
     return this.prisma.conversation.upsert({
       where: {
-        companyId_contactNumber: {
+        companyId_provider_contactNumber: {
           companyId: input.connection.companyId,
+          provider: IntegrationProvider.WHATSAPP,
           contactNumber: input.remoteNumber,
         },
       },

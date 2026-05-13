@@ -6,6 +6,7 @@ import {
   Injectable,
   Logger,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
 import { PrismaService } from '../../prisma/prisma.service';
 
@@ -22,7 +23,10 @@ type AuthenticatedRequest = Request & {
 export class ActiveCompanyGuard implements CanActivate {
   private readonly logger = new Logger(ActiveCompanyGuard.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly configService?: ConfigService,
+  ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
@@ -45,7 +49,7 @@ export class ActiveCompanyGuard implements CanActivate {
       throw new BadRequestException('companyId nao informado');
     }
 
-    if (user.admin) {
+    if (user.admin && this.isAdminCrossCompanyAccessEnabled()) {
       this.applyResolvedCompany(request, companyId);
       return true;
     }
@@ -143,5 +147,12 @@ export class ActiveCompanyGuard implements CanActivate {
       return value.trim();
     }
     return '';
+  }
+
+  private isAdminCrossCompanyAccessEnabled() {
+    return (
+      this.configService?.get<string>('ADMIN_CROSS_COMPANY_ACCESS') === 'true' ||
+      process.env.ADMIN_CROSS_COMPANY_ACCESS === 'true'
+    );
   }
 }

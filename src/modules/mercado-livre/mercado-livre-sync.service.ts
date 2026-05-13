@@ -333,7 +333,13 @@ export class MercadoLivreSyncService {
 
   private async upsertProduct(companyId: string, item: MercadoLivreProductItem) {
     const product = await this.prisma.product.upsert({
-      where: { mlItemId: item.id },
+      where: {
+        companyId_marketplaceProvider_mlItemId: {
+          companyId,
+          marketplaceProvider: IntegrationProvider.MERCADOLIVRE,
+          mlItemId: item.id,
+        },
+      },
       update: {
         companyId,
         name: item.title,
@@ -433,7 +439,7 @@ export class MercadoLivreSyncService {
           metadataJson: metadata,
         },
         create: {
-          userId: resolvedUserId,
+          userId: resolvedUserId || null,
           companyId,
           amount: new Prisma.Decimal(revenueAmount),
           productName,
@@ -465,7 +471,7 @@ export class MercadoLivreSyncService {
         },
         create: {
           companyId,
-          userId: resolvedUserId,
+          userId: resolvedUserId || null,
           type: FinancialTransactionType.INCOME,
           amount: new Prisma.Decimal(revenueAmount),
           description: `Mercado Livre pedido ${mlOrderId}`,
@@ -530,8 +536,12 @@ export class MercadoLivreSyncService {
       const item = asRecord(row.item);
       const mlItemId = asString(item?.id);
       if (!mlItemId) continue;
-      const product = await this.prisma.product.findUnique({
-        where: { mlItemId },
+      const product = await this.prisma.product.findFirst({
+        where: {
+          companyId,
+          mlItemId,
+          marketplaceProvider: IntegrationProvider.MERCADOLIVRE,
+        },
         select: { id: true },
       });
       await this.prisma.mercadoLivreOrderItem.create({
@@ -598,7 +608,14 @@ export class MercadoLivreSyncService {
     const answer = asRecord(question.answer);
     const mlItemId = asString(question.item_id);
     const product = mlItemId
-      ? await this.prisma.product.findUnique({ where: { mlItemId }, select: { id: true } })
+      ? await this.prisma.product.findFirst({
+          where: {
+            companyId,
+            mlItemId,
+            marketplaceProvider: IntegrationProvider.MERCADOLIVRE,
+          },
+          select: { id: true },
+        })
       : null;
 
     await this.prisma.mercadoLivreQuestion.upsert({
@@ -717,13 +734,21 @@ export class MercadoLivreSyncService {
     ]);
   }
 
-  private async resolveUserId(companyId: string): Promise<string> {
+  private async resolveUserId(companyId: string): Promise<string | null> {
     const company = await this.prisma.company.findUnique({
       where: { id: companyId },
       select: { userId: true, users: { select: { id: true }, take: 1 } },
     });
     const userId = company?.userId || company?.users[0]?.id;
-    if (!userId) throw new BadRequestException('Empresa sem usuario responsavel');
+    if (!userId) {
+      this.logger.warn(
+        JSON.stringify({
+          event: 'mercado_livre.sync.company_without_owner',
+          companyId,
+        }),
+      );
+      return null;
+    }
     return userId;
   }
 

@@ -152,8 +152,9 @@ export class WhatsappConversationsService {
 
     const conversation = await this.prisma.conversation.upsert({
       where: {
-        companyId_contactNumber: {
+        companyId_provider_contactNumber: {
           companyId,
+          provider: IntegrationProvider.WHATSAPP,
           contactNumber: remoteNumber,
         },
       },
@@ -263,8 +264,9 @@ export class WhatsappConversationsService {
     });
     const conversation = await this.prisma.conversation.upsert({
       where: {
-        companyId_contactNumber: {
+        companyId_provider_contactNumber: {
           companyId,
+          provider: IntegrationProvider.WHATSAPP,
           contactNumber: remoteNumber,
         },
       },
@@ -426,8 +428,9 @@ export class WhatsappConversationsService {
 
       const conversation = await this.prisma.conversation.upsert({
         where: {
-          companyId_contactNumber: {
+          companyId_provider_contactNumber: {
             companyId: connection.companyId,
+            provider: IntegrationProvider.WHATSAPP,
             contactNumber: parsed.remoteNumber,
           },
         },
