@@ -78,9 +78,31 @@ function normalizePositiveInteger(
   return String(parsed);
 }
 
+function requireEnv(
+  key: string,
+  rawValue: string | undefined,
+  constraints?: { minLength?: number },
+): string {
+  const value = rawValue?.trim();
+  if (!value) {
+    throw new Error(`${key} precisa estar configurada`);
+  }
+
+  if (constraints?.minLength && value.length < constraints.minLength) {
+    throw new Error(`${key} precisa ter pelo menos ${constraints.minLength} caracteres`);
+  }
+
+  return value;
+}
+
 export function validateEnvironment(config: RawEnv): RawEnv {
   const parsed = z.record(z.string(), z.string().optional()).parse(config);
   const normalized: RawEnv = { ...parsed };
+
+  normalized.DATABASE_URL = requireEnv('DATABASE_URL', normalized.DATABASE_URL);
+  normalized.JWT_SECRET = requireEnv('JWT_SECRET', normalized.JWT_SECRET, {
+    minLength: 32,
+  });
 
   normalized.EVOLUTION_BASE_URL = normalizeUrl(
     'EVOLUTION_BASE_URL',

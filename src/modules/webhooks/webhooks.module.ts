@@ -14,6 +14,6 @@ import { IntegrationsModule } from '../integrations/integrations.module';
     WebhooksMetaService,
     WebhookIngestService,
   ],
-  exports: [WebhooksShopifyService, WebhooksMetaService],
+  exports: [WebhooksShopifyService, WebhooksMetaService, WebhookIngestService],
 })
 export class WebhooksModule {}

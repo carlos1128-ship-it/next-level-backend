@@ -128,4 +128,9 @@ async function bootstrap() {
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`✅ Ready to accept connections`);
 }
-bootstrap();
+
+bootstrap().catch((error: unknown) => {
+  const details = error instanceof Error ? error.stack || error.message : String(error);
+  console.error('Falha ao iniciar aplicacao Next Level:', details);
+  process.exit(1);
+});
