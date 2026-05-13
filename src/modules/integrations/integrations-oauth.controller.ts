@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Logger,
+  NotFoundException,
   Param,
   Query,
   Req,
@@ -29,7 +30,7 @@ interface OAuthStatePayload {
 }
 
 const OAUTH_ROUTE_PARAM =
-  ':provider(whatsapp|instagram|mercadolivre)';
+  ':provider';
 
 const PROVIDER_LABELS: Record<OAuthProvider, string> = {
   whatsapp: 'WhatsApp',
@@ -291,7 +292,7 @@ export class IntegrationsOAuthController {
       normalized !== 'instagram' &&
       normalized !== 'mercadolivre'
     ) {
-      throw new BadRequestException('Provedor OAuth invalido');
+      throw new NotFoundException('Provider OAuth nao suportado');
     }
 
     return normalized;
