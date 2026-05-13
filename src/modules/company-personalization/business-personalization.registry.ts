@@ -91,7 +91,7 @@ export const COMPANY_MODULES: CompanyModuleDefinition[] = [
   { key: 'chat', label: 'Chat IA', description: 'Analise conversacional dos dados.', route: '/chat', defaultEnabled: true, order: 2 },
   { key: 'attendant', label: 'Atendente IA', description: 'Atendimento e vendas via WhatsApp.', route: '/attendant', defaultEnabled: false, order: 3 },
   { key: 'insights', label: 'Insights', description: 'Alertas e diagnosticos de IA.', route: '/insights', defaultEnabled: true, order: 4 },
-  { key: 'market_intelligence', label: 'Mercado', description: 'Radar de concorrencia e oportunidades.', route: '/market-intel', defaultEnabled: false, order: 5 },
+  { key: 'market_intelligence', label: 'Marketing', description: 'Radar de concorrencia e oportunidades.', route: '/market-intel', defaultEnabled: false, order: 5 },
   { key: 'automations', label: 'Projetos', description: 'Planos de acao e automacoes.', route: '/command-center', defaultEnabled: false, order: 6 },
   { key: 'products', label: 'Produtos', description: 'Catalogo, margem e mix de produtos.', route: '/products', defaultEnabled: false, order: 7 },
   { key: 'customers', label: 'Clientes', description: 'Base de clientes e relacionamento.', route: '/customers', defaultEnabled: true, order: 8 },

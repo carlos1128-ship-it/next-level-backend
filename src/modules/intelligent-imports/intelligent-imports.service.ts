@@ -7,7 +7,9 @@ import {
   ImportedEntity,
   ImportedMetric,
   IntelligentImport,
+  FinancialTransactionType,
   Prisma,
+  SaleChannel,
 } from '@prisma/client';
 import { promises as fs } from 'fs';
 import * as path from 'path';
@@ -349,6 +351,15 @@ export class IntelligentImportsService {
             status: IMPORTED_ENTITY_STATUSES.CONFIRMED,
           },
         });
+        await this.persistNormalizedEntity(tx, {
+          userId,
+          companyId: current.companyId,
+          importId: current.id,
+          platform: extraction.detectedPlatform,
+          entityType: entity.entityType,
+          data: entity.data,
+          confidence: entity.confidence,
+        });
       }
 
       await tx.intelligentImport.update({
@@ -660,6 +671,271 @@ export class IntelligentImportsService {
       return IMPORTED_METRIC_SOURCES.SCREENSHOT;
     }
     return IMPORTED_METRIC_SOURCES.MANUAL_TEXT;
+  }
+
+  private async persistNormalizedEntity(
+    tx: Prisma.TransactionClient,
+    input: {
+      userId: string;
+      companyId: string;
+      importId: string;
+      platform: string;
+      entityType: string;
+      data: Record<string, unknown>;
+      confidence: number;
+    },
+  ) {
+    const source = this.normalizeImportSource(input.platform);
+    const data = input.data || {};
+    const entityType = this.normalizeLowerEntityType(input.entityType);
+
+    if (entityType === 'product') {
+      const name = this.firstString(data, ['name', 'nome', 'produto', 'product', 'title']);
+      if (!name) return;
+      const sku = this.firstString(data, ['sku', 'codigo', 'code']);
+      const existing = await tx.product.findFirst({
+        where: {
+          companyId: input.companyId,
+          OR: [
+            ...(sku ? [{ sku }] : []),
+            { name },
+          ],
+        },
+        select: { id: true },
+      });
+      const payload = {
+        name,
+        sku: sku || undefined,
+        category: this.firstString(data, ['category', 'categoria']) || undefined,
+        price: new Prisma.Decimal(this.firstNumber(data, ['price', 'preco', 'valor', 'amount']) || 0),
+        cost: this.optionalDecimal(data, ['cost', 'custo']),
+        metadataJson: undefined,
+      };
+      if (existing) {
+        await tx.product.update({
+          where: { id: existing.id },
+          data: {
+            name: payload.name,
+            sku: payload.sku,
+            category: payload.category,
+            price: payload.price,
+            cost: payload.cost,
+          },
+        });
+      } else {
+        await tx.product.create({
+          data: {
+            companyId: input.companyId,
+            name: payload.name,
+            sku: payload.sku,
+            category: payload.category,
+            price: payload.price,
+            cost: payload.cost,
+          },
+        });
+      }
+      return;
+    }
+
+    if (entityType === 'customer') {
+      const name = this.firstString(data, ['name', 'nome', 'cliente', 'customer']) || 'Cliente importado';
+      const email = this.firstString(data, ['email', 'e-mail']);
+      const phone = this.firstString(data, ['phone', 'telefone', 'celular', 'whatsapp']);
+      const existing = await tx.customer.findFirst({
+        where: {
+          companyId: input.companyId,
+          OR: [
+            ...(email ? [{ email }] : []),
+            ...(phone ? [{ phone }] : []),
+            { name },
+          ],
+        },
+        select: { id: true },
+      });
+      const payload = {
+        name,
+        email: email || undefined,
+        phone: phone || undefined,
+        channel: source.toLowerCase(),
+        source,
+        metadata: this.toJson({ importedBy: 'INTELLIGENT_IMPORT', importId: input.importId, confidence: input.confidence }),
+      };
+      if (existing) {
+        await tx.customer.update({ where: { id: existing.id }, data: payload });
+      } else {
+        await tx.customer.create({ data: { companyId: input.companyId, ...payload } });
+      }
+      return;
+    }
+
+    if (entityType === 'order') {
+      const amount = this.firstNumber(data, ['total', 'totalAmount', 'paidAmount', 'valor', 'amount', 'revenue']);
+      if (!amount || amount <= 0) return;
+      const externalId = this.firstString(data, ['orderId', 'pedido', 'id', 'numero']) || `${input.importId}:${JSON.stringify(data).slice(0, 80)}`;
+      const normalizedExternalId = `intelligent-import:${source}:${externalId}`;
+      const occurredAt = this.firstDate(data, ['date', 'data', 'occurredAt', 'createdAt']) || new Date();
+      const productName = this.firstString(data, ['productName', 'produto', 'item', 'title']) || `Pedido ${source}`;
+      const sale = await tx.sale.upsert({
+        where: {
+          companyId_channel_externalId: {
+            companyId: input.companyId,
+            channel: SaleChannel.manual,
+            externalId: normalizedExternalId,
+          },
+        },
+        update: {
+          amount: new Prisma.Decimal(amount),
+          productName,
+          category: source,
+          metadataJson: this.toJson({ source, importId: input.importId, raw: data }),
+          occurredAt,
+        },
+        create: {
+          userId: input.userId,
+          companyId: input.companyId,
+          amount: new Prisma.Decimal(amount),
+          productName,
+          category: source,
+          channel: SaleChannel.manual,
+          externalId: normalizedExternalId,
+          metadataJson: this.toJson({ source, importId: input.importId, raw: data }),
+          occurredAt,
+        },
+      });
+      await tx.financialTransaction.upsert({
+        where: {
+          companyId_source_externalId: {
+            companyId: input.companyId,
+            source: 'intelligent_import',
+            externalId: normalizedExternalId,
+          },
+        },
+        update: {
+          amount: new Prisma.Decimal(amount),
+          description: `Receita importada: ${productName}`,
+          category: source,
+          metadataJson: this.toJson({ source, importId: input.importId, saleId: sale.id, raw: data }),
+          date: occurredAt,
+          occurredAt,
+        },
+        create: {
+          companyId: input.companyId,
+          userId: input.userId,
+          type: FinancialTransactionType.INCOME,
+          amount: new Prisma.Decimal(amount),
+          description: `Receita importada: ${productName}`,
+          category: source,
+          source: 'intelligent_import',
+          externalId: normalizedExternalId,
+          metadataJson: this.toJson({ source, importId: input.importId, saleId: sale.id, raw: data }),
+          date: occurredAt,
+          occurredAt,
+        },
+      });
+      return;
+    }
+
+    if (entityType === 'cost') {
+      const amount = this.firstNumber(data, ['amount', 'valor', 'cost', 'custo', 'total']);
+      if (!amount || amount <= 0) return;
+      const name = this.firstString(data, ['name', 'nome', 'description', 'descricao', 'categoria']) || `Custo ${source}`;
+      const occurredAt = this.firstDate(data, ['date', 'data', 'occurredAt']) || new Date();
+      const externalId = `intelligent-import:${source}:cost:${input.importId}:${name}:${amount}`;
+      await tx.operationalCost.create({
+        data: {
+          companyId: input.companyId,
+          name,
+          category: this.firstString(data, ['category', 'categoria']) || source,
+          amount: new Prisma.Decimal(amount),
+          date: occurredAt,
+        },
+      });
+      await tx.financialTransaction.upsert({
+        where: {
+          companyId_source_externalId: {
+            companyId: input.companyId,
+            source: 'intelligent_import',
+            externalId,
+          },
+        },
+        update: {
+          amount: new Prisma.Decimal(amount),
+          description: `Despesa importada: ${name}`,
+          category: source,
+          date: occurredAt,
+          occurredAt,
+        },
+        create: {
+          companyId: input.companyId,
+          userId: input.userId,
+          type: FinancialTransactionType.EXPENSE,
+          amount: new Prisma.Decimal(amount),
+          description: `Despesa importada: ${name}`,
+          category: source,
+          source: 'intelligent_import',
+          externalId,
+          metadataJson: this.toJson({ source, importId: input.importId, raw: data }),
+          date: occurredAt,
+          occurredAt,
+        },
+      });
+    }
+  }
+
+  private normalizeImportSource(platform: string | null | undefined) {
+    const normalized = (platform || '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+    return normalized && normalized !== 'UNKNOWN' ? normalized : 'INTELLIGENT_IMPORT';
+  }
+
+  private firstString(data: Record<string, unknown>, keys: string[]) {
+    for (const key of keys) {
+      const value = data[key] ?? data[key.toLowerCase()] ?? data[key.toUpperCase()];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+      if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+    }
+    return null;
+  }
+
+  private firstNumber(data: Record<string, unknown>, keys: string[]) {
+    for (const key of keys) {
+      const value = data[key] ?? data[key.toLowerCase()] ?? data[key.toUpperCase()];
+      const numeric = this.toNumber(value);
+      if (numeric !== null) return numeric;
+    }
+    return null;
+  }
+
+  private optionalDecimal(data: Record<string, unknown>, keys: string[]) {
+    const value = this.firstNumber(data, keys);
+    return value === null ? undefined : new Prisma.Decimal(value);
+  }
+
+  private firstDate(data: Record<string, unknown>, keys: string[]) {
+    const raw = this.firstString(data, keys);
+    if (!raw) return null;
+    const parsed = new Date(raw);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  private toNumber(value: unknown) {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value !== 'string') return null;
+    const normalized = value.trim();
+    if (!normalized) return null;
+    const commaIndex = normalized.lastIndexOf(',');
+    const dotIndex = normalized.lastIndexOf('.');
+    let raw = normalized;
+    if (commaIndex >= 0 && dotIndex >= 0) {
+      raw = commaIndex > dotIndex ? normalized.replace(/\./g, '').replace(',', '.') : normalized.replace(/,/g, '');
+    } else if (commaIndex >= 0) {
+      raw = normalized.replace(',', '.');
+    }
+    const numeric = Number(raw.replace(/[^\d.-]/g, ''));
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+
+  private toJson(value: Record<string, unknown>) {
+    return value as Prisma.InputJsonValue;
   }
 
   private toDetectedCategoryEnum(value: string | null | undefined) {

@@ -129,6 +129,22 @@ export class SalesService {
     });
   }
 
+  async findByCompanyAndPeriodForUser(
+    userId: string,
+    companyId: string,
+    start: Date,
+    end: Date,
+  ) {
+    await this.ensureUserCompanyAccess(userId, companyId);
+    return this.prisma.sale.findMany({
+      where: {
+        companyId,
+        occurredAt: { gte: start, lte: end },
+      },
+      orderBy: { occurredAt: 'desc' },
+    });
+  }
+
   async update(id: string, userId: string, dto: UpdateSaleDto) {
     const existing = await this.prisma.sale.findFirst({ where: { id, userId } });
     if (!existing) {
@@ -272,6 +288,22 @@ export class SalesService {
       _sum: { amount: true },
     });
     return Number(result._sum?.amount ?? 0);
+  }
+
+  private async ensureUserCompanyAccess(userId: string, companyId: string) {
+    const company = await this.prisma.company.findFirst({
+      where: {
+        id: companyId,
+        OR: [
+          { userId },
+          { users: { some: { id: userId } } },
+        ],
+      },
+      select: { id: true },
+    });
+    if (!company) {
+      throw new NotFoundException('Empresa nao encontrada');
+    }
   }
 
   private async upsertSaleAIAttribution(

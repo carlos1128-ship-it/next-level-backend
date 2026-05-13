@@ -2,57 +2,43 @@
 
 ## Preparacao
 
-1. Backend Render em commit atual e `GET /api/health` respondendo.
+1. Backend Render no commit atual e raiz `/` respondendo `ok: true`.
 2. Frontend Vercel carregando com `VITE_API_URL=https://next-level-backend.onrender.com`.
-3. Banco Neon com migrations aplicadas.
-4. Webhooks configurados no provedor de pagamento e no Mercado Livre.
+3. Neon com migrations aplicadas e Prisma Client gerado.
+4. Webhooks de pagamento e Mercado Livre configurados.
 
-## Fluxo De Usuario Pago
+## Fluxo final
 
-1. Criar usuario novo com email real.
-2. Criar ou selecionar empresa.
-3. Escolher plano Premium.
-4. Criar checkout.
-5. Pagar ou enviar webhook real/sandbox aprovado.
-6. Confirmar no banco que `Subscription.status=ACTIVE` e `planKey=PREMIUM` na empresa correta.
-7. Abrir `/billing/success` e aguardar redirecionamento.
-8. Reentrar com o mesmo email e confirmar que nao pede novo pagamento.
-9. Confirmar UI de plano/uso mostrando Premium.
+1. Abrir landing page.
+2. Entrar com Google.
+3. Se nao houver plano ativo, escolher Premium.
+4. Completar checkout real ou sandbox.
+5. Voltar para Next Level pela URL de sucesso.
+6. Confirmar assinatura ativa em `/billing/me` e na UI.
+7. Confirmar acesso ao dashboard.
+8. Confirmar pagina `Uso do plano`.
+9. Abrir Integracoes.
+10. Conectar Mercado Livre.
+11. Confirmar retorno OAuth e status conectado.
+12. Confirmar que a sincronizacao automatica iniciou ou que a ultima sync foi registrada.
+13. Abrir Produtos e Serviços e validar produtos importados.
+14. Abrir Pedidos e validar pedidos do Mercado Livre e vendas/importacoes confirmadas.
+15. Abrir Clientes se compradores forem importados.
+16. Abrir Financeiro e validar receita importada.
+17. Abrir Dashboard e validar receita/metricas atualizadas.
+18. Perguntar no chat IA: `Quanto vendi pelo Mercado Livre?`
+19. Enviar amostra no Adicionar dados, revisar e confirmar.
+20. Confirmar que dados normalizados aparecem em modulo correto: pedidos, clientes, produtos, financeiro ou custos.
+21. Testar alteracao de senha em conta com senha.
+22. Confirmar Essential bloqueado no Mercado Livre.
+23. Confirmar Premium liberado no Mercado Livre.
+24. Confirmar Pro Business liberado no Mercado Livre.
+25. Fazer logout/login novamente e confirmar que usuario pago nao volta para cobranca.
 
-## Admin
+## Validacoes extras
 
-1. Configurar `ADMIN_EMAIL` ou `ADMIN_COMPANY_ID`.
-2. Rodar `npm run admin:pro-business`.
-3. Confirmar UI de plano/uso como Business/PRO_BUSINESS.
-4. Confirmar Mercado Livre liberado por plano, sem depender de bypass.
-
-## Mercado Livre
-
-1. Com plano Essential, abrir integracoes e confirmar Mercado Livre bloqueado.
-2. Com plano Premium, confirmar botao Mercado Livre liberado.
-3. Conectar Mercado Livre via OAuth.
-4. Confirmar status conectado, seller id e conta exibidos.
-5. Clicar `Sincronizar agora`.
-6. Confirmar produtos em `/products`.
-7. Confirmar pedidos em `/orders`.
-8. Confirmar perguntas em `/questions`.
-9. Confirmar que pedido pago criou `Sale` com `channel=mercadolivre`.
-10. Confirmar que pedido pago criou `FinancialTransaction` com `source=mercadolivre`.
-11. Rodar sync novamente e confirmar que receita nao duplicou.
-12. Enviar webhook `orders_v2` e confirmar que pedido/sale/transacao foram atualizados sem duplicar.
-
-## Dashboard, Financeiro E IA
-
-1. Dashboard deve incluir receita Mercado Livre.
-2. Financeiro deve listar transacao de receita Mercado Livre.
-3. Perguntar no chat IA: `Quanto vendi pelo Mercado Livre?`
-4. Perguntar: `Quais produtos venderam mais no Mercado Livre?`
-5. Perguntar: `Tenho perguntas pendentes no Mercado Livre?`
-
-## WhatsApp
-
-1. Plano Premium ou Business.
-2. Abrir integracoes e iniciar WhatsApp.
-3. Confirmar QR/estado sem erro interno.
-4. Enviar mensagem inbound de teste.
-5. Confirmar que processamento de acao nao registra `undefined.upsert`.
+1. Rodar sync/webhook Mercado Livre duas vezes e confirmar que `Sale` e `FinancialTransaction` nao duplicam.
+2. Testar webhook `orders_v2`, `items`, `questions` e `shipments`.
+3. Confirmar que `/questions` redireciona para dashboard e nao aparece no menu.
+4. Confirmar que Dashboard mostra filtros: Hoje, Ontem, 7 dias, Mes, Ano.
+5. Exportar relatorio no Dashboard e confirmar PDF visual, nao CSV cru.

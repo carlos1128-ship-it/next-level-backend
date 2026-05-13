@@ -1,4 +1,4 @@
-import { IsDateString, IsOptional } from 'class-validator';
+import { IsDateString, IsOptional, IsString } from 'class-validator';
 
 export class PeriodQueryDto {
   @IsOptional()
@@ -8,4 +8,8 @@ export class PeriodQueryDto {
   @IsOptional()
   @IsDateString()
   end?: string;
+
+  @IsOptional()
+  @IsString()
+  companyId?: string;
 }

@@ -34,11 +34,19 @@ export class SalesController {
 
   @Get()
   async list(@Req() req: JwtRequest, @Query() query: PeriodQueryDto) {
-    const { start, end } = query;
+    const { start, end, companyId } = query;
     const startDate = start
       ? new Date(start)
       : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const endDate = end ? new Date(end) : new Date();
+    if (companyId) {
+      return this.salesService.findByCompanyAndPeriodForUser(
+        req.user.id,
+        companyId,
+        startDate,
+        endDate,
+      );
+    }
     return this.salesService.findByUserAndPeriod(req.user.id, startDate, endDate);
   }
 
