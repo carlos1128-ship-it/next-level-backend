@@ -20,6 +20,11 @@ export type PersonalizationProfileInput = {
   monthlyRevenueRange?: string | null;
   dataMaturity?: string | null;
   originalBusinessDescription?: string | null;
+  customBusinessDescription?: string | null;
+  mainGoals?: unknown;
+  priorityModules?: unknown;
+  nonPriorityModules?: unknown;
+  preferredDashboardFocus?: string | null;
   detectedBusinessType?: string | null;
   classificationConfidence?: number | null;
   usesPaidTraffic?: boolean | null;
@@ -410,6 +415,8 @@ export function buildPersonalizationRecommendations(
   const firstActions = new Set(template.firstActions);
   const reports = new Set(template.reports);
   const insightTopics = new Set(template.insightTopics);
+  const priorityModules = normalizeStringArray(profile.priorityModules).filter((key) => MODULE_KEYS.has(key));
+  const nonPriorityModules = new Set(normalizeStringArray(profile.nonPriorityModules).filter((key) => MODULE_KEYS.has(key)));
 
   modules.add('dashboard');
   modules.add('settings');
@@ -468,6 +475,13 @@ export function buildPersonalizationRecommendations(
     firstActions.add('Ativar radar de mercado');
   }
 
+  priorityModules.forEach((moduleKey) => modules.add(moduleKey));
+  nonPriorityModules.forEach((moduleKey) => {
+    if (!['dashboard', 'reports', 'settings', 'profile', 'plans'].includes(moduleKey)) {
+      modules.delete(moduleKey);
+    }
+  });
+
   const agent = buildAgentRecommendation(template, profile, companyName);
 
   return {
@@ -494,6 +508,22 @@ function buildAgentRecommendation(
   const businessModel = profile.businessModel?.trim()
     ? ` Modelo de negocio: ${profile.businessModel.trim()}.`
     : '';
+  const customDescription = (profile.customBusinessDescription || profile.originalBusinessDescription)?.trim()
+    ? ` Contexto declarado pelo dono: ${(profile.customBusinessDescription || profile.originalBusinessDescription || '').trim()}.`
+    : '';
+  const goals = normalizeStringArray(profile.mainGoals);
+  const goalsText = goals.length
+    ? ` Objetivos prioritarios: ${goals.join(', ')}.`
+    : goal;
+  const priorityModules = normalizeStringArray(profile.priorityModules);
+  const nonPriorityModules = normalizeStringArray(profile.nonPriorityModules);
+  const moduleContext = [
+    priorityModules.length ? ` Modulos prioritarios: ${priorityModules.join(', ')}.` : '',
+    nonPriorityModules.length ? ` Modulos nao prioritarios agora: ${nonPriorityModules.join(', ')}.` : '',
+    profile.preferredDashboardFocus?.trim()
+      ? ` Foco preferido do dashboard: ${profile.preferredDashboardFocus.trim()}.`
+      : '',
+  ].join('');
   const safety = template.agent.promptSafety.join(' ');
 
   return {
@@ -514,7 +544,16 @@ function buildAgentRecommendation(
       `Voce e um ${template.agent.role} da ${name}. ` +
       `Use tom ${template.agent.tone}.` +
       businessModel +
-      goal +
+      customDescription +
+      goalsText +
+      moduleContext +
       ` Responda com clareza, faca perguntas objetivas quando faltar contexto e nao invente informacoes. ${safety}`,
   };
+}
+
+function normalizeStringArray(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => String(item || '').trim())
+    .filter(Boolean);
 }

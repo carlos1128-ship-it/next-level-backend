@@ -18,6 +18,7 @@ export class AiBusinessController {
     private readonly aiWhatsAppAnalysisService: AiWhatsAppAnalysisService,
   ) {}
 
+  @RequirePlan('COMMON')
   @Get('dashboard-insights')
   getDashboardInsights(@CurrentUser() user: JwtPayload, @Query('period') period?: string) {
     return this.aiBrainService.generateDashboardInsights(this.companyId(user), period);
@@ -91,6 +92,7 @@ export class AiBusinessController {
   }
 
   @Post('events/process')
+  @RequirePlan('COMMON')
   processEvents(@CurrentUser() user: JwtPayload, @Body('period') period?: string) {
     return this.aiBrainService.generateDashboardInsights(this.companyId(user), period);
   }

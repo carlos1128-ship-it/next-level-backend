@@ -17,6 +17,8 @@ type RequestUser = {
 
 type BillingGuardRequest = {
   user?: RequestUser;
+  url?: string;
+  originalUrl?: string;
   query?: Record<string, unknown>;
   body?: Record<string, unknown>;
   params?: Record<string, unknown>;
@@ -67,14 +69,18 @@ export class SubscriptionGuard implements CanActivate {
       ]) || 'COMMON';
 
     if (!hasPlanAccess(subscription.planKey, requiredPlan)) {
+      const requiredPlanLabel = requiredPlan === 'PREMIUM' ? 'Premium' : 'Pro Business';
+      const path = `${request.originalUrl || request.url || ''}`.toLowerCase();
+      const message = path.includes('/integrations') || path.includes('/mercado-livre') || path.includes('/meta')
+        ? 'Assine Premium para ter integracoes e mais.'
+        : `Este recurso esta disponivel a partir do plano ${requiredPlanLabel}.`;
       throw new HttpException(
         {
           statusCode: HttpStatus.FORBIDDEN,
           code: 'PLAN_UPGRADE_REQUIRED',
-          message:
-            requiredPlan === 'PREMIUM'
-              ? 'Assine Premium para ter integracoes e mais.'
-              : 'Este recurso precisa de um plano superior.',
+          currentPlan: subscription.planKey,
+          requiredPlan,
+          message,
         },
         HttpStatus.FORBIDDEN,
       );

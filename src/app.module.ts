@@ -17,6 +17,7 @@ import { AiModule } from './modules/ai/ai.module';
 import { AlertsModule } from './modules/alerts/alerts.module';
 import { AnalysisModule } from './modules/analysis/analysis.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
+import { AttendantModule } from './modules/attendant/attendant.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { BillingModule } from './modules/billing/billing.module';
 import { SubscriptionGuard } from './modules/billing/guards/subscription.guard';
@@ -70,6 +71,7 @@ import { WhatsappModule } from './modules/whatsapp/whatsapp.module';
     AnalyticsModule,
     AlertsModule,
     AnalysisModule,
+    AttendantModule,
     IntegrationsModule,
     WhatsappModule,
     StrategyModule,

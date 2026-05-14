@@ -1564,6 +1564,11 @@ model CompanyProfile {
   monthlyRevenueRange         String?
   dataMaturity                String?
   originalBusinessDescription String?
+  customBusinessDescription   String?
+  mainGoals                   Json?
+  priorityModules             Json?
+  nonPriorityModules          Json?
+  preferredDashboardFocus     String?
   detectedBusinessType        String?
   classificationConfidence    Float?
   usesPaidTraffic             Boolean   @default(false)

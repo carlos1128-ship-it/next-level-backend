@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
@@ -53,6 +53,16 @@ export class BillingController {
     @Query('companyId') queryCompanyId?: string,
   ) {
     return this.billingService.createPortal(user, companyId || queryCompanyId || null);
+  }
+
+  @SkipSubscriptionCheck()
+  @Get('checkout-session/:sessionId/status')
+  getCheckoutSessionStatus(
+    @CurrentUser() user: Record<string, unknown>,
+    @Param('sessionId') sessionId: string,
+    @Query('companyId') companyId?: string,
+  ) {
+    return this.billingService.reconcileCheckoutSessionStatus(user, sessionId, companyId || null);
   }
 
   @Public()

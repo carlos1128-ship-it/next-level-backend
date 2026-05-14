@@ -98,7 +98,7 @@ export class BillingService {
 
   async getBillingConfig() {
     const backendUrl = this.backendUrl;
-    const configured = this.stripeService.isConfigured() && this.areAllStripePricesConfigured();
+    const configured = this.stripeService.isConfigured() && this.hasAnyStripePriceConfigured();
 
     return {
       paymentProvider: 'STRIPE',
@@ -263,6 +263,79 @@ export class BillingService {
     return { portalUrl: session.url };
   }
 
+  async reconcileCheckoutSessionStatus(
+    user: AuthUser,
+    sessionIdInput: string,
+    companyIdInput?: string | null,
+  ) {
+    const userId = this.resolveUserId(user);
+    const sessionId = String(sessionIdInput || '').trim();
+    if (!sessionId || !sessionId.startsWith('cs_')) {
+      throw new BadRequestException({ code: 'INVALID_CHECKOUT_SESSION', message: 'Sessao Stripe invalida.' });
+    }
+
+    const session = await this.stripeService.retrieveCheckoutSession(sessionId);
+    const metadata = session.metadata || {};
+    const localSubscriptionId =
+      this.stringValue(metadata.localSubscriptionId) || this.stringValue(session.client_reference_id);
+    const metadataUserId = this.stringValue(metadata.userId);
+    const metadataCompanyId = this.stringValue(metadata.companyId);
+    const localSubscription = await this.findStripeLocalSubscription({
+      localSubscriptionId,
+      stripeSubscriptionId: this.asStripeId(session.subscription),
+      checkoutSessionId: session.id,
+    });
+
+    const companyId = await this.resolveCompanyIdForUser(
+      userId,
+      companyIdInput || metadataCompanyId || localSubscription?.companyId || null,
+      user.companyId || null,
+    );
+    if (!companyId) {
+      throw new BadRequestException({ code: 'COMPANY_REQUIRED', message: 'Selecione uma empresa para confirmar o plano.' });
+    }
+
+    if (metadataUserId && metadataUserId !== userId && localSubscription?.userId !== userId) {
+      throw new ForbiddenException('Sessao Stripe nao pertence ao usuario autenticado.');
+    }
+    const sessionCompanyId = metadataCompanyId || localSubscription?.companyId;
+    if (sessionCompanyId && sessionCompanyId !== companyId) {
+      throw new ForbiddenException('Sessao Stripe nao pertence a empresa ativa.');
+    }
+
+    const stripeSubscriptionId = this.asStripeId(session.subscription);
+    if (stripeSubscriptionId && this.isCheckoutSessionReadyForReconciliation(session)) {
+      const stripeSubscription = this.isStripeSubscriptionRecord(session.subscription)
+        ? session.subscription
+        : await this.stripeService.retrieveSubscription(stripeSubscriptionId);
+      await this.applyStripeSubscription(stripeSubscription, undefined, session);
+    }
+
+    const billing = await this.getBillingForUser(userId, companyId);
+    const hasActiveSubscription = Boolean(billing.hasActiveSubscription);
+    const status = hasActiveSubscription
+      ? 'ACTIVE'
+      : this.isCheckoutSessionReadyForReconciliation(session)
+        ? 'AWAITING_STRIPE_WEBHOOK'
+        : 'PENDING_PAYMENT';
+
+    return {
+      status,
+      hasActiveSubscription,
+      checkoutSession: {
+        id: session.id,
+        stripeStatus: session.status || null,
+        paymentStatus: session.payment_status || null,
+      },
+      billing,
+      message: hasActiveSubscription
+        ? 'Plano ativado com sucesso.'
+        : this.isCheckoutSessionReadyForReconciliation(session)
+          ? 'Estamos aguardando a confirmacao final da Stripe.'
+          : 'Confirmando pagamento com a Stripe.',
+    };
+  }
+
   async cancelCurrentSubscription(user: AuthUser) {
     const userId = this.resolveUserId(user);
     const subscription = await this.prisma.subscription.findFirst({
@@ -300,8 +373,20 @@ export class BillingService {
   async handleStripeWebhook(rawBody: Buffer | undefined, signature: string | undefined) {
     const event = this.stripeService.constructWebhookEvent(rawBody, signature);
     const eventId = `STRIPE:${event.id}`;
+    this.logger.log(JSON.stringify({
+      event: 'billing.stripe.webhook.received',
+      stripeEventId: event.id,
+      type: event.type,
+      livemode: event.livemode,
+    }));
     const existing = await this.prisma.paymentEvent.findUnique({ where: { eventId } });
     if (existing) {
+      this.logger.log(JSON.stringify({
+        event: 'billing.stripe.webhook.duplicate',
+        stripeEventId: event.id,
+        type: event.type,
+        processed: existing.processed,
+      }));
       return { received: true, duplicated: true, processed: existing.processed };
     }
 
@@ -484,6 +569,19 @@ export class BillingService {
       ? await this.prisma.subscription.update({ where: { id: existing.id }, data })
       : await this.prisma.subscription.create({ data });
 
+    this.logger.log(JSON.stringify({
+      event: 'billing.stripe.subscription.synced',
+      subscriptionId: updated.id,
+      userId: updated.userId,
+      companyId: updated.companyId,
+      planKey: updated.planKey,
+      billingCycle: updated.billingCycle,
+      status: updated.status,
+      stripeCustomerId,
+      stripeSubscriptionId,
+      checkoutSessionId: checkoutSession?.id || null,
+    }));
+
     if (stripeCustomerId) {
       await this.prisma.company.update({
         where: { id: baseCompanyId },
@@ -543,14 +641,16 @@ export class BillingService {
     const activeByCompany = companyId ? await this.findActiveSubscriptionForCompany(companyId) : null;
     if (activeByCompany) return activeByCompany;
 
-    const active = await this.findActiveSubscription(userId);
-    if (active) return active;
+    if (!companyId) {
+      const active = await this.findActiveSubscription(userId);
+      if (active) return active;
+    }
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { id: true, email: true, plan: true, companyId: true, admin: true },
     });
-    if (!user) return this.findLatestSubscription(userId);
+    if (!user) return companyId ? this.findLatestSubscriptionForCompany(companyId) : this.findLatestSubscription(userId);
 
     const shouldGrantAdmin =
       (user.admin || this.isBillingAdminEmail(user.email)) &&
@@ -589,7 +689,7 @@ export class BillingService {
       }
     }
 
-    return this.findLatestSubscription(userId);
+    return companyId ? null : this.findLatestSubscription(userId);
   }
 
   private async grantInternalSubscription(
@@ -827,6 +927,23 @@ export class BillingService {
     );
   }
 
+  private isCheckoutSessionReadyForReconciliation(session: StripeCheckoutSessionRecord) {
+    return (
+      session.status === 'complete' ||
+      session.payment_status === 'paid' ||
+      session.payment_status === 'no_payment_required'
+    );
+  }
+
+  private isStripeSubscriptionRecord(value: unknown): value is StripeSubscriptionRecord {
+    return Boolean(
+      value &&
+        typeof value === 'object' &&
+        typeof (value as { id?: unknown }).id === 'string' &&
+        typeof (value as { status?: unknown }).status === 'string',
+    );
+  }
+
   private planKeyFromStripePrice(priceId?: string | null) {
     if (!priceId) return null;
     for (const planKey of ['COMMON', 'PREMIUM', 'PRO_BUSINESS'] as BillingPlanKey[]) {
@@ -858,6 +975,12 @@ export class BillingService {
   private areAllStripePricesConfigured() {
     return (['COMMON', 'PREMIUM', 'PRO_BUSINESS'] as BillingPlanKey[]).every((planKey) =>
       [BillingCycle.MONTHLY, BillingCycle.ANNUAL].every((cycle) => Boolean(this.getStripePriceId(planKey, cycle))),
+    );
+  }
+
+  private hasAnyStripePriceConfigured() {
+    return (['COMMON', 'PREMIUM', 'PRO_BUSINESS'] as BillingPlanKey[]).some((planKey) =>
+      [BillingCycle.MONTHLY, BillingCycle.ANNUAL].some((cycle) => Boolean(this.getStripePriceId(planKey, cycle))),
     );
   }
 

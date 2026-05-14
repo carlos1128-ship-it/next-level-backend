@@ -9,6 +9,9 @@ import Stripe from 'stripe';
 export type StripeCheckoutSessionRecord = {
   id: string;
   url: string | null;
+  status?: string | null;
+  payment_status?: string | null;
+  client_reference_id?: string | null;
   subscription?: unknown;
   customer?: unknown;
   metadata?: Record<string, string> | null;
@@ -121,6 +124,13 @@ export class StripeService {
       expand: ['items.data.price'],
     });
     return subscription as StripeSubscriptionRecord;
+  }
+
+  async retrieveCheckoutSession(sessionId: string): Promise<StripeCheckoutSessionRecord> {
+    const session = await this.client().checkout.sessions.retrieve(sessionId, {
+      expand: ['subscription', 'subscription.items.data.price'],
+    });
+    return session as StripeCheckoutSessionRecord;
   }
 
   async cancelAtPeriodEnd(subscriptionId: string) {

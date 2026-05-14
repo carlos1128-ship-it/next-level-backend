@@ -1,5 +1,5 @@
 import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
-import { UserNiche } from '@prisma/client';
+import { Prisma, UserNiche } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   buildPersonalizationRecommendations,
@@ -37,7 +37,18 @@ type CompanyContext = {
   isAdmin: boolean;
 };
 
-const ESSENTIAL_MODULE_KEYS = new Set(['dashboard', 'settings', 'profile', 'plans', 'companies']);
+const ESSENTIAL_MODULE_KEYS = new Set([
+  'dashboard',
+  'reports',
+  'chat',
+  'attendant',
+  'insights',
+  'integrations',
+  'settings',
+  'profile',
+  'plans',
+  'companies',
+]);
 
 @Injectable()
 export class CompanyPersonalizationService {
@@ -152,6 +163,7 @@ export class CompanyPersonalizationService {
         context.companyName,
         recommendations,
         Boolean(payload.overwriteAgentConfig),
+        profile,
       );
     }
 
@@ -279,6 +291,7 @@ export class CompanyPersonalizationService {
       context.companyName,
       recommendations,
       false,
+      profile,
     );
 
     return {
@@ -298,8 +311,11 @@ export class CompanyPersonalizationService {
     companyName: string,
     recommendations: PersonalizationRecommendations,
     overwriteAgentConfig: boolean,
+    profile?: PersonalizationProfileInput | null,
   ) {
     const enabledModules = new Set(recommendations.modules);
+    const priorityModules = this.moduleList(profile?.priorityModules);
+    const nonPriorityModules = this.moduleList(profile?.nonPriorityModules);
     const enabledMetrics = new Set(
       CORE_DASHBOARD_METRIC_KEYS.filter((metric) => DASHBOARD_METRIC_KEYS.has(metric)),
     );
@@ -307,13 +323,18 @@ export class CompanyPersonalizationService {
     await this.prisma.$transaction([
       this.prisma.companyModulePreference.deleteMany({ where: { companyId } }),
       this.prisma.companyModulePreference.createMany({
-        data: COMPANY_MODULES.map((module) => ({
-          companyId,
-          moduleKey: module.key,
-          enabled: enabledModules.has(module.key) || ESSENTIAL_MODULE_KEYS.has(module.key),
-          order: module.order,
-          source: 'onboarding',
-        })),
+        data: COMPANY_MODULES.map((module) => {
+          const priorityIndex = priorityModules.indexOf(module.key);
+          const isEssential = ESSENTIAL_MODULE_KEYS.has(module.key);
+          const isNonPriority = nonPriorityModules.includes(module.key);
+          return {
+            companyId,
+            moduleKey: module.key,
+            enabled: isEssential || (!isNonPriority && enabledModules.has(module.key)),
+            order: priorityIndex >= 0 ? priorityIndex + 1 : module.order + 50,
+            source: priorityIndex >= 0 ? 'onboarding_priority' : isNonPriority ? 'onboarding_non_priority' : 'onboarding',
+          };
+        }),
       }),
       this.prisma.dashboardPreference.deleteMany({
         where: { companyId, userId: null },
@@ -452,11 +473,16 @@ export class CompanyPersonalizationService {
   }
 
   private normalizeProfileInput(payload: PersonalizationProfileInput) {
-    const originalBusinessDescription = this.optionalString(payload.originalBusinessDescription);
+    const customBusinessDescription = this.optionalString(
+      payload.customBusinessDescription || payload.originalBusinessDescription,
+    );
+    const originalBusinessDescription = this.optionalString(
+      payload.originalBusinessDescription || payload.customBusinessDescription,
+    );
     const initialBusinessType = normalizeBusinessType(payload.businessType);
     const classification =
-      initialBusinessType === 'other' && originalBusinessDescription
-        ? this.classifyBusinessDescription(originalBusinessDescription)
+      initialBusinessType === 'other' && (customBusinessDescription || originalBusinessDescription)
+        ? this.classifyBusinessDescription(customBusinessDescription || originalBusinessDescription || '')
         : {
             businessType: initialBusinessType,
             confidence: 1,
@@ -465,15 +491,27 @@ export class CompanyPersonalizationService {
     const confidence = Math.max(0, Math.min(1, classification.confidence));
     const businessType = confidence >= 0.45 ? classification.businessType : 'other';
 
+    const mainGoals = this.stringList(payload.mainGoals);
+    const mainGoal = this.optionalString(payload.mainGoal) || mainGoals[0] || null;
+    const priorityModules = this.moduleList(payload.priorityModules);
+    const nonPriorityModules = this.moduleList(payload.nonPriorityModules).filter(
+      (moduleKey) => !priorityModules.includes(moduleKey),
+    );
+
     return {
       businessType,
       businessModel: this.optionalString(payload.businessModel),
-      mainGoal: this.optionalString(payload.mainGoal),
+      mainGoal,
+      mainGoals: mainGoals.length ? mainGoals : (mainGoal ? [mainGoal] : []) as Prisma.InputJsonValue,
       salesChannel: this.optionalString(payload.salesChannel),
       companySize: this.optionalString(payload.companySize),
       monthlyRevenueRange: this.optionalString(payload.monthlyRevenueRange),
       dataMaturity: this.optionalString(payload.dataMaturity),
       originalBusinessDescription,
+      customBusinessDescription,
+      priorityModules: priorityModules as Prisma.InputJsonValue,
+      nonPriorityModules: nonPriorityModules as Prisma.InputJsonValue,
+      preferredDashboardFocus: this.optionalString(payload.preferredDashboardFocus),
       detectedBusinessType: classification.businessType,
       classificationConfidence: confidence,
       usesPaidTraffic: Boolean(payload.usesPaidTraffic),
@@ -572,6 +610,20 @@ export class CompanyPersonalizationService {
   private optionalString(value?: string | null) {
     const normalized = String(value || '').trim();
     return normalized || null;
+  }
+
+  private stringList(value: unknown) {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+      .slice(0, 12);
+  }
+
+  private moduleList(value: unknown) {
+    return this.stringList(value)
+      .map((item) => item.trim())
+      .filter((item) => isKnownModuleKey(item));
   }
 
   private async resolveCompanyContext(

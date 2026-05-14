@@ -343,7 +343,7 @@ export class PlanEntitlementsService {
     const activeSubscriptions = await this.prisma.subscription.findMany({
       where: {
         companyId,
-        status: { in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.PAID] },
+        status: { in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.PAID, SubscriptionStatus.TRIAL] },
       },
       orderBy: { createdAt: 'desc' },
       take: 5,
@@ -408,7 +408,7 @@ export class PlanEntitlementsService {
     currentPeriodEnd?: Date | null;
     expiresAt?: Date | null;
   }) {
-    const activeStatuses: SubscriptionStatus[] = [SubscriptionStatus.ACTIVE, SubscriptionStatus.PAID];
+    const activeStatuses: SubscriptionStatus[] = [SubscriptionStatus.ACTIVE, SubscriptionStatus.PAID, SubscriptionStatus.TRIAL];
     if (!activeStatuses.includes(subscription.status)) {
       return false;
     }

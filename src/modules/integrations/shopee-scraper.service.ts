@@ -126,7 +126,9 @@ export class ShopeeScraperService {
 
   constructor(private readonly prisma: PrismaService) {
     // Periodically clean up stale MFA sessions to prevent memory leaks
-    setInterval(() => this.cleanupStaleSessions(), this.SESSION_TTL_MS);
+    if (this.isShopeeRuntimeEnabled()) {
+      setInterval(() => this.cleanupStaleSessions(), this.SESSION_TTL_MS);
+    }
   }
 
   // ─── Cron: Sync All Connected Companies ─────────────────────────────────────
@@ -138,6 +140,8 @@ export class ShopeeScraperService {
    */
   @Cron(CronExpression.EVERY_30_MINUTES)
   async handleCronSync(): Promise<void> {
+    if (!this.isShopeeRuntimeEnabled()) return;
+
     this.logger.log('🚀 Shopee cron sync iniciando...');
 
     const companies = await this.prisma.company.findMany({
@@ -162,6 +166,10 @@ export class ShopeeScraperService {
         this.logger.error(`❌ Sync failed for company [${company.id}]: ${msg}`);
       }
     }
+  }
+
+  private isShopeeRuntimeEnabled() {
+    return String(process.env.SHOPEE_SYNC_ENABLED || '').trim().toLowerCase() === 'true';
   }
 
   // ─── Data Transformation: Raw Shopee JSON → Internal Schema ─────────────────
