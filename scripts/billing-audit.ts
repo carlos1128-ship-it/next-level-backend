@@ -3,7 +3,7 @@ import { BillingCycle, Plan, PrismaClient, SubscriptionStatus } from '@prisma/cl
 const prisma = new PrismaClient();
 const PLAN_KEYS = ['COMMON', 'PREMIUM', 'PRO_BUSINESS'] as const;
 const BILLING_CYCLES = [BillingCycle.MONTHLY, BillingCycle.ANNUAL] as const;
-const ACTIVE_STATUSES = [SubscriptionStatus.ACTIVE, SubscriptionStatus.PAID];
+const ACTIVE_STATUSES = [SubscriptionStatus.ACTIVE, SubscriptionStatus.PAID, SubscriptionStatus.TRIAL];
 
 function adminEmails() {
   return (process.env.BILLING_ADMIN_EMAILS || '')
@@ -18,7 +18,7 @@ function legacyGraceEnabled() {
 
 async function ensurePlan(planKey: 'COMMON' | 'PREMIUM' | 'PRO_BUSINESS') {
   const labels = {
-    COMMON: { name: 'Comum', description: 'Plano inicial.', level: 1 },
+    COMMON: { name: 'Essencial', description: 'Plano inicial.', level: 1 },
     PREMIUM: { name: 'Premium', description: 'Plano intermediario.', level: 2 },
     PRO_BUSINESS: { name: 'Pro Business', description: 'Plano completo.', level: 3 },
   }[planKey];
@@ -87,13 +87,13 @@ async function main() {
   const shouldFix = process.argv.includes('--fix');
   const emails = adminEmails();
 
-  const [planCount, priceCount, subscriptionsByStatus, subscriptionsByProvider, recentCaktoEvents, failedProcessingCount, unmatchedWebhookCount, aiUsageLimits] = await Promise.all([
+  const [planCount, priceCount, subscriptionsByStatus, subscriptionsByProvider, recentStripeEvents, failedProcessingCount, aiUsageLimits] = await Promise.all([
     prisma.billingPlan.count(),
     prisma.billingPlanPrice.count(),
     prisma.subscription.groupBy({ by: ['status'], _count: { _all: true } }),
     prisma.subscription.groupBy({ by: ['provider'], _count: { _all: true } }),
     prisma.paymentEvent.findMany({
-      where: { provider: 'CAKTO' },
+      where: { provider: 'STRIPE' },
       orderBy: { createdAt: 'desc' },
       take: 10,
       select: {
@@ -106,13 +106,7 @@ async function main() {
       },
     }),
     prisma.paymentEvent.count({
-      where: { provider: 'CAKTO', processingError: { not: null } },
-    }),
-    prisma.paymentEvent.count({
-      where: {
-        provider: 'CAKTO',
-        processingError: { contains: 'Could not safely match Cakto webhook to local subscription' },
-      },
+      where: { provider: 'STRIPE', processingError: { not: null } },
     }),
     prisma.aIUsageLimit.findMany({
       where: { planKey: { in: ['common', 'premium', 'pro_business'] } },
@@ -133,15 +127,15 @@ async function main() {
       include: { prices: true },
     });
     for (const billingCycle of BILLING_CYCLES) {
-      const price = plan?.prices.find((item) => item.billingCycle === billingCycle && item.provider === 'CAKTO');
+      const price = plan?.prices.find((item) => item.billingCycle === billingCycle && item.provider === 'STRIPE');
       planMapping.push({
         planKey,
         billingCycle,
         exists: Boolean(price),
         amountInCents: price?.amountInCents ?? null,
         provider: price?.provider ?? null,
-        checkoutUrlConfigured: Boolean(price?.providerCheckoutUrl),
-        productId: price?.providerProductId ?? null,
+        stripePriceConfigured: Boolean(price?.stripePriceId || price?.providerProductId),
+        stripePriceId: price?.stripePriceId ?? price?.providerProductId ?? null,
         offerId: price?.providerOfferId ?? null,
       });
     }
@@ -200,16 +194,15 @@ async function main() {
         fixed: shouldFix,
         billingPlanCount: planCount,
         billingPlanPriceCount: priceCount,
-        caktoPlanMapping: planMapping,
-        missingCheckoutUrls: planMapping.filter((item) => !item.checkoutUrlConfigured),
+        stripePlanMapping: planMapping,
+        missingStripePrices: planMapping.filter((item) => !item.stripePriceConfigured),
         duplicatePlanPrices: duplicatePrices,
         subscriptionsByStatus,
         subscriptionsByProvider,
         adminGrantStatus,
         legacyWithoutActive,
-        recentCaktoEvents,
+        recentStripeEvents,
         failedProcessingCount,
-        unmatchedWebhookCount,
         aiUsageLimits,
       },
       null,

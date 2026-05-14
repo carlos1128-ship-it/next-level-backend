@@ -47,7 +47,7 @@ const billingPlans = [
   },
   {
     key: 'PRO_BUSINESS',
-    name: 'Business',
+    name: 'Pro Business',
     description: 'Plano completo para automacao, inteligencia de mercado e previsoes.',
     level: 3,
     features: [
@@ -71,16 +71,16 @@ const billingPlans = [
 
 const priceEnv = {
   COMMON: {
-    MONTHLY: ['ABACATEPAY_COMMON_MONTHLY_PRODUCT_ID', 'PLAN_COMMON_MONTHLY_CENTS', 5700],
-    ANNUAL: ['ABACATEPAY_COMMON_ANNUAL_PRODUCT_ID', 'PLAN_COMMON_ANNUAL_CENTS', 57000],
+    MONTHLY: ['STRIPE_PRICE_ESSENTIAL_MONTHLY', 'PLAN_COMMON_MONTHLY_CENTS', 5700],
+    ANNUAL: ['STRIPE_PRICE_ESSENTIAL_YEARLY', 'PLAN_COMMON_ANNUAL_CENTS', 57000],
   },
   PREMIUM: {
-    MONTHLY: ['ABACATEPAY_PREMIUM_MONTHLY_PRODUCT_ID', 'PLAN_PREMIUM_MONTHLY_CENTS', 9700],
-    ANNUAL: ['ABACATEPAY_PREMIUM_ANNUAL_PRODUCT_ID', 'PLAN_PREMIUM_ANNUAL_CENTS', 97000],
+    MONTHLY: ['STRIPE_PRICE_PREMIUM_MONTHLY', 'PLAN_PREMIUM_MONTHLY_CENTS', 9700],
+    ANNUAL: ['STRIPE_PRICE_PREMIUM_YEARLY', 'PLAN_PREMIUM_ANNUAL_CENTS', 97000],
   },
   PRO_BUSINESS: {
-    MONTHLY: ['ABACATEPAY_PRO_BUSINESS_MONTHLY_PRODUCT_ID', 'PLAN_PRO_BUSINESS_MONTHLY_CENTS', 19700],
-    ANNUAL: ['ABACATEPAY_PRO_BUSINESS_ANNUAL_PRODUCT_ID', 'PLAN_PRO_BUSINESS_ANNUAL_CENTS', 197000],
+    MONTHLY: ['STRIPE_PRICE_PRO_BUSINESS_MONTHLY', 'PLAN_PRO_BUSINESS_MONTHLY_CENTS', 19700],
+    ANNUAL: ['STRIPE_PRICE_PRO_BUSINESS_YEARLY', 'PLAN_PRO_BUSINESS_ANNUAL_CENTS', 197000],
   },
 } as const;
 
@@ -113,46 +113,17 @@ function intEnv(key: string, fallback: number) {
 }
 
 function normalizeBillingProvider() {
-  const provider = String(process.env.BILLING_PAYMENT_PROVIDER || 'MANUAL').trim().toUpperCase();
-  if (provider === 'CACTO') return 'CAKTO';
-  if (['MANUAL', 'ABACATEPAY', 'CAKTO', 'ASAAS', 'MERCADO_PAGO'].includes(provider)) {
-    return provider;
-  }
-  return 'MANUAL';
+  return 'STRIPE';
 }
 
 function providerPriceConfig(planKey: string, cycle: BillingCycle, productEnv: string) {
   const provider = normalizeBillingProvider();
-  if (provider === 'CAKTO') {
-    const prefix = `CAKTO_${planKey}_${cycle}`;
-    return {
-      provider,
-      providerProductId: process.env[`${prefix}_PRODUCT_ID`] || null,
-      providerOfferId: process.env[`${prefix}_OFFER_ID`] || null,
-      providerCheckoutUrl: process.env[`${prefix}_CHECKOUT_URL`] || null,
-      providerMetadata: {
-        type: 'subscription',
-        integrationStrategy: 'fixed_checkout_link',
-      },
-    };
-  }
-
-  if (provider === 'ABACATEPAY') {
-    return {
-      provider,
-      providerProductId: process.env[productEnv] || null,
-      providerOfferId: null,
-      providerCheckoutUrl: null,
-      providerMetadata: null,
-    };
-  }
-
   return {
     provider,
-    providerProductId: null,
+    providerProductId: process.env[productEnv] || null,
     providerOfferId: null,
     providerCheckoutUrl: null,
-    providerMetadata: null,
+    providerMetadata: { app: 'next_level_ai', planKey, cycle },
   };
 }
 
@@ -180,12 +151,12 @@ async function seedBillingPlans() {
           billingCycle: cycle,
           amountInCents: intEnv(amountEnv, fallback),
           ...providerConfig,
-          abacatepayProductId: process.env[productEnv] || null,
+          stripePriceId: process.env[productEnv] || null,
         },
         update: {
           amountInCents: intEnv(amountEnv, fallback),
           ...providerConfig,
-          abacatepayProductId: process.env[productEnv] || null,
+          stripePriceId: process.env[productEnv] || null,
           isActive: true,
         },
       });

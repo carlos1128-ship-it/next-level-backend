@@ -4,43 +4,42 @@ import { BillingCycle, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { BillingPlanKey } from './constants/billing.constants';
 import { PLAN_CATALOG } from './plan-entitlements.service';
-import { PaymentProviderResolver } from './providers/payment-provider.resolver';
 
 const PLAN_DEFINITIONS = Object.values(PLAN_CATALOG);
 
-const PRICE_ENV: Record<BillingPlanKey, Record<BillingCycle, { abacateProduct: string; amount: string; fallback: number }>> = {
+const PRICE_ENV: Record<BillingPlanKey, Record<BillingCycle, { price: string; amount: string; fallback: number }>> = {
   COMMON: {
     MONTHLY: {
-      abacateProduct: 'ABACATEPAY_COMMON_MONTHLY_PRODUCT_ID',
+      price: 'STRIPE_PRICE_ESSENTIAL_MONTHLY',
       amount: 'PLAN_COMMON_MONTHLY_CENTS',
       fallback: 5700,
     },
     ANNUAL: {
-      abacateProduct: 'ABACATEPAY_COMMON_ANNUAL_PRODUCT_ID',
+      price: 'STRIPE_PRICE_ESSENTIAL_YEARLY',
       amount: 'PLAN_COMMON_ANNUAL_CENTS',
       fallback: 57000,
     },
   },
   PREMIUM: {
     MONTHLY: {
-      abacateProduct: 'ABACATEPAY_PREMIUM_MONTHLY_PRODUCT_ID',
+      price: 'STRIPE_PRICE_PREMIUM_MONTHLY',
       amount: 'PLAN_PREMIUM_MONTHLY_CENTS',
       fallback: 9700,
     },
     ANNUAL: {
-      abacateProduct: 'ABACATEPAY_PREMIUM_ANNUAL_PRODUCT_ID',
+      price: 'STRIPE_PRICE_PREMIUM_YEARLY',
       amount: 'PLAN_PREMIUM_ANNUAL_CENTS',
       fallback: 97000,
     },
   },
   PRO_BUSINESS: {
     MONTHLY: {
-      abacateProduct: 'ABACATEPAY_PRO_BUSINESS_MONTHLY_PRODUCT_ID',
+      price: 'STRIPE_PRICE_PRO_BUSINESS_MONTHLY',
       amount: 'PLAN_PRO_BUSINESS_MONTHLY_CENTS',
       fallback: 19700,
     },
     ANNUAL: {
-      abacateProduct: 'ABACATEPAY_PRO_BUSINESS_ANNUAL_PRODUCT_ID',
+      price: 'STRIPE_PRICE_PRO_BUSINESS_YEARLY',
       amount: 'PLAN_PRO_BUSINESS_ANNUAL_CENTS',
       fallback: 197000,
     },
@@ -54,7 +53,6 @@ export class BillingPlansService implements OnModuleInit {
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
-    private readonly paymentProviderResolver: PaymentProviderResolver,
   ) {}
 
   async onModuleInit() {
@@ -85,7 +83,7 @@ export class BillingPlansService implements OnModuleInit {
 
       for (const billingCycle of [BillingCycle.MONTHLY, BillingCycle.ANNUAL]) {
         const env = PRICE_ENV[definition.key][billingCycle];
-        const providerConfig = this.providerConfig(definition.key, billingCycle);
+        const stripePriceId = this.configService.get<string>(env.price)?.trim() || null;
         await this.prisma.billingPlanPrice.upsert({
           where: {
             planId_billingCycle: {
@@ -97,22 +95,24 @@ export class BillingPlansService implements OnModuleInit {
             planId: plan.id,
             billingCycle,
             amountInCents: this.intEnv(env.amount, env.fallback),
-            provider: providerConfig.provider,
-            providerProductId: providerConfig.productId,
-            providerOfferId: providerConfig.offerId,
-            providerCheckoutUrl: providerConfig.checkoutUrl,
-            providerMetadata: providerConfig.metadata ?? Prisma.JsonNull,
-            abacatepayProductId: this.configService.get<string>(env.abacateProduct) || null,
+            provider: 'STRIPE',
+            providerProductId: stripePriceId,
+            stripePriceId,
+            providerMetadata: {
+              app: 'next_level_ai',
+              priceEnv: env.price,
+            } as Prisma.InputJsonValue,
             isActive: true,
           },
           update: {
             amountInCents: this.intEnv(env.amount, env.fallback),
-            provider: providerConfig.provider,
-            providerProductId: providerConfig.productId,
-            providerOfferId: providerConfig.offerId,
-            providerCheckoutUrl: providerConfig.checkoutUrl,
-            providerMetadata: providerConfig.metadata ?? Prisma.JsonNull,
-            abacatepayProductId: this.configService.get<string>(env.abacateProduct) || null,
+            provider: 'STRIPE',
+            providerProductId: stripePriceId,
+            stripePriceId,
+            providerMetadata: {
+              app: 'next_level_ai',
+              priceEnv: env.price,
+            } as Prisma.InputJsonValue,
             isActive: true,
           },
         });
@@ -144,67 +144,13 @@ export class BillingPlansService implements OnModuleInit {
           acc[price.billingCycle] = {
             amountInCents: price.amountInCents,
             currency: price.currency,
-            available: this.isPriceAvailable(price),
-            provider: price.provider,
+            available: Boolean(price.stripePriceId),
+            provider: 'STRIPE',
           };
           return acc;
         }, {}),
       })),
     };
-  }
-
-  private providerConfig(planKey: BillingPlanKey, billingCycle: BillingCycle) {
-    const provider = this.paymentProviderResolver.activeProviderKey;
-    if (provider === 'CAKTO') {
-      const prefix = `CAKTO_${planKey}_${billingCycle}`;
-      const productId = this.configService.get<string>(`${prefix}_PRODUCT_ID`) || null;
-      const offerId = this.configService.get<string>(`${prefix}_OFFER_ID`) || null;
-      const checkoutUrl = this.configService.get<string>(`${prefix}_CHECKOUT_URL`) || null;
-      return {
-        provider,
-        productId,
-        offerId,
-        checkoutUrl,
-        metadata: {
-          type: 'subscription',
-          integrationStrategy: 'fixed_checkout_link',
-        } as Prisma.InputJsonValue,
-      };
-    }
-
-    if (provider === 'ABACATEPAY') {
-      const env = PRICE_ENV[planKey][billingCycle];
-      return {
-        provider,
-        productId: this.configService.get<string>(env.abacateProduct) || null,
-        offerId: null,
-        checkoutUrl: null,
-        metadata: null,
-      };
-    }
-
-    return {
-      provider,
-      productId: null,
-      offerId: null,
-      checkoutUrl: null,
-      metadata: null,
-    };
-  }
-
-  private isPriceAvailable(price: {
-    provider: string;
-    providerCheckoutUrl?: string | null;
-    abacatepayProductId?: string | null;
-  }) {
-    const activeProvider = this.paymentProviderResolver.activeProviderKey;
-    if (activeProvider === 'CAKTO') {
-      return price.provider === 'CAKTO' && Boolean(price.providerCheckoutUrl);
-    }
-    if (activeProvider === 'ABACATEPAY') {
-      return price.provider === 'ABACATEPAY' && Boolean(price.abacatepayProductId);
-    }
-    return false;
   }
 
   private intEnv(key: string, fallback: number) {

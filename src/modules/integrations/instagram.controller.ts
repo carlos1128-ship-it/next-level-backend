@@ -108,12 +108,14 @@ export class InstagramController {
 
   @Get('status')
   @UseGuards(ActiveCompanyGuard)
+  @RequirePlan('PREMIUM')
   status(@Query('companyId') companyId: string) {
     return this.instagramService.getStatus(companyId);
   }
 
   @Post('disconnect')
   @UseGuards(ActiveCompanyGuard)
+  @RequirePlan('PREMIUM')
   disconnect(@Query('companyId') companyId: string) {
     return this.instagramService.disconnect(companyId);
   }

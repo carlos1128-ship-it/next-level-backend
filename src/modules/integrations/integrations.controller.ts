@@ -27,6 +27,7 @@ export class IntegrationsController {
   ) {}
 
   @Get('whatsapp/profile')
+  @RequirePlan('PREMIUM')
   async whatsappProfile(
     @Query('companyId') companyId: string,
   ) {
@@ -81,6 +82,7 @@ export class IntegrationsController {
   }
 
   @Get('status')
+  @RequirePlan('PREMIUM')
   async status(
     @Req() req: { user: { id: string } },
     @Query('companyId') companyId?: string,
@@ -94,6 +96,7 @@ export class IntegrationsController {
   }
 
   @Get('status/:provider')
+  @RequirePlan('PREMIUM')
   async diagnostic(
     @Req() req: { user: { id: string } },
     @Param('provider') provider: string,
@@ -107,6 +110,7 @@ export class IntegrationsController {
   }
 
   @Post('connect')
+  @RequirePlan('PREMIUM')
   async connect(
     @Req() req: { user: { id: string } },
     @Body() body: ConnectIntegrationDto,

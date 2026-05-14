@@ -145,24 +145,7 @@ export function validateEnvironment(config: RawEnv): RawEnv {
     { allowHttpLocalhost: true },
   );
   normalized.FRONTEND_APP_URL = normalized.FRONTEND_URL;
-  normalized.ABACATEPAY_API_BASE_URL = normalizeUrl(
-    'ABACATEPAY_API_BASE_URL',
-    normalized.ABACATEPAY_API_BASE_URL || 'https://api.abacatepay.com/v2',
-    { allowHttpLocalhost: true },
-  );
-  normalized.CAKTO_API_BASE_URL = normalizeUrl(
-    'CAKTO_API_BASE_URL',
-    normalized.CAKTO_API_BASE_URL || 'https://api.cakto.com.br',
-    { allowHttpLocalhost: true },
-  );
-  normalized.BILLING_PAYMENT_PROVIDER = (() => {
-    const provider = String(normalized.BILLING_PAYMENT_PROVIDER || 'MANUAL').trim().toUpperCase();
-    if (provider === 'CACTO') return 'CAKTO';
-    if (['MANUAL', 'ABACATEPAY', 'CAKTO', 'ASAAS', 'MERCADO_PAGO', 'MERCADOPAGO'].includes(provider)) {
-      return provider === 'MERCADOPAGO' ? 'MERCADO_PAGO' : provider;
-    }
-    return 'MANUAL';
-  })();
+  normalized.BILLING_PAYMENT_PROVIDER = 'STRIPE';
 
   const isProduction = String(normalized.NODE_ENV || '').toLowerCase() === 'production';
   if (isProduction) {
@@ -175,20 +158,23 @@ export function validateEnvironment(config: RawEnv): RawEnv {
       throw new Error('JWT_REFRESH_SECRET precisa ser diferente de JWT_SECRET em producao');
     }
 
-    if (normalized.BILLING_PAYMENT_PROVIDER === 'CAKTO') {
-      normalized.CAKTO_WEBHOOK_SECRET = requireEnv(
-        'CAKTO_WEBHOOK_SECRET',
-        normalized.CAKTO_WEBHOOK_SECRET,
-        { minLength: 16 },
-      );
-    }
-
-    if (normalized.BILLING_PAYMENT_PROVIDER === 'ABACATEPAY') {
-      normalized.ABACATEPAY_WEBHOOK_SECRET = requireEnv(
-        'ABACATEPAY_WEBHOOK_SECRET',
-        normalized.ABACATEPAY_WEBHOOK_SECRET,
-        { minLength: 16 },
-      );
+    normalized.STRIPE_SECRET_KEY = requireEnv('STRIPE_SECRET_KEY', normalized.STRIPE_SECRET_KEY, {
+      minLength: 16,
+    });
+    normalized.STRIPE_WEBHOOK_SECRET = requireEnv(
+      'STRIPE_WEBHOOK_SECRET',
+      normalized.STRIPE_WEBHOOK_SECRET,
+      { minLength: 16 },
+    );
+    for (const key of [
+      'STRIPE_PRICE_ESSENTIAL_MONTHLY',
+      'STRIPE_PRICE_ESSENTIAL_YEARLY',
+      'STRIPE_PRICE_PREMIUM_MONTHLY',
+      'STRIPE_PRICE_PREMIUM_YEARLY',
+      'STRIPE_PRICE_PRO_BUSINESS_MONTHLY',
+      'STRIPE_PRICE_PRO_BUSINESS_YEARLY',
+    ]) {
+      normalized[key] = requireEnv(key, normalized[key], { minLength: 8 });
     }
 
     const hasMercadoLivreOAuth = Boolean(

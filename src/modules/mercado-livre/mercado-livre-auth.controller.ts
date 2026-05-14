@@ -3,6 +3,7 @@ import { Request, Response } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
 import { ActiveCompanyGuard } from '../../common/guards/active-company.guard';
+import { RequirePlan } from '../billing/decorators/require-plan.decorator';
 import { MercadoLivreAuthService } from './mercado-livre-auth.service';
 import { MercadoLivreSyncService } from './mercado-livre-sync.service';
 
@@ -17,6 +18,7 @@ export class MercadoLivreAuthController {
 
   @Get()
   @UseGuards(ActiveCompanyGuard)
+  @RequirePlan('PREMIUM')
   beginOAuth(
     @CurrentUser('sub') userId: string,
     @Query('companyId') companyId: string,

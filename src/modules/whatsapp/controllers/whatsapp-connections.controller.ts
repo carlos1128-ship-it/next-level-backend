@@ -30,6 +30,7 @@ export class WhatsappConnectionsController {
 
   @Get('connection')
   @UseGuards(ActiveCompanyGuard)
+  @RequirePlan('PREMIUM')
   getConnection(
     @Req() req: AuthenticatedRequest,
     @Query('companyId') companyId?: string,
@@ -41,6 +42,7 @@ export class WhatsappConnectionsController {
 
   @Get('connection/status')
   @UseGuards(ActiveCompanyGuard)
+  @RequirePlan('PREMIUM')
   getConnectionStatusByConnectionRoute(
     @Req() req: AuthenticatedRequest,
     @Query('companyId') companyId?: string,
@@ -66,12 +68,14 @@ export class WhatsappConnectionsController {
 
   @Get('connect/status/:companyId')
   @UseGuards(ActiveCompanyGuard)
+  @RequirePlan('PREMIUM')
   getConnectionStatus(@Param('companyId') companyId: string) {
     return this.whatsappConnectionsService.getCurrent(companyId);
   }
 
   @Get('connect/status')
   @UseGuards(ActiveCompanyGuard)
+  @RequirePlan('PREMIUM')
   getCurrentConnectionStatus(
     @Req() req: AuthenticatedRequest,
     @Query('companyId') companyId?: string,
@@ -135,6 +139,7 @@ export class WhatsappConnectionsController {
 
   @Delete('connection')
   @UseGuards(ActiveCompanyGuard)
+  @RequirePlan('PREMIUM')
   disconnect(
     @Req() req: AuthenticatedRequest,
     @Query('companyId') companyId?: string,
@@ -146,6 +151,7 @@ export class WhatsappConnectionsController {
 
   @Post('connect/disconnect')
   @UseGuards(ActiveCompanyGuard)
+  @RequirePlan('PREMIUM')
   disconnectByPost(
     @Req() req: AuthenticatedRequest,
     @Body('companyId') bodyCompanyId?: string,

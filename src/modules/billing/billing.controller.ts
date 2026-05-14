@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
@@ -45,22 +45,23 @@ export class BillingController {
     return this.billingService.createCheckout(user, dto);
   }
 
-  @Public()
-  @Post('webhooks/abacatepay')
-  handleAbacatePayWebhook(@Req() request: Request) {
-    return this.billingService.handleWebhook(request, 'ABACATEPAY');
+  @SkipSubscriptionCheck()
+  @Post('portal')
+  createPortal(
+    @CurrentUser() user: Record<string, unknown>,
+    @Body('companyId') companyId?: string,
+    @Query('companyId') queryCompanyId?: string,
+  ) {
+    return this.billingService.createPortal(user, companyId || queryCompanyId || null);
   }
 
   @Public()
-  @Post('webhooks/cakto')
-  handleCaktoWebhook(@Req() request: Request) {
-    return this.billingService.handleWebhook(request, 'CAKTO');
-  }
-
-  @Public()
-  @Post('webhooks/cacto')
-  handleCactoWebhook(@Req() request: Request) {
-    return this.billingService.handleWebhook(request, 'CACTO');
+  @Post('webhook/stripe')
+  handleStripeWebhook(
+    @Req() request: Request & { rawBody?: Buffer },
+    @Headers('stripe-signature') signature?: string,
+  ) {
+    return this.billingService.handleStripeWebhook(request.rawBody, signature);
   }
 
   @Post('cancel')

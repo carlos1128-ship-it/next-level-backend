@@ -29,6 +29,9 @@ enum SubscriptionStatus {
   DISPUTED
   LOST
   TRIAL
+  PAST_DUE
+  INCOMPLETE
+  UNPAID
 }
 
 enum UserNiche {
@@ -256,6 +259,7 @@ model Company {
   shopeeRefreshToken   String?
   shopeeTokenExpiresAt DateTime?
   shopeeCookies        String?   @db.Text
+  stripeCustomerId     String?   @unique
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
@@ -387,7 +391,8 @@ model BillingPlanPrice {
   providerOfferId     String?
   providerCheckoutUrl String?      @db.Text
   providerMetadata    Json?
-  abacatepayProductId String?
+  stripePriceId       String?
+  stripeProductId     String?
   isActive            Boolean      @default(true)
   createdAt           DateTime     @default(now())
   updatedAt           DateTime     @updatedAt
@@ -398,7 +403,8 @@ model BillingPlanPrice {
   @@index([provider])
   @@index([providerProductId])
   @@index([providerOfferId])
-  @@index([abacatepayProductId])
+  @@index([stripePriceId])
+  @@index([stripeProductId])
 }
 
 model Subscription {
@@ -420,10 +426,12 @@ model Subscription {
   providerRefId            String?
   providerSck              String?
   providerMetadata         Json?
-  abacatepayCheckoutId     String?
-  abacatepaySubscriptionId String?
-  abacatepayCustomerId     String?
-  abacatepayExternalId     String?            @unique
+  stripeCustomerId         String?
+  stripeSubscriptionId     String?            @unique
+  stripeCheckoutSessionId  String?            @unique
+  stripePriceId            String?
+  stripeStatus             String?
+  cancelAtPeriodEnd        Boolean            @default(false)
   checkoutUrl              String?            @db.Text
   amountInCents            Int
   currency                 String             @default("BRL")
@@ -432,7 +440,7 @@ model Subscription {
   paidAt                   DateTime?
   canceledAt               DateTime?
   expiresAt                DateTime?
-  source                   String             @default("ABACATEPAY")
+  source                   String             @default("STRIPE")
   notes                    String?            @db.Text
   metadata                 Json?
   createdAt                DateTime           @default(now())
@@ -454,8 +462,10 @@ model Subscription {
   @@index([providerProductId])
   @@index([providerSck])
   @@index([source])
-  @@index([abacatepayCheckoutId])
-  @@index([abacatepaySubscriptionId])
+  @@index([stripeCustomerId])
+  @@index([stripeSubscriptionId])
+  @@index([stripeCheckoutSessionId])
+  @@index([stripePriceId])
 }
 
 model PaymentEvent {
@@ -474,8 +484,7 @@ model PaymentEvent {
   processed                Boolean   @default(false)
   processingError          String?   @db.Text
   subscriptionId           String?
-  abacatepayCheckoutId     String?
-  abacatepaySubscriptionId String?
+  stripeEventId            String?   @unique
   createdAt                DateTime  @default(now())
   processedAt              DateTime?
 
@@ -487,8 +496,7 @@ model PaymentEvent {
   @@index([providerSubscriptionId])
   @@index([processed])
   @@index([subscriptionId])
-  @@index([abacatepayCheckoutId])
-  @@index([abacatepaySubscriptionId])
+  @@index([stripeEventId])
 }
 
 model RefreshToken {

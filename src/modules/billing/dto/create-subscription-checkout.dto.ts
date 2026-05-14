@@ -5,8 +5,13 @@ export class CreateSubscriptionCheckoutDto {
   @IsString()
   planKey!: string;
 
+  @IsOptional()
   @IsEnum(BillingCycle)
-  billingCycle!: BillingCycle;
+  billingCycle?: BillingCycle;
+
+  @IsOptional()
+  @IsString()
+  billingInterval?: string;
 
   @IsOptional()
   @IsString()

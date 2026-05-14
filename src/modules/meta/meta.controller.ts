@@ -43,6 +43,7 @@ export class MetaStatusController {
   ) {}
 
   @Get('status')
+  @RequirePlan('PREMIUM')
   async getConnectionStatus(@Query('companyId') companyId: string) {
     const [company, metaHealth] = await Promise.all([
       this.prisma.company.findUnique({

@@ -94,7 +94,7 @@ async function bootstrap() {
       skip: (req) =>
         req.path.startsWith('/api/evolution/webhook') ||
         req.path.startsWith('/api/whatsapp/webhooks/evolution') ||
-        req.path.startsWith('/api/billing/webhooks/abacatepay') ||
+        req.path.startsWith('/api/billing/webhook/stripe') ||
         req.path.startsWith('/api/instagram/webhook') ||
         req.path.startsWith('/webhook/ml') ||
         req.path.startsWith('/webhooks/'),
@@ -120,7 +120,7 @@ async function bootstrap() {
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-abacatepay-secret', 'x-webhook-secret', 'x-webhook-signature', 'x-meli-signature', 'x-signature'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'stripe-signature', 'x-webhook-secret', 'x-webhook-signature', 'x-meli-signature', 'x-signature'],
   });
 
   const port = process.env.PORT || 3333;

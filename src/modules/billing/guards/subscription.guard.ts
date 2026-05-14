@@ -1,4 +1,4 @@
-import { CanActivate, ExecutionContext, HttpException, Injectable, HttpStatus } from '@nestjs/common';
+import { CanActivate, ExecutionContext, HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { IS_PUBLIC_KEY } from '../../../common/decorators/public.decorator';
 import { BillingService } from '../billing.service';
@@ -54,7 +54,7 @@ export class SubscriptionGuard implements CanActivate {
         {
           statusCode: HttpStatus.PAYMENT_REQUIRED,
           code: 'SUBSCRIPTION_REQUIRED',
-          message: 'É necessário escolher um plano para acessar a plataforma.',
+          message: 'Escolha um plano para continuar usando a plataforma.',
         },
         HttpStatus.PAYMENT_REQUIRED,
       );
@@ -71,7 +71,10 @@ export class SubscriptionGuard implements CanActivate {
         {
           statusCode: HttpStatus.FORBIDDEN,
           code: 'PLAN_UPGRADE_REQUIRED',
-          message: 'Seu plano atual não dá acesso a este recurso.',
+          message:
+            requiredPlan === 'PREMIUM'
+              ? 'Assine Premium para ter integracoes e mais.'
+              : 'Este recurso precisa de um plano superior.',
         },
         HttpStatus.FORBIDDEN,
       );
