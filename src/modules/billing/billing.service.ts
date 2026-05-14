@@ -41,6 +41,14 @@ type CheckoutInput = {
   companyId?: string | null;
 };
 
+type ChangePlanInput = {
+  planKey?: string;
+  targetPlanKey?: string;
+  billingCycle?: BillingCycle | string;
+  billingInterval?: string;
+  companyId?: string | null;
+};
+
 type InternalGrantSource = 'INTERNAL_LEGACY' | 'MANUAL_GRANT' | 'ADMIN_GRANT';
 
 type StripeSubscriptionLike = StripeSubscriptionRecord;
@@ -103,7 +111,7 @@ export class BillingService {
     return {
       paymentProvider: 'STRIPE',
       checkoutEnabled: configured,
-      message: configured ? null : 'Pagamento via Stripe ainda precisa das chaves de ambiente.',
+      message: configured ? null : 'Pagamento seguro ainda precisa das chaves de ambiente.',
       webhookUrl: `${backendUrl}/api/billing/webhook/stripe`,
     };
   }
@@ -251,7 +259,7 @@ export class BillingService {
     if (!customer) {
       throw new NotFoundException({
         code: 'STRIPE_CUSTOMER_NOT_FOUND',
-        message: 'Nenhuma assinatura Stripe encontrada para esta empresa.',
+        message: 'Nenhuma assinatura ativa encontrada para esta empresa.',
       });
     }
 
@@ -271,7 +279,7 @@ export class BillingService {
     const userId = this.resolveUserId(user);
     const sessionId = String(sessionIdInput || '').trim();
     if (!sessionId || !sessionId.startsWith('cs_')) {
-      throw new BadRequestException({ code: 'INVALID_CHECKOUT_SESSION', message: 'Sessao Stripe invalida.' });
+      throw new BadRequestException({ code: 'INVALID_CHECKOUT_SESSION', message: 'Sessao de pagamento invalida.' });
     }
 
     const session = await this.stripeService.retrieveCheckoutSession(sessionId);
@@ -296,11 +304,11 @@ export class BillingService {
     }
 
     if (metadataUserId && metadataUserId !== userId && localSubscription?.userId !== userId) {
-      throw new ForbiddenException('Sessao Stripe nao pertence ao usuario autenticado.');
+      throw new ForbiddenException('Sessao de pagamento nao pertence ao usuario autenticado.');
     }
     const sessionCompanyId = metadataCompanyId || localSubscription?.companyId;
     if (sessionCompanyId && sessionCompanyId !== companyId) {
-      throw new ForbiddenException('Sessao Stripe nao pertence a empresa ativa.');
+      throw new ForbiddenException('Sessao de pagamento nao pertence a empresa ativa.');
     }
 
     const stripeSubscriptionId = this.asStripeId(session.subscription);
@@ -331,8 +339,8 @@ export class BillingService {
       message: hasActiveSubscription
         ? 'Plano ativado com sucesso.'
         : this.isCheckoutSessionReadyForReconciliation(session)
-          ? 'Estamos aguardando a confirmacao final da Stripe.'
-          : 'Confirmando pagamento com a Stripe.',
+          ? 'Estamos aguardando a confirmacao final do pagamento.'
+          : 'Confirmando pagamento.',
     };
   }
 
@@ -366,8 +374,104 @@ export class BillingService {
     return { success: true, subscription: updated };
   }
 
-  async changePlan(user: AuthUser, input: CheckoutInput) {
-    return this.createCheckout(user, input);
+  async changePlan(user: AuthUser, input: ChangePlanInput) {
+    const userId = this.resolveUserId(user);
+    const planKey = normalizeBillingPlanKey(input.targetPlanKey || input.planKey);
+    const billingCycle = normalizeBillingCycle(input.billingCycle || input.billingInterval);
+    if (!planKey || !billingCycle) {
+      throw new BadRequestException({ code: 'INVALID_PLAN', message: 'Plano invalido.' });
+    }
+
+    const companyId = await this.resolveCompanyIdForUser(userId, input.companyId, user.companyId || null);
+    if (!companyId) {
+      throw new BadRequestException({ code: 'COMPANY_REQUIRED', message: 'Selecione uma empresa para alterar o plano.' });
+    }
+
+    const targetPlan = await this.prisma.billingPlan.findUnique({
+      where: { key: planKey },
+      include: { prices: { where: { billingCycle, isActive: true } } },
+    });
+    const targetPrice = targetPlan?.prices[0];
+    const stripePriceId = this.getStripePriceId(planKey, billingCycle);
+    if (!targetPlan || !targetPrice || !stripePriceId) {
+      throw new NotFoundException({ code: 'PLAN_PRICE_UNAVAILABLE', message: 'Este plano esta indisponivel no momento.' });
+    }
+
+    const current = await this.ensureEntitledSubscriptionForUser(userId, companyId);
+    if (!this.isSubscriptionActive(current)) {
+      const checkout = await this.createCheckout(user, {
+        planKey,
+        billingCycle,
+        companyId,
+      });
+      return {
+        status: 'checkout_required',
+        checkoutUrl: checkout.checkoutUrl,
+        message: 'Finalize sua assinatura em um ambiente seguro.',
+      };
+    }
+
+    if (current?.planKey === planKey && current.billingCycle === billingCycle) {
+      return {
+        status: 'changed',
+        billing: await this.getBillingForUser(userId, companyId),
+        message: 'Este plano ja esta ativo.',
+      };
+    }
+
+    const stripeSubscriptionId = current?.stripeSubscriptionId || current?.providerSubscriptionId;
+    if (!stripeSubscriptionId || current.provider !== 'STRIPE') {
+      return {
+        status: 'portal_required',
+        message: 'Abra o ambiente seguro de assinatura para concluir esta alteracao.',
+      };
+    }
+
+    const stripeSubscription = await this.stripeService.retrieveSubscription(stripeSubscriptionId);
+    const stripeItemId = this.subscriptionItemId(stripeSubscription);
+    if (!stripeItemId) {
+      return {
+        status: 'portal_required',
+        message: 'Abra o ambiente seguro de assinatura para concluir esta alteracao.',
+      };
+    }
+
+    const metadata = {
+      userId,
+      companyId,
+      planKey: this.toPublicPlanKey(planKey),
+      billingCycle,
+      billingInterval: this.toStripeInterval(billingCycle),
+      source: 'next_level_ai',
+      localSubscriptionId: current.id,
+    };
+
+    const updatedSubscription = await this.stripeService.updateSubscriptionPrice({
+      subscriptionId: stripeSubscriptionId,
+      subscriptionItemId: stripeItemId,
+      priceId: stripePriceId,
+      metadata,
+    });
+    await this.applyStripeSubscription(updatedSubscription);
+
+    this.logger.log(JSON.stringify({
+      event: 'billing.stripe.subscription.plan_changed',
+      userId,
+      companyId,
+      subscriptionId: current.id,
+      planKey,
+      billingCycle,
+      prorationBehavior: 'create_prorations',
+    }));
+
+    const billing = await this.getBillingForUser(userId, companyId);
+    return {
+      status: billing.hasActiveSubscription ? 'changed' : 'pending_confirmation',
+      billing,
+      message: billing.hasActiveSubscription
+        ? 'Plano atualizado com sucesso.'
+        : 'Alteracao recebida. Estamos confirmando sua assinatura.',
+    };
   }
 
   async handleStripeWebhook(rawBody: Buffer | undefined, signature: string | undefined) {
@@ -522,7 +626,7 @@ export class BillingService {
     }
 
     const status = statusOverride || this.mapStripeSubscriptionStatus(stripeSub.status);
-    const amountInCents = existing?.amountInCents || this.amountForPlan(planKey, billingCycle);
+    const amountInCents = this.amountForPlan(planKey, billingCycle);
     const currentPeriodStart = this.unixToDate(stripeSub.current_period_start);
     const currentPeriodEnd = this.unixToDate(stripeSub.current_period_end);
     const canceledAt = this.unixToDate(stripeSub.canceled_at);
@@ -910,6 +1014,11 @@ export class BillingService {
     const item = subscription.items?.data?.[0];
     const price = item?.price;
     return typeof price?.id === 'string' ? price.id : null;
+  }
+
+  private subscriptionItemId(subscription: StripeSubscriptionLike) {
+    const item = subscription.items?.data?.[0];
+    return typeof item?.id === 'string' ? item.id : null;
   }
 
   private billingCycleFromStripeSubscription(subscription: StripeSubscriptionLike) {

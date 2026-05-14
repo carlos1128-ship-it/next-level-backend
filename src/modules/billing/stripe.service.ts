@@ -28,6 +28,7 @@ export type StripeSubscriptionRecord = {
   canceled_at?: number | null;
   items?: {
     data?: Array<{
+      id?: string;
       price?: {
         id?: string;
         recurring?: {
@@ -121,6 +122,21 @@ export class StripeService {
 
   async retrieveSubscription(subscriptionId: string): Promise<StripeSubscriptionRecord> {
     const subscription = await this.client().subscriptions.retrieve(subscriptionId, {
+      expand: ['items.data.price'],
+    });
+    return subscription as StripeSubscriptionRecord;
+  }
+
+  async updateSubscriptionPrice(input: {
+    subscriptionId: string;
+    subscriptionItemId: string;
+    priceId: string;
+    metadata: Record<string, string>;
+  }): Promise<StripeSubscriptionRecord> {
+    const subscription = await this.client().subscriptions.update(input.subscriptionId, {
+      items: [{ id: input.subscriptionItemId, price: input.priceId }],
+      metadata: input.metadata,
+      proration_behavior: 'create_prorations',
       expand: ['items.data.price'],
     });
     return subscription as StripeSubscriptionRecord;
