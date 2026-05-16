@@ -7,19 +7,33 @@ import rateLimit from 'express-rate-limit';
 import { AppModule } from './app.module';
 import { ZodValidationPipe } from './common/pipes/zod-validation.pipe';
 
-function parseAllowedOrigins(raw: string | undefined): Set<string> {
+const normalizeOrigin = (value?: string) =>
+  value?.trim().replace(/\/$/, "");
+
+function getAllowedOrigins(): string[] {
+  const envOrigins = [
+    process.env.FRONTEND_URL,
+    process.env.CLIENT_URL,
+    process.env.APP_URL,
+    process.env.WEB_URL,
+    process.env.CORS_ORIGIN,
+    ...(process.env.CORS_ORIGINS?.split(",") ?? []),
+    ...(process.env.ALLOWED_ORIGINS?.split(",") ?? []),
+  ]
+    .map(normalizeOrigin)
+    .filter((o): o is string => !!o);
+
   const defaults = [
-    'http://localhost:3000',
-    'http://localhost:5173',
-    'https://next-level-front.vercel.app',
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "https://nextlevel.qzz.io",
+    "https://next-level-front.vercel.app",
   ];
 
-  const envOrigins = (raw || '')
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
-
-  return new Set([...defaults, ...envOrigins]);
+  return Array.from(new Set([
+    ...envOrigins,
+    ...defaults,
+  ]));
 }
 
 function isAllowedVercelPreview(origin: string): boolean {
@@ -46,7 +60,7 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     rawBody: true,
   });
-  const allowedOrigins = parseAllowedOrigins(process.env.CORS_ORIGINS);
+  const allowedOrigins = getAllowedOrigins();
   const expressApp = app.getHttpAdapter().getInstance();
   const trustProxy = parseTrustProxy(
     process.env.TRUST_PROXY ??
@@ -69,7 +83,7 @@ async function bootstrap() {
     exclude: [
       { path: 'webhook/whatsapp', method: RequestMethod.POST },
       { path: 'webhook/ml', method: RequestMethod.POST },
-      // Meta Cloud API webhook — must be reachable WITHOUT /api prefix
+      // Meta Cloud API webhook must be reachable WITHOUT /api prefix
       { path: 'webhooks/meta', method: RequestMethod.GET },
       { path: 'webhooks/meta', method: RequestMethod.POST },
     ],
@@ -102,25 +116,34 @@ async function bootstrap() {
   );
 
   app.enableCors({
-    origin: (
-      origin: string | undefined,
-      callback: (err: Error | null, allow?: boolean) => void,
-    ) => {
-      if (!origin) {
-        callback(null, true);
-        return;
+    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+      if (!origin) return callback(null, true);
+
+      const normalizedOrigin = normalizeOrigin(origin);
+
+      if (
+        normalizedOrigin && (
+          allowedOrigins.includes(normalizedOrigin) ||
+          isAllowedVercelPreview(origin)
+        )
+      ) {
+        return callback(null, true);
       }
 
-      if (allowedOrigins.has(origin) || isAllowedVercelPreview(origin)) {
-        callback(null, true);
-        return;
-      }
-
-      callback(new Error(`CORS blocked for origin: ${origin}`), false);
+      return callback(new Error(`CORS blocked for origin: ${origin}`), false);
     },
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'stripe-signature', 'x-webhook-secret', 'x-webhook-signature', 'x-meli-signature', 'x-signature'],
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'x-company-id',
+      'stripe-signature',
+      'x-webhook-secret',
+      'x-webhook-signature',
+      'x-meli-signature',
+      'x-signature',
+    ],
   });
 
   const port = process.env.PORT || 3333;
